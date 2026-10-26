@@ -1,0 +1,323 @@
+# Openfy
+
+Tocador de música pessoal para Windows. Fonte única: YouTube Music via InnerTube
+(sem anúncios). Interface desktop em Compose, áudio no mpv.
+
+## Como funciona
+
+```
+Compose UI
+   │
+   ├── AppController ── Player ── mpv.exe  (named pipe JSON IPC)
+   │                      │
+   │                      └── http://127.0.0.1:<porta>/t/<videoId>
+   │                                   │
+   └── YouTubeEngine ──────────────────┘  (busca + extração InnerTube)
+```
+
+O mpv nunca recebe uma URL do Google. Quem resolve a faixa é o `StreamServer`
+local, que reextrai quando a assinatura expira. Por isso URL vencida não é um
+caso de erro.
+
+O IPC usa **duas conexões** com o named pipe do mpv: uma só para ler eventos e
+outra só para enviar comandos. Um único handle para ler e escrever trava o
+`write` enquanto a leitura está bloqueada — era o bug em que clicar numa faixa
+não tocava e congelava o app.
+
+Os comandos entram numa fila e uma thread dedicada escreve e **drena a resposta**
+de cada um. Sem isso o canal de comandos enchia de respostas não lidas, o mpv
+parava de ler e a UI travava depois de alguns minutos de uso.
+
+## Estado atual
+
+- [x] Busca no catálogo do YouTube Music com filtros (músicas, artistas, álbuns, playlists, vídeos)
+- [x] Perfil oficial do artista em destaque, com populares, álbuns, singles e seções relacionadas
+- [x] Playlists e álbuns públicos, com carregamento das listas longas por continuação
+- [x] Explorar com playlists em destaque, lançamentos e playlists da comunidade
+- [x] Rádio por faixa e por artista, com autoplay e prefetch da próxima página
+- [x] Extração de áudio via `innertubex-desktop:v0.11.0` (sem PoToken/WebView)
+- [x] Streaming com Range/seek através do servidor local
+- [x] Fila, aleatório, repetir (off/all/one), volume
+- [x] Curtidas, histórico, playlists locais (SQLite)
+- [x] Criar/renomear/excluir playlist com confirmação
+- [x] Navegação voltar/avançar com pilha de telas (botões + `Alt+←`/`Alt+→`)
+- [x] Sessão retomada: fila, faixa, posição, volume, aleatório e repetir persistem
+- [x] Atalhos de teclado (espaço, setas, `Ctrl+←/→`, `L`, `S`, `R`, `Q`, `Ctrl+F`, `Esc`)
+- [x] Fila editável: remover, reordenar, limpar próximas, salvar como playlist e desfazer
+- [x] Busca: recentes, sugestões (ao digitar), top result, carregar mais, retry e skeleton
+- [x] Banner offline e cache de capas em disco (com LRU em memória)
+- [x] "Em alta" (charts): as músicas em alta do YouTube Music
+- [x] Downloads: baixar faixa/álbum/playlist e tocar offline
+- [x] Download automático em segundo plano (mais ouvidas + similares), com interruptor
+- [x] Ações de playlist/download na barra inferior, na tela do player e em cada item da fila
+- [x] Transições e microanimações (tela cheia, troca de telas, fila, avisos, hover)
+- [x] Bandeja do Windows (minimizar/fechar continua tocando) + teclas de mídia do teclado
+- [x] Sair pelo botão de energia/bandeja sem travar (shutdown fora da thread da UI)
+- [x] Interface no estilo Spotify (preto + verde-água + ciano), com tela cheia do player
+- [x] Adicionar à playlist na barra inferior e na tela do player (com criar playlist já adicionando a faixa)
+- [x] Equalizador de 5 bandas com presets (Flat/Pop/Rock/Graves/Vocal), persistido
+- [x] Instância única, log rotativo (`openfy.log.1`) e crash handler
+- [x] Tela de Ajustes (qualidade, crossfade, DJ, downloads, janela e dados)
+- [x] Capa personalizada nas playlists (ou a capa da primeira faixa)
+- [x] Transição entre faixas configurável (fade-out/fade-in, 0–12 s)
+- [x] Modo DJ por BPM (metadata do Deezer) com fallback para a ordem da rádio
+- [x] Qualidade de áudio Alta/Econômica
+- [x] Schema pronto para sync (`updated_at` + tombstones)
+- [x] "Seu mix" multi-semente (até 3 sementes de curtidas/recentes, faixas intercaladas)
+- [x] Autoplay: busca toca e emenda a rádio; playlist/álbum/mix vai até o fim e então entra na rádio
+- [x] Importar playlist/álbum do YouTube Music por link (sem login)
+- [x] Importar CSV do Exportify (Spotify) casando faixas no catálogo
+- [x] Backup JSON de playlists e curtidas (exportar/importar)
+- [x] Letras sincronizadas (LRCLIB) na tela do player
+- [x] Timer para dormir (15/30/45/60 min) e shuffle inteligente
+- [x] Estatísticas no Início (execuções, horas ouvidas, artista top)
+- [x] Logo própria no app, na bandeja, na janela e no ícone do .exe/atalho
+- [x] Estabilidade do IPC do mpv: fila de comandos + drenagem das respostas (evita travar a UI)
+- [x] Instaladores Windows com mpv embutido (.exe e .msi)
+- [ ] Login próprio + sincronização entre dispositivos (Supabase, próximo)
+- [ ] OAuth Spotify/Google para importar playlists da conta (próximo)
+
+## Busca, artista e rádio
+
+A busca usa os filtros do próprio YouTube Music (`params` do InnerTube), então
+karaokê, podcasts e vídeos aleatórios ficam fora da aba de músicas. A aba
+padrão é **Músicas**; acima dos resultados aparece uma faixa de artistas
+oficiais. As abas **Artistas**, **Álbuns**, **Playlists** e **Vídeos** trocam o
+filtro sem refazer a digitação.
+
+O **Explorar** combina buscas fixas de playlists em destaque (hits, pop,
+sertanejo, rock, rap, funk, MPB) com lançamentos e playlists da comunidade.
+As sementes fixas evitam que a tela mude de ordem a cada abertura.
+
+A **rádio** usa `next` com `RDAMVM<videoId>` (faixa) ou `RDEM...` (artista).
+A fila já nasce com ~50 faixas e busca a próxima página quando chega perto do
+fim. Playlists longas repetem a primeira página em algumas continuações; o
+controlador ignora o token quando nenhuma faixa nova é acrescentada.
+
+## Atalhos, fila e sessão
+
+Atalhos globais (funcionam mesmo com um botão focado; pausam enquanto você
+digita na busca ou num diálogo):
+
+| Tecla | Ação |
+| --- | --- |
+| `Espaço` | tocar/pausar |
+| `←` / `→` | voltar/avançar 5 s |
+| `Ctrl+←` / `Ctrl+→` | faixa anterior/próxima |
+| `L` | curtir a faixa atual |
+| `S` | aleatório |
+| `R` | repetir (off → all → one) |
+| `Q` | abrir/fechar a fila |
+| `Ctrl+P` | abrir/fechar a tela do player |
+| `Ctrl+F` | focar a busca |
+| `Esc` | fechar o player/fila (ou voltar de tela) |
+
+A **fila** é editável: clicar numa faixa toca na hora; os botões ao lado
+removem ou reordenam; "Limpar próximas" descarta o que vem depois da faixa
+atual; "Salvar" guarda a fila como playlist. Toda remoção pode ser desfeita
+pelo botão "Desfazer" do aviso.
+
+A **sessão** (fila, faixa, posição, volume e modos) é salva no SQLite e
+retomada pausada na próxima abertura, junto com a última tela e o tamanho e
+posição da janela. As capas ficam em disco (cache em duas camadas: memória com
+LRU + arquivos), então a segunda abertura não baixa as imagens de novo.
+
+## Downloads, bandeja e mídia
+
+**Downloads**: no menu (⋮) de qualquer faixa escolha "Baixar"; em álbum ou
+playlist há um botão "Baixar" que salva tudo. As faixas vão para
+`%LOCALAPPDATA%\OpenfyData\downloads\` e passam a ser tocadas do disco — inclusive
+sem internet. A tela **Downloads** lista o que já está salvo; "Remover download"
+apaga o arquivo.
+
+A barra inferior, a tela do player e cada item da fila também têm o botão de
+baixar/remover e de adicionar à playlist (o menu da fila inclui as duas ações).
+
+Com **Download automático** ligado (interruptor na tela Downloads), o app baixa
+em segundo plano, sem avisar, as faixas mais ouvidas do histórico e algumas
+similares — a partir da rádio da mais tocada — com limite de quantidade.
+
+Para encerrar de verdade, use o **botão de energia** no topo ou "Sair" na
+bandeja. Fechar pelo X minimiza para a bandeja (com um aviso); o áudio continua.
+
+**Bandeja e teclas de mídia**: fechar a janela minimiza para a bandeja e o áudio
+continua. O ícone na bandeja tem tocar/pausar, próxima, anterior, mostrar e
+sair. As teclas de mídia do teclado (play/pause, próxima, anterior) funcionam
+globalmente, mesmo com o Openfy em segundo plano. Se outro app já tiver tomado
+as teclas, o registro é ignorado sem quebrar nada.
+
+**Em alta** (charts): as músicas em alta agora, tiradas da playlist de
+tendências do YouTube Music (a página de charts só traz artistas e cards; o app
+navega até a playlist para montar a lista).
+
+## Interface, player e equalizador
+
+A interface segue o padrão de tocador que todo mundo já conhece: barra lateral
+com navegação e biblioteca, conteúdo no centro e barra de reprodução embaixo.
+A paleta é preto profundo com verde-água e ciano; a logo é um traço de dois
+laços com cabeça de cobra, usada na sidebar, na bandeja e como ícone da janela.
+
+- **Tela do player**: clique na faixa da barra inferior (ou na seta para cima,
+  ou `Ctrl+P`) para abrir a tela cheia com capa grande, título, progresso,
+  curtir, adicionar à playlist, equalizador, volume e fila. `Esc` fecha.
+- **Adicionar à playlist**: botão de playlist+ na barra inferior e na tela do
+  player, com a lista de playlists e "Nova playlist" (que já cria e adiciona a
+  faixa atual).
+- **Equalizador**: 5 bandas (60 Hz a 14 kHz) aplicadas ao mpv via filtros do
+  FFmpeg, com presets e estado salvo. Abra pelo ícone de sliders (barra e player).
+- **Rótulos**: os ícones mostram o nome/atalho ao passar o mouse (DJ, aleatório,
+  repetir, equalizador, letras, timer, fila, download, ajustes e navegação).
+- **Estados visíveis**: botões ativos usam preenchimento sólido (não só cor) e os
+  filtros de busca mostram um check; assim o estado ligado/desligado continua
+  claro para quem tem daltonismo. A troca de tela na busca rola junto com os
+  resultados: o perfil do artista e o destaque não ficam mais fixos cobrindo a lista.
+- **Seu mix**: card no Início que usa até 3 sementes (curtidas + recentes) e
+  intercala as faixas das rádios de cada uma, sem repetir. Mais dados locais =
+  melhor; sem servidor.
+- **Autoplay**: clicar num resultado de busca toca a faixa e já emenda a rádio
+  dela. Ao tocar um álbum, playlist ou mix, o app respeita a lista até o fim e
+  só então entra na rádio da última faixa.
+
+## Importar, letras e estatísticas
+
+- **YouTube Music por link**: no botão de importar (topo), cole a URL de uma
+  playlist ou álbum público. O app carrega as continuações e cria a playlist local.
+- **Spotify sem login**: exporte suas playlists com o Exportify (CSV) e importe.
+  Cada faixa é casada por título, artista e duração no catálogo do YouTube Music.
+- **Backup**: exporte/importe um JSON com playlists e curtidas (metadados, sem áudio).
+- **Compartilhar playlist**: no cabeçalho da playlist, "Compartilhar" gera um
+  arquivo `.openfyplaylist` para enviar a outra pessoa. No importador, "Playlist
+  Openfy" abre esse arquivo e recria a playlist com os mesmos videoIds.
+  Playlist colaborativa em tempo real depende do backend (Supabase), ainda pendente.
+- **Letras**: botão de letras na tela do player; busca no LRCLIB, prioriza LRC
+  sincronizado e destaca a linha atual. Sufixos como "(Official Video)" são limpos.
+- **Timer**: 15/30/45/60 min na tela do player; pausa ao terminar.
+- **Estatísticas**: execuções, horas ouvidas e artista top no Início.
+- **Shuffle inteligente**: evita repetir as últimas tocadas e dá peso a curtidas.
+
+OAuth de conta (Spotify/Google) e sincronização via Supabase ficam para o
+próximo pacote: exigem um app/credenciais externas e um backend configurado.
+
+## Ajustes, transição e DJ
+
+- **Ajustes** (engrenagem no topo): qualidade Alta/Econômica, transição entre
+  faixas, modo DJ, equalizador, download automático, fechar para a bandeja,
+  backup, cache e pasta de dados.
+- **Capas de playlist**: no cabeçalho da playlist, "Capa" → escolher imagem
+  (copiada para `%LOCALAPPDATA%\OpenfyData\covers\`) ou remover. Sem capa própria,
+  usa a arte da primeira faixa.
+- **Transição**: crossfade real de 0–12 s com dois players mpv e curva
+  equal-power: no meio da transição as duas faixas ficam audíveis, sem o "buraco"
+  do fade linear. O estilo **DJ blend** vai além e corta os graves da faixa que
+  sai na metade da sobreposição, deixando os graves/corpo da próxima aparecerem
+  — uma aproximação de mashup de DJ. Separação real de vocal/instrumental
+  exigiria um modelo de stems (Demucs/Spleeter), pesado para o player; não vale
+  a pena agora. Qualquer interação (pausar, seek, trocar de faixa) cancela o fade.
+- **Modo DJ**: o rótulo "Modo DJ — próximas faixas por BPM" aparece ao passar o
+  mouse no ícone de brilho ao lado do aleatório → reordena as próximas faixas por
+  proximidade de BPM (metadata pública do Deezer, com cache local).
+  Se o BPM não estiver disponível, mantém a ordem da rádio/playlist.
+- **Aleatório**: os botões "Aleatório" dos cabeçalhos já iniciam a reprodução na
+  hora; a seta de aleatório da barra liga o modo e, se nada estiver tocando,
+  começa o contexto aberto (playlist, álbum, artista, curtidas ou busca).
+- **Qualidade**: Alta usa o teto do extrator; Econômica reduz o consumo.
+- **Sync**: o schema já tem `updated_at` e soft delete (tombstones) em curtidas,
+  playlists e itens; falta apenas o backend Supabase. A mesma base servirá para
+  playlists compartilhadas/colaborativas com convite e sincronização em tempo real.
+- **Confiabilidade**: instância única (a segunda abertura foca a janela atual),
+  log rotativo, crash handler registrando stack traces e backup consistente do
+  banco a cada encerramento.
+
+## Instalar
+
+Instaladores (usuário atual, sem admin):
+
+```
+dist\Openfy-0.1.1.exe
+dist\Openfy-0.1.1.msi
+```
+
+Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
+executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
+gerados em `build\compose\binaries\main\`.
+
+## Build
+
+Requisitos: JDK 21 e `mpv.exe` em `resources-dist\windows\` (o binário não é
+versionado por ter ~121 MB; veja `resources-dist/windows/README.md`).
+
+```powershell
+$env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
+.\gradlew.bat createDistributable   # pasta portátil
+.\gradlew.bat package               # .exe + .msi
+```
+
+Saídas:
+
+- `build\compose\binaries\main\app\Openfy\Openfy.exe`
+- `build\compose\binaries\main\exe\Openfy-0.1.1.exe`
+- `build\compose\binaries\main\msi\Openfy-0.1.1.msi`
+
+Rodar em desenvolvimento:
+
+```powershell
+.\gradlew.bat run
+```
+
+## Testes headless
+
+```powershell
+.\.tools\gradle-dist\bin\gradle.bat smoke        # busca -> extração -> HTTP local
+.\.tools\gradle-dist\bin\gradle.bat playerSmoke  # Player -> IPC do mpv (volume 0)
+.\.tools\gradle-dist\bin\gradle.bat featureSmoke # busca filtrada, artista, coleções, explorar e rádio
+.\.tools\gradle-dist\bin\gradle.bat librarySmoke # importador (URL/CSV/match), backup JSON e backup do banco
+.\.tools\gradle-dist\bin\gradle.bat extract -Pid=<videoId>  # mede uma extração
+.\.tools\gradle-dist\bin\gradle.bat probe        # salva respostas cruas em %TEMP%\openfy-probe
+```
+
+O `playerSmoke` prova o caminho real: carrega, pausa, retoma, faz seek, troca de
+faixa e confirma que uma faixa inválida gera erro (em vez de ficar travado).
+O `featureSmoke` cobre a busca com filtros e continuação, o perfil de artista,
+álbum/playlist públicos, o Explorar, as rádios, as sugestões, as letras (LRCLIB)
+e o BPM do modo DJ; ele termina com `TUDO OK`. O `librarySmoke` cobre o
+importador (URL/CSV/match), o backup JSON, a playlist compartilhada
+(`.openfyplaylist`) e o backup consistente do banco (`VACUUM INTO`). O `probe` é
+só uma ferramenta de diagnóstico: grava JSONs brutos para inspecionar tokens e
+formatos novos.
+
+> O SLF4J escreve no stderr e o PowerShell pode marcar o comando como erro
+> mesmo com `BUILD SUCCESSFUL`; considere aprovado quando aparecer `TUDO OK`.
+
+## Dados e diagnóstico
+
+- Banco: `%LOCALAPPDATA%\OpenfyData\openfy.db` (SQLite, WAL).
+- Backup automático: `%LOCALAPPDATA%\OpenfyData\openfy-backup.db`, regravado a
+  cada encerramento com `VACUUM INTO` (cópia consistente, mesmo com WAL ativo).
+- Log do app: `%LOCALAPPDATA%\OpenfyData\openfy.log` (recriado a cada start).
+  Registra busca, extração (tempo/erro), requisições do stream, comandos e IPC.
+- Log do mpv: `%LOCALAPPDATA%\OpenfyData\mpv.log` (recriado a cada start).
+- Capas em cache: `%LOCALAPPDATA%\OpenfyData\artwork\` (uma imagem por URL, com hash).
+- Downloads: `%LOCALAPPDATA%\OpenfyData\downloads\` (uma faixa por arquivo).
+
+Os dados ficam **fora da pasta de instalação** (`%LOCALAPPDATA%\Openfy`). Assim,
+atualizar, reparar ou desinstalar o app não apaga curtidas, playlists, histórico,
+capas e downloads. Na primeira abertura, o Openfy migra automaticamente o banco,
+capas, cache e downloads da pasta antiga. Apagar o `.db` zera curtidas, playlists,
+histórico, buscas recentes e a sessão.
+
+## Estrutura
+
+```
+src/main/kotlin/com/openfy/
+  Main.kt              composição da aplicação, janela, shutdown
+  core/                modelos, controlador de telas, player state, log
+  data/                SQLite, InnerTube, servidor de stream
+  player/              mpv (IPC) e fila
+  ui/                  Compose (tema + telas)
+  dev/                 verificações headless (não usadas pelo app)
+```
+
+### Regra de ouro
+
+`innertubex` é dependência externa, não código nosso. Nada de patch no
+`data/` do motor: correção vem de atualizar a versão do artefato.

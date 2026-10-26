@@ -1,0 +1,102 @@
+:root {
+  color-scheme: dark;
+  --ink: #060909;
+  --panel: #0b1312;
+  --panel-high: #13201d;
+  --line: #1d2c28;
+  --text: #f1f7f4;
+  --muted: #8ca6a0;
+  --accent: #2fbfa0;
+  --accent2: #19d3e6;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 20% 0%, #10312c 0, transparent 40%),
+    radial-gradient(circle at 90% 100%, #0b2a30 0, transparent 35%),
+    var(--ink);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+.card {
+  width: min(560px, 100%);
+  padding: 36px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(19, 32, 29, .96), rgba(11, 19, 18, .96));
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .45);
+  text-align: center;
+}
+
+.logo {
+  width: 84px;
+  height: 84px;
+  object-fit: contain;
+  margin-bottom: 12px;
+}
+
+h1 {
+  margin: 0 0 8px;
+  font-size: 30px;
+  letter-spacing: -.5px;
+}
+
+.muted { color: var(--muted); margin: 0 0 20px; }
+.small { color: var(--muted); font-size: 13px; margin: 16px 0 0; }
+
+.code {
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--accent);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  word-break: break-all;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--ink);
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button.ghost {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.button:disabled { opacity: .45; cursor: not-allowed; }
+
+@media (max-width: 520px) {
+  .card { padding: 24px; }
+  h1 { font-size: 24px; }
+  .code { font-size: 20px; }
+}

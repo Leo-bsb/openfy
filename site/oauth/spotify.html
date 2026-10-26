@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conectar Spotify — Openfy</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <main class="card">
+    <h1>Spotify</h1>
+    <p class="muted">Concluindo a autorização para importar suas playlists.</p>
+    <p id="status" class="small"></p>
+    <div class="actions">
+      <a id="open" class="button" href="#">Voltar ao Openfy</a>
+    </div>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const code = params.get('code') || '';
+    const state = params.get('state') || '';
+    const error = params.get('error') || '';
+    const status = document.getElementById('status');
+    const open = document.getElementById('open');
+
+    if (error) {
+      status.textContent = 'Autorização cancelada ou recusada: ' + error;
+    } else if (!code) {
+      status.textContent = 'Código de autorização ausente.';
+    } else {
+      const target = 'openfy://oauth/spotify?code=' + encodeURIComponent(code)
+        + '&state=' + encodeURIComponent(state);
+      open.href = target;
+      status.textContent = 'Se o Openfy não abrir automaticamente, clique no botão.';
+      setTimeout(() => { location.href = target; }, 600);
+    }
+  </script>
+</body>
+</html>

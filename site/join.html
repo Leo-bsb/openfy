@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Entrar em playlist — Openfy</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="card">
+    <h1>Playlist compartilhada</h1>
+    <p class="muted">Abra no Openfy para entrar na playlist como editor.</p>
+    <p id="code" class="code">—</p>
+    <div class="actions">
+      <a id="open" class="button" href="openfy://join/">Abrir no Openfy</a>
+      <button id="copy" class="button ghost" type="button">Copiar código</button>
+    </div>
+    <p id="status" class="small"></p>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const code = (params.get('code') || '').trim();
+    const codeEl = document.getElementById('code');
+    const openEl = document.getElementById('open');
+    const copyEl = document.getElementById('copy');
+    const statusEl = document.getElementById('status');
+
+    if (code) {
+      codeEl.textContent = code;
+      openEl.href = 'openfy://join/' + encodeURIComponent(code);
+      copyEl.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(code);
+          statusEl.textContent = 'Código copiado.';
+        } catch {
+          statusEl.textContent = 'Copie o código acima.';
+        }
+      });
+      statusEl.textContent = 'Se o app não abrir automaticamente, toque em “Abrir no Openfy”.';
+    } else {
+      codeEl.textContent = 'Código ausente';
+      copyEl.disabled = true;
+      statusEl.textContent = 'Peça um novo link de convite.';
+    }
+  </script>
+</body>
+</html>
