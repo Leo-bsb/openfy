@@ -228,13 +228,27 @@ próximo pacote: exigem um app/credenciais externas e um backend configurado.
   log rotativo, crash handler registrando stack traces e backup consistente do
   banco a cada encerramento.
 
+## Conta e sync com o celular
+
+O sync é opcional: sem login, o Openfy continua local. Com conta, o PC e o
+Android compartilham playlists, itens e curtidas via Supabase.
+
+- No PC: **Ajustes → Conta e sincronização** → entrar/criar conta e
+  **Sincronizar agora**.
+- No Android: o app em `androidApp/` tem a tela de login e lista as playlists
+  da conta. Criar uma playlist no celular e sincronizar no PC deve trazê-la
+  para a sidebar.
+- O app Android ainda não tem player/busca; esta é a primeira etapa.
+- Nesta versão o merge é LWW por `updated_at`. O próximo passo é trocar por
+  outbox + `server_rev` para conflitos offline mais seguros.
+
 ## Instalar
 
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.1.1.exe
-dist\Openfy-0.1.1.msi
+dist\Openfy-0.2.0.exe
+dist\Openfy-0.2.0.msi
 ```
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
@@ -255,8 +269,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.1.1.exe`
-- `build\compose\binaries\main\msi\Openfy-0.1.1.msi`
+- `build\compose\binaries\main\exe\Openfy-0.2.0.exe`
+- `build\compose\binaries\main\msi\Openfy-0.2.0.msi`
 
 Rodar em desenvolvimento:
 

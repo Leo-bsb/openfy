@@ -42,6 +42,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
@@ -2412,6 +2414,10 @@ private fun SettingsScreen(c: AppController) {
     val crossfade by c.player.crossfadeSeconds.collectAsState()
     val transition by c.player.transitionStyle.collectAsState()
     val dj by c.player.djMode.collectAsState()
+    val account by c.account.state.collectAsState()
+    var accountEmail by remember { mutableStateOf("") }
+    var accountPassword by remember { mutableStateOf("") }
+    var creatingAccount by remember { mutableStateOf(false) }
     val auto by c.autoDownload.collectAsState()
     val closeToTray by c.closeToTray.collectAsState()
     val downloadedSize by c.downloadsSize.collectAsState()
@@ -2487,6 +2493,109 @@ private fun SettingsScreen(c: AppController) {
             SettingsRow("Equalizador", "5 bandas + presets") {
                 TextButton(onClick = { eqOpen = true }) {
                     Text("Abrir", color = Tokens.accent)
+                }
+            }
+        }
+
+        SettingsSection("Conta e sincronização") {
+            Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+                if (account.session == null) {
+                    Text(
+                        "Entre para sincronizar playlists, curtidas e histórico com o celular.",
+                        color = Tokens.textLow,
+                        fontSize = 12.sp,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = accountEmail,
+                        onValueChange = { accountEmail = it },
+                        label = { Text("E-mail") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = accountPassword,
+                        onValueChange = { accountPassword = it },
+                        label = { Text("Senha") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(
+                            onClick = {
+                                if (creatingAccount) {
+                                    c.account.signUp(accountEmail, accountPassword)
+                                } else {
+                                    c.account.signIn(accountEmail, accountPassword)
+                                }
+                            },
+                            enabled = !account.busy,
+                        ) {
+                            if (account.busy) {
+                                CircularProgressIndicator(
+                                    Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Tokens.ink,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Text(if (creatingAccount) "Criar conta" else "Entrar")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(
+                            onClick = {
+                                creatingAccount = !creatingAccount
+                                c.account.clearFeedback()
+                            },
+                        ) {
+                            Text(
+                                if (creatingAccount) "Já tenho conta" else "Criar conta",
+                                color = Tokens.accent2,
+                            )
+                        }
+                    }
+                } else {
+                    val session = account.session
+                    val name = account.profile?.displayName
+                        ?.takeIf { it.isNotBlank() }
+                        ?: session?.email?.substringBefore("@").orEmpty().ifBlank { "Conta Openfy" }
+                    Text(name, color = Tokens.textHigh, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text(session?.email ?: "", color = Tokens.textLow, fontSize = 12.sp)
+                    Text(
+                        "Último sync: ${account.lastSync ?: "nunca"}",
+                        color = Tokens.textLow,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(onClick = { c.account.syncNow() }, enabled = !account.busy) {
+                            if (account.busy) {
+                                CircularProgressIndicator(
+                                    Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Tokens.ink,
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            Text("Sincronizar agora")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { c.account.signOut() }, enabled = !account.busy) {
+                            Text("Sair", color = Tokens.textLow)
+                        }
+                    }
+                }
+                account.status?.let {
+                    Text(it, color = Tokens.accent, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+                }
+                account.error?.let {
+                    Text(it, color = Color(0xFFFF8A80), fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
                 }
             }
         }

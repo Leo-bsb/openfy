@@ -1,0 +1,370 @@
+package com.openfy.data
+
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.request.parameter
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.contentType
+import io.ktor.http.isSuccess
+import io.ktor.serialization.kotlinx.json.json
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
+/**
+ * Configuração pública do Supabase. A chave publishable é feita para ficar no
+ * cliente; a service_role nunca entra aqui.
+ */
+object SupabaseConfig {
+    val url: String = System.getenv("OPENFY_SUPABASE_URL")
+        ?.takeIf { it.isNotBlank() }
+        ?: "https://arxoiibjocazfxtliysc.supabase.co"
+
+    val anonKey: String = System.getenv("OPENFY_SUPABASE_ANON_KEY")
+        ?.takeIf { it.isNotBlank() }
+        ?: "sb_publishable_p9DT11Nnv2TTYPOo4_oW7A_6DOIeMni"
+}
+
+class SupabaseException(val status: Int, message: String) : Exception(message)
+
+@Serializable
+data class RemoteAuthUser(val id: String = "", val email: String? = null)
+
+@Serializable
+data class RemoteAuthSession(
+    @SerialName("access_token") val accessToken: String = "",
+    @SerialName("refresh_token") val refreshToken: String = "",
+    @SerialName("expires_in") val expiresIn: Long = 0,
+    val user: RemoteAuthUser? = null,
+)
+
+@Serializable
+data class RemoteProfile(
+    val id: String = "",
+    val handle: String = "",
+    @SerialName("display_name") val displayName: String = "",
+    @SerialName("avatar_url") val avatarUrl: String = "",
+)
+
+@Serializable
+data class RemoteTrack(
+    val id: String,
+    val title: String = "",
+    val artist: String = "",
+    val album: String = "",
+    val duration: Int = 0,
+    val thumbnail: String = "",
+)
+
+@Serializable
+data class RemotePlaylist(
+    val id: String,
+    val name: String = "",
+    @SerialName("updated_at") val updatedAt: String? = null,
+    val deleted: Boolean = false,
+)
+
+@Serializable
+data class RemotePlaylistItem(
+    val id: String,
+    @SerialName("playlist_id") val playlistId: String,
+    @SerialName("track_id") val trackId: String,
+    val rank: String = "",
+    val deleted: Boolean = false,
+    @SerialName("updated_at") val updatedAt: String? = null,
+)
+
+@Serializable
+data class RemoteLike(
+    @SerialName("track_id") val trackId: String,
+    @SerialName("updated_at") val updatedAt: String? = null,
+    val deleted: Boolean = false,
+)
+
+@Serializable
+data class PushTrack(
+    val id: String,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val duration: Int,
+    val thumbnail: String,
+)
+
+@Serializable
+data class PushPlaylist(
+    val id: String,
+    val name: String,
+    val deleted: Boolean,
+)
+
+@Serializable
+data class PushPlaylistItem(
+    val id: String,
+    @SerialName("playlist_id") val playlistId: String,
+    @SerialName("track_id") val trackId: String,
+    val rank: String,
+    val deleted: Boolean,
+)
+
+@Serializable
+data class PushLike(
+    @SerialName("user_id") val userId: String,
+    @SerialName("track_id") val trackId: String,
+    val deleted: Boolean,
+)
+
+@Serializable
+private data class ApiError(
+    val message: String? = null,
+    val error: String? = null,
+    @SerialName("error_description") val errorDescription: String? = null,
+)
+
+@Serializable
+private data class LoginBody(val email: String, val password: String)
+
+@Serializable
+private data class RefreshBody(@SerialName("refresh_token") val refreshToken: String)
+
+@Serializable
+private data class MemberRow(@SerialName("playlist_id") val playlistId: String)
+
+@Serializable
+private data class IdRow(val id: String)
+
+class SupabaseApi {
+
+    private val baseUrl = SupabaseConfig.url.trimEnd('/')
+    private val key = SupabaseConfig.anonKey
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
+
+    private val client = HttpClient(OkHttp) {
+        install(ContentNegotiation) { json(json) }
+        install(HttpTimeout) {
+            requestTimeoutMillis = 30_000
+            connectTimeoutMillis = 15_000
+            socketTimeoutMillis = 30_000
+        }
+    }
+
+    private suspend fun fail(response: HttpResponse): Nothing {
+        val text = runCatching { response.bodyAsText() }.getOrDefault("")
+        val parsed = runCatching { json.decodeFromString<ApiError>(text) }.getOrNull()
+        val message = parsed?.message
+            ?: parsed?.errorDescription
+            ?: parsed?.error
+            ?: text.takeIf { it.isNotBlank() }
+            ?: "Erro ${response.status.value}"
+        throw SupabaseException(response.status.value, message)
+    }
+
+    private suspend inline fun <reified T> decode(response: HttpResponse): T {
+        if (!response.status.isSuccess()) fail(response)
+        val text = response.bodyAsText()
+        if (text.isBlank()) throw SupabaseException(response.status.value, "Resposta vazia do servidor.")
+        return json.decodeFromString(text)
+    }
+
+    private suspend fun ensure(response: HttpResponse) {
+        if (!response.status.isSuccess()) fail(response)
+    }
+
+    private fun inClause(values: Collection<String>): String =
+        "in.(${values.joinToString(",")})"
+
+    suspend fun signIn(email: String, password: String): RemoteAuthSession =
+        decode(
+            client.post("$baseUrl/auth/v1/token") {
+                parameter("grant_type", "password")
+                header("apikey", key)
+                contentType(ContentType.Application.Json)
+                setBody(LoginBody(email.trim(), password))
+            },
+        )
+
+    suspend fun signUp(email: String, password: String): RemoteAuthSession =
+        decode(
+            client.post("$baseUrl/auth/v1/signup") {
+                header("apikey", key)
+                contentType(ContentType.Application.Json)
+                setBody(LoginBody(email.trim(), password))
+            },
+        )
+
+    suspend fun refresh(refreshToken: String): RemoteAuthSession =
+        decode(
+            client.post("$baseUrl/auth/v1/token") {
+                parameter("grant_type", "refresh_token")
+                header("apikey", key)
+                contentType(ContentType.Application.Json)
+                setBody(RefreshBody(refreshToken))
+            },
+        )
+
+    suspend fun logout(accessToken: String) {
+        runCatching {
+            client.post("$baseUrl/auth/v1/logout") {
+                header("apikey", key)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+            }
+        }
+    }
+
+    suspend fun profile(accessToken: String, userId: String): RemoteProfile? {
+        val rows = decode<List<RemoteProfile>>(
+            client.get("$baseUrl/rest/v1/profiles") {
+                auth(accessToken)
+                parameter("select", "id,handle,display_name,avatar_url")
+                parameter("id", "eq.$userId")
+                parameter("limit", "1")
+            },
+        )
+        return rows.firstOrNull()
+    }
+
+    suspend fun memberPlaylistIds(accessToken: String, userId: String): List<String> =
+        decode<List<MemberRow>>(
+            client.get("$baseUrl/rest/v1/playlist_members") {
+                auth(accessToken)
+                parameter("select", "playlist_id")
+                parameter("user_id", "eq.$userId")
+                parameter("deleted", "eq.false")
+                parameter("limit", "1000")
+            },
+        ).map { it.playlistId }
+
+    suspend fun ownedPlaylistIds(accessToken: String, userId: String): List<String> =
+        decode<List<IdRow>>(
+            client.get("$baseUrl/rest/v1/playlists") {
+                auth(accessToken)
+                parameter("select", "id")
+                parameter("owner_id", "eq.$userId")
+                parameter("deleted", "eq.false")
+                parameter("limit", "1000")
+            },
+        ).map { it.id }
+
+    suspend fun playlists(accessToken: String, ids: Collection<String>): List<RemotePlaylist> {
+        if (ids.isEmpty()) return emptyList()
+        return decode(
+            client.get("$baseUrl/rest/v1/playlists") {
+                auth(accessToken)
+                parameter("select", "id,name,updated_at,deleted")
+                parameter("id", inClause(ids))
+                parameter("limit", "1000")
+            },
+        )
+    }
+
+    suspend fun items(accessToken: String, playlistIds: Collection<String>): List<RemotePlaylistItem> {
+        if (playlistIds.isEmpty()) return emptyList()
+        return decode(
+            client.get("$baseUrl/rest/v1/playlist_items") {
+                auth(accessToken)
+                parameter("select", "id,playlist_id,track_id,rank,deleted,updated_at")
+                parameter("playlist_id", inClause(playlistIds))
+                parameter("limit", "5000")
+            },
+        )
+    }
+
+    suspend fun likes(accessToken: String): List<RemoteLike> =
+        decode(
+            client.get("$baseUrl/rest/v1/likes") {
+                auth(accessToken)
+                parameter("select", "track_id,updated_at,deleted")
+                parameter("limit", "5000")
+            },
+        )
+
+    suspend fun tracks(accessToken: String, ids: Collection<String>): List<RemoteTrack> {
+        if (ids.isEmpty()) return emptyList()
+        return decode(
+            client.get("$baseUrl/rest/v1/tracks") {
+                auth(accessToken)
+                parameter("select", "id,title,artist,album,duration,thumbnail")
+                parameter("id", inClause(ids))
+                parameter("limit", "1000")
+            },
+        )
+    }
+
+    suspend fun pushTracks(accessToken: String, tracks: List<PushTrack>) {
+        if (tracks.isEmpty()) return
+        tracks.chunked(100).forEach { batch ->
+            ensure(
+                client.post("$baseUrl/rest/v1/tracks") {
+                    auth(accessToken)
+                    header("Prefer", "resolution=ignore-duplicates,return=minimal")
+                    parameter("on_conflict", "id")
+                    contentType(ContentType.Application.Json)
+                    setBody(batch)
+                },
+            )
+        }
+    }
+
+    suspend fun pushPlaylists(accessToken: String, playlists: List<PushPlaylist>) {
+        if (playlists.isEmpty()) return
+        playlists.chunked(100).forEach { batch ->
+            ensure(
+                client.post("$baseUrl/rest/v1/playlists") {
+                    auth(accessToken)
+                    header("Prefer", "resolution=merge-duplicates,return=minimal")
+                    parameter("on_conflict", "id")
+                    contentType(ContentType.Application.Json)
+                    setBody(batch)
+                },
+            )
+        }
+    }
+
+    suspend fun pushItems(accessToken: String, items: List<PushPlaylistItem>) {
+        if (items.isEmpty()) return
+        items.chunked(200).forEach { batch ->
+            ensure(
+                client.post("$baseUrl/rest/v1/playlist_items") {
+                    auth(accessToken)
+                    header("Prefer", "resolution=merge-duplicates,return=minimal")
+                    parameter("on_conflict", "id")
+                    contentType(ContentType.Application.Json)
+                    setBody(batch)
+                },
+            )
+        }
+    }
+
+    suspend fun pushLikes(accessToken: String, likes: List<PushLike>) {
+        if (likes.isEmpty()) return
+        likes.chunked(200).forEach { batch ->
+            ensure(
+                client.post("$baseUrl/rest/v1/likes") {
+                    auth(accessToken)
+                    header("Prefer", "resolution=merge-duplicates,return=minimal")
+                    parameter("on_conflict", "user_id,track_id")
+                    contentType(ContentType.Application.Json)
+                    setBody(batch)
+                },
+            )
+        }
+    }
+
+    private fun io.ktor.client.request.HttpRequestBuilder.auth(accessToken: String) {
+        header("apikey", key)
+        header(HttpHeaders.Authorization, "Bearer $accessToken")
+    }
+
+    fun close() {
+        client.close()
+    }
+}

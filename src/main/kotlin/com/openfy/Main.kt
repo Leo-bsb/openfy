@@ -128,6 +128,7 @@ fun main() {
         if (!stopping.compareAndSet(false, true)) return
         Log.write("encerrando")
         runCatching { player.shutdown() }
+        runCatching { controller.account.shutdown() }
         runCatching { stream.stop() }
         runCatching { scope.cancel() }
         runCatching { youtube.close() }

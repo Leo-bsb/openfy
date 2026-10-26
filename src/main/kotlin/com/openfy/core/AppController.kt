@@ -151,9 +151,16 @@ class AppController(
     private var sleepJob: Job? = null
     private val backupJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
 
+    /** Conta Supabase + sync de playlists/curtidas com o Android. */
+    val account = AccountManager(db, scope)
+
     init {
         player.radioSource = { token -> yt.radioNext(token) }
         player.radioStarter = { id -> yt.radio(id, "RDAMVM$id") }
+        account.onSynced = {
+            refreshLibrary()
+            openPlaylist.value?.id?.let { loadPlaylist(it) }
+        }
         autoDownload.value = runCatching { db.get("download.auto")?.toBooleanStrict() }.getOrNull() ?: true
         audioQuality.value = db.get("audio.quality") ?: "HIGH"
         yt.setQuality(audioQuality.value)

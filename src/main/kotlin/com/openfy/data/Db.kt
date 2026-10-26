@@ -1,6 +1,9 @@
 package com.openfy.data
 
 import com.openfy.core.Playlist
+import com.openfy.core.SyncLike
+import com.openfy.core.SyncPlaylist
+import com.openfy.core.SyncPlaylistItem
 import com.openfy.core.Track
 import java.nio.file.Files
 import java.nio.file.Path
@@ -122,8 +125,37 @@ class Db(file: Path) : AutoCloseable {
                 )
                 st.execute("pragma user_version=3")
             }
+            if (version < 4) {
+                // v4: sync com Supabase. O id remoto do item é necessário porque
+                // o servidor usa UUID por item, enquanto o banco local usa
+                // (playlist_id, track_id).
+                if (!hasColumn("playlist_item", "remote_item_id")) {
+                    st.execute("alter table playlist_item add column remote_item_id text")
+                }
+                st.execute(
+                    "create table if not exists sync_state(" +
+                        "k text primary key, v text not null)"
+                )
+                st.execute(
+                    "create table if not exists sync_outbox(" +
+                        "seq integer primary key autoincrement, " +
+                        "entity text not null, op text not null, entity_id text not null, " +
+                        "payload text not null, created_at integer not null)"
+                )
+                st.execute("pragma user_version=4")
+            }
         }
     }
+
+    private fun hasColumn(table: String, column: String): Boolean =
+        conn.createStatement().use { st ->
+            st.executeQuery("pragma table_info($table)").use { rs ->
+                while (rs.next()) {
+                    if (rs.getString("name") == column) return true
+                }
+                false
+            }
+        }
 
     // ------------------------------------------------------------------ track cache
     @Synchronized
@@ -328,6 +360,157 @@ class Db(file: Path) : AutoCloseable {
             ps.setString(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
         }
+
+    // ------------------------------------------------------------------ sync
+    @Synchronized
+    fun syncPlaylists(): List<SyncPlaylist> =
+        conn.createStatement().use { st ->
+            st.executeQuery("select id, name, updated_at, deleted from playlist").use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            SyncPlaylist(
+                                id = rs.getString("id"),
+                                name = rs.getString("name"),
+                                updatedAt = rs.getLong("updated_at"),
+                                deleted = rs.getInt("deleted") != 0,
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+    @Synchronized
+    fun syncPlaylistItems(): List<SyncPlaylistItem> =
+        conn.createStatement().use { st ->
+            st.executeQuery(
+                "select playlist_id, id, position, updated_at, deleted, remote_item_id from playlist_item"
+            ).use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            SyncPlaylistItem(
+                                playlistId = rs.getString("playlist_id"),
+                                trackId = rs.getString("id"),
+                                position = rs.getInt("position"),
+                                updatedAt = rs.getLong("updated_at"),
+                                deleted = rs.getInt("deleted") != 0,
+                                remoteItemId = rs.getString("remote_item_id"),
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+    @Synchronized
+    fun syncLikes(): List<SyncLike> =
+        conn.createStatement().use { st ->
+            st.executeQuery("select id, updated_at, deleted from liked").use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            SyncLike(
+                                trackId = rs.getString("id"),
+                                updatedAt = rs.getLong("updated_at"),
+                                deleted = rs.getInt("deleted") != 0,
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+    @Synchronized
+    fun syncTracks(): List<Track> =
+        conn.createStatement().use { st ->
+            st.executeQuery(
+                "select * from track where id in (" +
+                    "select id from playlist_item union select id from liked)"
+            ).use { rs -> readTracks(rs) }
+        }
+
+    /** Aplica uma playlist remota se ela for mais nova que a local. */
+    @Synchronized
+    fun mergeRemotePlaylist(remote: SyncPlaylist) {
+        conn.prepareStatement(
+            """
+            insert into playlist(id, name, created_at, cover, updated_at, deleted)
+            values(?,?,?,'',?,?)
+            on conflict(id) do update set
+                name=excluded.name,
+                updated_at=excluded.updated_at,
+                deleted=excluded.deleted
+            where excluded.updated_at > playlist.updated_at
+            """.trimIndent()
+        ).use { ps ->
+            ps.setString(1, remote.id)
+            ps.setString(2, remote.name)
+            ps.setLong(3, remote.updatedAt)
+            ps.setLong(4, remote.updatedAt)
+            ps.setInt(5, if (remote.deleted) 1 else 0)
+            ps.executeUpdate()
+        }
+    }
+
+    /** Aplica um item remoto; preserva o UUID do servidor para o próximo push. */
+    @Synchronized
+    fun mergeRemotePlaylistItem(remote: SyncPlaylistItem) {
+        conn.prepareStatement(
+            """
+            insert into playlist_item(
+                playlist_id, id, position, updated_at, deleted, remote_item_id
+            ) values(?,?,?,?,?,?)
+            on conflict(playlist_id, id) do update set
+                position=excluded.position,
+                updated_at=excluded.updated_at,
+                deleted=excluded.deleted,
+                remote_item_id=coalesce(excluded.remote_item_id, playlist_item.remote_item_id)
+            where excluded.updated_at > playlist_item.updated_at
+            """.trimIndent()
+        ).use { ps ->
+            ps.setString(1, remote.playlistId)
+            ps.setString(2, remote.trackId)
+            ps.setInt(3, remote.position)
+            ps.setLong(4, remote.updatedAt)
+            ps.setInt(5, if (remote.deleted) 1 else 0)
+            ps.setString(6, remote.remoteItemId)
+            ps.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    fun mergeRemoteLike(remote: SyncLike) {
+        conn.prepareStatement(
+            """
+            insert into liked(id, at, updated_at, deleted) values(?,?,?,?)
+            on conflict(id) do update set
+                updated_at=excluded.updated_at,
+                deleted=excluded.deleted
+            where excluded.updated_at > liked.updated_at
+            """.trimIndent()
+        ).use { ps ->
+            ps.setString(1, remote.trackId)
+            ps.setLong(2, remote.updatedAt)
+            ps.setLong(3, remote.updatedAt)
+            ps.setInt(4, if (remote.deleted) 1 else 0)
+            ps.executeUpdate()
+        }
+    }
+
+    /** Guarda o UUID que o servidor deu a um item local recém-enviado. */
+    @Synchronized
+    fun setRemoteItemId(playlistId: String, trackId: String, remoteItemId: String) {
+        conn.prepareStatement(
+            "update playlist_item set remote_item_id=? where playlist_id=? and id=?"
+        ).use { ps ->
+            ps.setString(1, remoteItemId)
+            ps.setString(2, playlistId)
+            ps.setString(3, trackId)
+            ps.executeUpdate()
+        }
+    }
 
     // ------------------------------------------------------------------ history
     @Synchronized
