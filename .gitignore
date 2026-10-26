@@ -12,7 +12,6 @@ search-raw.json
 *.jks
 *.keystore
 .github-token
-resources-dist/windows/mpv.exe
 .idea/
 *.iml
 out/
