@@ -265,12 +265,18 @@ O que **só funciona depois** das chaves/projeto:
 
 ## 6. Checklist mínimo para eu começar a integração
 
-- [x] Projeto Supabase criado.
+- [x] Projeto Supabase criado e SQL aplicado.
 - [x] `local.properties` com `openfy.supabase.url` e `openfy.supabase.anonKey`.
-- [ ] Login por e-mail habilitado (confirmação desligada para dev ou SMTP configurado).
-- [ ] Android Studio + SDK 36 + um aparelho/emulador.
+- [x] Login por e-mail habilitado (auto-confirm).
+- [x] Android Studio + SDK 36 + platform-tools + build-tools instalados.
+- [ ] Aparelho/emulador Android para testar.
+- [x] Repositório GitHub + GitHub Pages publicados.
+- [ ] Redirect URIs e test user no Spotify.
 - [ ] Senha da keystore escolhida (podemos gerar depois).
-- [ ] (Opcional) GitHub Pages + OAuth Spotify/Google.
 - [ ] (Opcional) Firebase/FCM.
 
-Quando os três primeiros itens estiverem prontos, já consigo rodar o sync real no desktop e preparar o Android em paralelo.
+O repositório está em `https://github.com/Leo-bsb/openfy` e o site em
+`https://leo-bsb.github.io/openfy/`. O SDK Android está em
+`C:\Users\leona\AppData\Local\Android\Sdk`.
+
+Quando o aparelho/emulador estiver pronto, consigo gerar o primeiro APK de teste.
