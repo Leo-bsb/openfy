@@ -1,5 +1,6 @@
 package com.openfy.android.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -46,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.openfy.android.R
 import com.openfy.android.data.PlaylistDto
 import com.openfy.android.ui.theme.OpenfyAccent
 import com.openfy.android.ui.theme.OpenfyAccent2
@@ -105,6 +108,11 @@ private fun LoginScreen(state: AuthUiState, viewModel: AuthViewModel) {
                 .padding(horizontal = 24.dp, vertical = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            Image(
+                painter = painterResource(R.drawable.openfy_logo),
+                contentDescription = "Openfy",
+                modifier = Modifier.size(96.dp),
+            )
             Text("openfy", color = OpenfyAccent, fontSize = 40.sp, fontWeight = FontWeight.Bold)
             Text(
                 "Sua música, no PC e no celular.",
