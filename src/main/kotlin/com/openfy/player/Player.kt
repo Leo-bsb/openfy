@@ -206,6 +206,11 @@ class Player(
         radioContinuation = continuation
         queue.value = tracks
         index.value = 0
+        if (shuffle.value) {
+            shuffleSnapshotQueue = tracks
+            shuffleSnapshotIndex = 0
+        }
+        if (djMode.value) djSnapshotQueue = tracks
         com.openfy.core.Log.write("player: radio iniciada com ${tracks.size} faixas")
         load(tracks[0])
     }
