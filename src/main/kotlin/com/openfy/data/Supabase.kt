@@ -71,6 +71,7 @@ data class RemotePlaylist(
     val name: String = "",
     @SerialName("updated_at") val updatedAt: String? = null,
     val deleted: Boolean = false,
+    @SerialName("share_code") val shareCode: String? = null,
 )
 
 @Serializable
@@ -141,6 +142,12 @@ private data class MemberRow(@SerialName("playlist_id") val playlistId: String)
 
 @Serializable
 private data class IdRow(val id: String)
+
+@Serializable
+private data class ShareCodeRow(@SerialName("share_code") val shareCode: String? = null)
+
+@Serializable
+private data class JoinBody(@SerialName("p_code") val code: String)
 
 class SupabaseApi {
 
@@ -259,12 +266,31 @@ class SupabaseApi {
         return decode(
             client.get("$baseUrl/rest/v1/playlists") {
                 auth(accessToken)
-                parameter("select", "id,name,updated_at,deleted")
+                parameter("select", "id,name,updated_at,deleted,share_code")
                 parameter("id", inClause(ids))
                 parameter("limit", "1000")
             },
         )
     }
+
+    suspend fun shareCode(accessToken: String, playlistId: String): String? =
+        decode<List<ShareCodeRow>>(
+            client.get("$baseUrl/rest/v1/playlists") {
+                auth(accessToken)
+                parameter("select", "share_code")
+                parameter("id", "eq.$playlistId")
+                parameter("limit", "1")
+            },
+        ).firstOrNull()?.shareCode?.takeIf { it.isNotBlank() }
+
+    suspend fun joinPlaylist(accessToken: String, code: String): String =
+        decode(
+            client.post("$baseUrl/rest/v1/rpc/join_playlist") {
+                auth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(JoinBody(code.trim()))
+            },
+        )
 
     suspend fun items(accessToken: String, playlistIds: Collection<String>): List<RemotePlaylistItem> {
         if (playlistIds.isEmpty()) return emptyList()

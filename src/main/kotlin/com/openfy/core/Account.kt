@@ -7,6 +7,8 @@ import com.openfy.data.SupabaseApi
 import com.openfy.data.SupabaseException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -62,8 +64,29 @@ class AccountManager(
     /** Chamado quando um sync termina; o AppController atualiza a biblioteca. */
     var onSynced: (() -> Unit)? = null
 
+    private var requestJob: Job? = null
+
     init {
         restore()
+        scope.launch {
+            while (true) {
+                delay(120_000)
+                if (_state.value.session != null && !_state.value.busy) {
+                    syncNow()
+                }
+            }
+        }
+    }
+
+    /** Agenda um sync curto depois de uma alteração local (debounce). */
+    fun requestSync() {
+        if (_state.value.session == null) return
+        requestJob?.cancel()
+        requestJob = scope.launch {
+            delay(2_500)
+            if (_state.value.busy) delay(3_000)
+            syncNow()
+        }
     }
 
     private fun loadSession(): StoredSession? =
@@ -260,6 +283,26 @@ class AccountManager(
             session?.let { api.logout(it.accessToken) }
             clearSession()
         }
+    }
+
+    /** Garante que a playlist está no servidor e devolve o código de convite. */
+    suspend fun shareCodeFor(playlistId: String): String? {
+        val session = ensureSession() ?: return null
+        var code = runCatching { api.shareCode(session.accessToken, playlistId) }.getOrNull()
+        if (code == null) {
+            runCatching { SyncEngine(db, api).sync(session) }
+            code = runCatching { api.shareCode(session.accessToken, playlistId) }.getOrNull()
+        }
+        return code
+    }
+
+    /** Entra numa playlist por código/link e sincroniza o resultado. */
+    suspend fun joinByCode(code: String): String? {
+        val session = ensureSession() ?: return null
+        val playlistId = api.joinPlaylist(session.accessToken, code)
+        runCatching { SyncEngine(db, api).sync(session) }
+        onSynced?.invoke()
+        return playlistId
     }
 
     fun clearFeedback() {

@@ -248,12 +248,12 @@ Android compartilham playlists, itens e curtidas via Supabase.
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.2.0.exe
-dist\Openfy-0.2.0.msi
-dist\Openfy-Android-0.2.0.apk
+dist\Openfy-0.2.1.exe
+dist\Openfy-0.2.1.msi
+dist\Openfy-Android-0.2.1.apk
 ```
 
-Release: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.0
+Release: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.1
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -273,8 +273,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.2.0.exe`
-- `build\compose\binaries\main\msi\Openfy-0.2.0.msi`
+- `build\compose\binaries\main\exe\Openfy-0.2.1.exe`
+- `build\compose\binaries\main\msi\Openfy-0.2.1.msi`
 
 Rodar em desenvolvimento:
 

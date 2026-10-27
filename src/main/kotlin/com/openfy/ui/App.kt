@@ -517,7 +517,9 @@ private fun PlaylistPromptDialog(c: AppController, prompt: PlaylistPrompt) {
 private fun ImportDialog(c: AppController) {
     val busy by c.importBusy.collectAsState()
     val status by c.importStatus.collectAsState()
+    val account by c.account.state.collectAsState()
     var url by remember { mutableStateOf("") }
+    var joinCode by remember { mutableStateOf("") }
 
     fun pickCsv() {
         val chooser = javax.swing.JFileChooser().apply {
@@ -571,7 +573,7 @@ private fun ImportDialog(c: AppController) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.UploadFile, null, tint = Tokens.accent, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("Importar / backup", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Text("Importar, backup e colaboração", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             }
         },
         text = {
@@ -608,6 +610,48 @@ private fun ImportDialog(c: AppController) {
                         Text("Importar", fontSize = 12.sp)
                     }
                 }
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Playlist colaborativa",
+                    color = Tokens.textHigh,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "Cole o código ou o link de convite (…/join.html?code=…) para entrar como editor.",
+                    color = Tokens.textLow,
+                    fontSize = 11.sp,
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = joinCode,
+                        onValueChange = { joinCode = it },
+                        singleLine = true,
+                        placeholder = {
+                            Text("Código ou link do convite", color = Tokens.textLow, fontSize = 12.sp)
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { c.joinSharedPlaylist(joinCode) },
+                        enabled = !busy && joinCode.isNotBlank() && account.session != null,
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text("Entrar", fontSize = 12.sp)
+                    }
+                }
+                if (account.session == null) {
+                    Text(
+                        "Entre na conta em Ajustes → Conta e sincronização para colaborar.",
+                        color = Tokens.textLow,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+
                 Spacer(Modifier.height(16.dp))
                 Text(
                     "Spotify (CSV do Exportify), backup ou playlist do Openfy",
@@ -2205,18 +2249,40 @@ private fun PlaylistScreen(c: AppController, id: String) {
                     }
                 }
                 Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(
-                        onClick = { meta?.let { sharePlaylist(c, id, it.name) } },
-                        enabled = meta != null && tracks.isNotEmpty(),
-                    ) {
-                        Icon(
-                            Icons.Filled.Share,
-                            null,
-                            modifier = Modifier.size(16.dp),
-                            tint = Tokens.textLow,
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("Compartilhar", color = Tokens.textLow)
+                    val shareMenu = remember { mutableStateOf(false) }
+                    Box {
+                        TextButton(
+                            onClick = { shareMenu.value = true },
+                            enabled = meta != null && tracks.isNotEmpty(),
+                        ) {
+                            Icon(
+                                Icons.Filled.Share,
+                                null,
+                                modifier = Modifier.size(16.dp),
+                                tint = Tokens.textLow,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("Compartilhar", color = Tokens.textLow)
+                        }
+                        DropdownMenu(
+                            expanded = shareMenu.value,
+                            onDismissRequest = { shareMenu.value = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Copiar convite colaborativo") },
+                                onClick = {
+                                    shareMenu.value = false
+                                    c.copyPlaylistInvite(id)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Salvar arquivo .openfyplaylist") },
+                                onClick = {
+                                    shareMenu.value = false
+                                    meta?.let { sharePlaylist(c, id, it.name) }
+                                },
+                            )
+                        }
                     }
                     val coverMenu = remember { mutableStateOf(false) }
                     Box {

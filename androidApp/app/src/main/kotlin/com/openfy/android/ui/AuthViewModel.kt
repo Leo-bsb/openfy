@@ -116,6 +116,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         restore()
         viewModelScope.launch {
             while (isActive) {
+                delay(500)
                 if (player.isPlaying) {
                     _state.update {
                         it.copy(
@@ -124,7 +125,15 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                 }
-                delay(500)
+            }
+        }
+        viewModelScope.launch {
+            while (isActive) {
+                delay(120_000)
+                val session = _state.value.session
+                if (session != null && !_state.value.busy) {
+                    loadHome(session)
+                }
             }
         }
     }

@@ -683,6 +683,7 @@ class AppController(
                 withContext(Dispatchers.IO) { db.addToPlaylist(playlist.id, pending) }
             }
             refreshLibrary()
+            account.requestSync()
             message.value = if (pending != null) {
                 "\"${pending.title}\" adicionada a \"$clean\"."
             } else {
@@ -733,6 +734,7 @@ class AppController(
         scope.launch {
             val added = withContext(Dispatchers.IO) { db.addToPlaylist(playlistId, track) }
             refreshLibrary()
+            account.requestSync()
             if (openPlaylist.value?.id == playlistId) loadPlaylist(playlistId)
             message.value = if (added) "Adicionada à playlist." else "Já estava nessa playlist."
         }
@@ -743,6 +745,7 @@ class AppController(
             withContext(Dispatchers.IO) { db.removeFromPlaylist(playlistId, trackId) }
             loadPlaylist(playlistId)
             refreshLibrary()
+            account.requestSync()
         }
     }
 
@@ -755,6 +758,7 @@ class AppController(
                 replace(Screen.Home)
             }
             refreshLibrary()
+            account.requestSync()
         }
     }
 
@@ -764,6 +768,7 @@ class AppController(
             withContext(Dispatchers.IO) { db.renamePlaylist(id, name.trim()) }
             loadPlaylist(id)
             refreshLibrary()
+            account.requestSync()
         }
     }
 
@@ -783,6 +788,7 @@ class AppController(
             if (ok) {
                 loadPlaylist(id)
                 refreshLibrary()
+                account.requestSync()
                 message.value = "Capa atualizada."
             } else {
                 message.value = "Não foi possível usar essa imagem."
@@ -795,6 +801,7 @@ class AppController(
             withContext(Dispatchers.IO) { db.setPlaylistCover(id, "") }
             loadPlaylist(id)
             refreshLibrary()
+            account.requestSync()
         }
     }
 
@@ -802,6 +809,7 @@ class AppController(
         scope.launch {
             val nowLiked = player.toggleLike(track)
             refreshLibrary()
+            account.requestSync()
             message.value = if (nowLiked) "Curtida." else "Removida das curtidas."
         }
     }
@@ -994,6 +1002,55 @@ class AppController(
 
     fun closeImport() {
         importDialogOpen.value = false
+    }
+
+    /** Entra numa playlist colaborativa por código/link de convite. */
+    fun joinSharedPlaylist(code: String) {
+        val raw = code.trim()
+        val clean = if (raw.contains("code=")) {
+            raw.substringAfter("code=").substringBefore("&").trim()
+        } else {
+            raw
+        }
+        if (clean.isBlank()) return
+        scope.launch {
+            if (account.state.value.session == null) {
+                message.value = "Entre na conta para entrar numa playlist compartilhada."
+                return@launch
+            }
+            val id = runCatching { account.joinByCode(clean) }.getOrNull()
+            if (id == null) {
+                message.value = "Código inválido ou sessão expirada."
+                return@launch
+            }
+            closeImport()
+            refreshLibrary()
+            message.value = "Você entrou na playlist colaborativa."
+            go(Screen.PlaylistView(id))
+        }
+    }
+
+    /** Gera e copia o link de convite (GitHub Pages + código). */
+    fun copyPlaylistInvite(playlistId: String) {
+        scope.launch {
+            if (account.state.value.session == null) {
+                message.value = "Entre na conta para gerar um convite."
+                return@launch
+            }
+            val code = runCatching { account.shareCodeFor(playlistId) }.getOrNull()
+            if (code == null) {
+                message.value = "Não foi possível gerar o convite."
+                return@launch
+            }
+            val link = "https://leo-bsb.github.io/openfy/join.html?code=$code"
+            runCatching {
+                java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(
+                    java.awt.datatransfer.StringSelection(link),
+                    null,
+                )
+            }
+            message.value = "Convite copiado: $link"
+        }
     }
 
     fun importYtmUrl(url: String) {
@@ -1275,6 +1332,7 @@ class AppController(
             val id = withContext(Dispatchers.IO) { db.createPlaylist(clean).id }
             withContext(Dispatchers.IO) { tracks.forEach { db.addToPlaylist(id, it) } }
             refreshLibrary()
+            account.requestSync()
             message.value = "Fila salva como \"$clean\"."
         }
     }
