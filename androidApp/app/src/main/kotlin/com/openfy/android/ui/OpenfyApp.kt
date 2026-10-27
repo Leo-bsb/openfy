@@ -24,11 +24,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -114,13 +124,13 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                         NavigationBarItem(
                             selected = tab == 0,
                             onClick = { tab = 0 },
-                            icon = { Text("⌂", fontSize = 20.sp) },
+                            icon = { Icon(Icons.Filled.Home, null, modifier = Modifier.size(22.dp)) },
                             label = { Text("Início") },
                         )
                         NavigationBarItem(
                             selected = tab == 1,
                             onClick = { tab = 1 },
-                            icon = { Text("⌕", fontSize = 20.sp) },
+                            icon = { Icon(Icons.Filled.Search, null, modifier = Modifier.size(22.dp)) },
                             label = { Text("Buscar") },
                         )
                     }
@@ -312,7 +322,12 @@ private fun PlaylistCard(playlist: PlaylistDto, onClick: () -> Unit) {
                 )
                 Text("Toque para tocar", color = OpenfyTextLow, fontSize = 11.sp)
             }
-            Text("▶", color = OpenfyAccent, fontSize = 16.sp)
+            Icon(
+                Icons.Filled.PlayArrow,
+                null,
+                tint = OpenfyAccent,
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 }
@@ -336,7 +351,7 @@ private fun SearchScreen(state: AuthUiState, viewModel: AuthViewModel, modifier:
             },
             label = { Text("Música, artista…") },
             singleLine = true,
-            leadingIcon = { Text("⌕", color = OpenfyTextLow, fontSize = 18.sp) },
+            leadingIcon = { Icon(Icons.Filled.Search, null, tint = OpenfyTextLow, modifier = Modifier.size(18.dp)) },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { viewModel.search(query) }),
             modifier = Modifier.fillMaxWidth(),
@@ -441,11 +456,21 @@ private fun MiniPlayer(state: AuthUiState, viewModel: AuthViewModel, onOpen: () 
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            TextButton(onClick = { viewModel.togglePlay() }, enabled = !state.busy) {
-                Text(if (state.playing) "⏸" else "▶", color = OpenfyAccent, fontSize = 22.sp)
+            IconButton(onClick = { viewModel.togglePlay() }, enabled = !state.busy) {
+                Icon(
+                    if (state.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    if (state.playing) "Pausar" else "Tocar",
+                    tint = OpenfyAccent,
+                    modifier = Modifier.size(24.dp),
+                )
             }
-            TextButton(onClick = { viewModel.next() }, enabled = state.hasNext || state.playing) {
-                Text("⏭", color = OpenfyTextLow, fontSize = 18.sp)
+            IconButton(onClick = { viewModel.next() }, enabled = state.hasNext || state.playing) {
+                Icon(
+                    Icons.Filled.SkipNext,
+                    "Próxima",
+                    tint = OpenfyTextLow,
+                    modifier = Modifier.size(20.dp),
+                )
             }
         }
     }
@@ -473,8 +498,13 @@ private fun PlayerOverlay(state: AuthUiState, viewModel: AuthViewModel, onClose:
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onClose) {
-                    Text("⌄", color = OpenfyTextHigh, fontSize = 30.sp)
+                IconButton(onClick = onClose) {
+                    Icon(
+                        Icons.Filled.KeyboardArrowDown,
+                        "Fechar player",
+                        tint = OpenfyTextHigh,
+                        modifier = Modifier.size(30.dp),
+                    )
                 }
                 Spacer(Modifier.weight(1f))
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -530,8 +560,13 @@ private fun PlayerOverlay(state: AuthUiState, viewModel: AuthViewModel, onClose:
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = { viewModel.previous() }) {
-                    Text("⏮", color = OpenfyTextHigh, fontSize = 28.sp)
+                IconButton(onClick = { viewModel.previous() }) {
+                    Icon(
+                        Icons.Filled.SkipPrevious,
+                        "Anterior",
+                        tint = OpenfyTextHigh,
+                        modifier = Modifier.size(32.dp),
+                    )
                 }
                 Spacer(Modifier.width(22.dp))
                 Box(
@@ -542,12 +577,22 @@ private fun PlayerOverlay(state: AuthUiState, viewModel: AuthViewModel, onClose:
                     if (state.busy) {
                         CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = OpenfyInk)
                     } else {
-                        Text(if (state.playing) "⏸" else "▶", color = OpenfyInk, fontSize = 32.sp)
+                        Icon(
+                            if (state.playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                            if (state.playing) "Pausar" else "Tocar",
+                            tint = OpenfyInk,
+                            modifier = Modifier.size(36.dp),
+                        )
                     }
                 }
                 Spacer(Modifier.width(22.dp))
-                TextButton(onClick = { viewModel.next() }) {
-                    Text("⏭", color = OpenfyTextHigh, fontSize = 28.sp)
+                IconButton(onClick = { viewModel.next() }) {
+                    Icon(
+                        Icons.Filled.SkipNext,
+                        "Próxima",
+                        tint = OpenfyTextHigh,
+                        modifier = Modifier.size(32.dp),
+                    )
                 }
             }
             Spacer(Modifier.height(12.dp))
