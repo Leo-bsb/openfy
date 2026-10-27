@@ -52,6 +52,8 @@ class Player(
     val transitionStyle = MutableStateFlow(TRANSITION_CROSSFADE)
     val djMode = MutableStateFlow(false)
     val crossfading = MutableStateFlow(false)
+    /** Mensagem curta do modo DJ (reordenado, BPM insuficiente, etc.). */
+    val djStatus = MutableStateFlow<String?>(null)
 
     /** Fornecido pelo AppController: busca mais faixas da radio a partir do token. */
     var radioSource: (suspend (String) -> RadioPage?)? = null
@@ -67,6 +69,9 @@ class Player(
     private var pendingPause = false
     private var lastPositionSave = 0L
     private val shuffleRecent = ArrayDeque<String>()
+    private var shuffleSnapshotQueue: List<Track>? = null
+    private var shuffleSnapshotIndex = -1
+    private var djSnapshotQueue: List<Track>? = null
     private var djJob: Job? = null
 
     // crossfade
@@ -260,6 +265,17 @@ class Player(
 
     fun playSingle(track: Track) = playNow(listOf(track), 0)
 
+    /** Toca uma lista embaralhada e guarda a ordem original para o modo shuffle. */
+    fun playShuffled(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        if (djMode.value) setDjMode(false)
+        shuffleSnapshotQueue = tracks
+        shuffleSnapshotIndex = 0
+        shuffle.value = true
+        playNow(tracks.shuffled(), 0)
+        save()
+    }
+
     fun addNext(track: Track) {
         cancelPrep()
         val q = queue.value.toMutableList()
@@ -283,16 +299,6 @@ class Player(
         cancelCrossfade()
         val q = queue.value
         if (q.isEmpty()) return
-        if (shuffle.value && q.size > 1) {
-            // Aleatorio inteligente: evita as ultimas tocadas e da peso a curtidas.
-            val candidate = pickShuffleIndex(q, index.value)
-            shuffleRecent.addLast(q[candidate].id)
-            while (shuffleRecent.size > minOf(q.size - 1, 40)) shuffleRecent.removeFirst()
-            index.value = candidate
-            load(q[candidate])
-            save()
-            return
-        }
         val nextIndex = index.value + 1
         if (nextIndex > q.lastIndex) {
             if (radioActive.value && repeat.value == RepeatMode.OFF) {
@@ -368,9 +374,41 @@ class Player(
     }
 
     fun toggleShuffle() {
-        shuffle.value = !shuffle.value
-        cancelPrep()
+        val enable = !shuffle.value
+        if (enable && djMode.value) setDjMode(false)
+        if (enable) {
+            shuffleSnapshotQueue = queue.value
+            shuffleSnapshotIndex = index.value
+            shuffle.value = true
+            val q = queue.value
+            val cur = q.getOrNull(index.value)
+            if (cur != null) {
+                val rest = q.filterIndexed { i, _ -> i != index.value }.shuffled()
+                queue.value = listOf(cur) + rest
+                index.value = 0
+            }
+        } else {
+            shuffle.value = false
+            restoreShuffleSnapshot()
+        }
+        cancelCrossfade()
         save()
+    }
+
+    private fun restoreShuffleSnapshot() {
+        val snapshot = shuffleSnapshotQueue ?: return
+        val currentTrack = current.value
+        val extras = queue.value.filter { track -> snapshot.none { it.id == track.id } }
+        val restored = snapshot + extras
+        if (restored.isNotEmpty()) {
+            val at = currentTrack?.let { track ->
+                restored.indexOfFirst { it.id == track.id }
+            } ?: -1
+            queue.value = restored
+            index.value = if (at >= 0) at else index.value.coerceIn(0, restored.lastIndex)
+        }
+        shuffleSnapshotQueue = null
+        shuffleSnapshotIndex = -1
     }
 
     fun cycleRepeat() {
@@ -739,7 +777,15 @@ class Player(
         val total = duration.value
         if (total <= 0) return
         val remaining = total - position
-        val next = crossfadeNext() ?: run {
+        // Fixa a proxima escolhida no preparo. Sem isso, shuffle/DJ poderiam
+        // trocar o candidato a cada evento de tempo e reiniciar o crossfade.
+        val prepared = crossfadePreparedTrack
+        val next = if (prepared != null) {
+            val preparedIndex = queue.value.indexOfFirst { it.id == prepared.id }
+            if (preparedIndex >= 0) preparedIndex to prepared else null
+        } else {
+            crossfadeNext()
+        } ?: run {
             cancelPrep()
             return
         }
@@ -762,10 +808,6 @@ class Player(
         if (repeat.value == RepeatMode.ONE) return null
         val cur = index.value
         if (cur < 0) return null
-        if (shuffle.value) {
-            val candidate = pickShuffleIndex(q, cur)
-            return candidate to q[candidate]
-        }
         val next = cur + 1
         if (next <= q.lastIndex) return next to q[next]
         if (repeat.value == RepeatMode.ALL) return 0 to q[0]
@@ -883,9 +925,37 @@ class Player(
     fun toggleDj() = setDjMode(!djMode.value)
 
     fun setDjMode(enabled: Boolean) {
+        if (enabled && shuffle.value) {
+            // DJ precisa da ordem real para reordenar; sair do shuffle primeiro.
+            toggleShuffle()
+        }
         djMode.value = enabled
         scope.launch(Dispatchers.IO) { db.put("playback.dj", enabled.toString()) }
-        if (enabled) applyDjLater()
+        if (enabled) {
+            djSnapshotQueue = queue.value
+            djStatus.value = "Modo DJ: analisando BPM das próximas faixas…"
+            applyDjLater()
+        } else {
+            djJob?.cancel()
+            restoreDjSnapshot()
+            djStatus.value = "Modo DJ desligado."
+        }
+        save()
+    }
+
+    private fun restoreDjSnapshot() {
+        val snapshot = djSnapshotQueue ?: return
+        val currentTrack = current.value
+        val extras = queue.value.filter { track -> snapshot.none { it.id == track.id } }
+        val restored = snapshot + extras
+        if (restored.isNotEmpty()) {
+            val at = currentTrack?.let { track ->
+                restored.indexOfFirst { it.id == track.id }
+            } ?: -1
+            queue.value = restored
+            index.value = if (at >= 0) at else index.value.coerceIn(0, restored.lastIndex)
+        }
+        djSnapshotQueue = null
     }
 
     private fun applyDjLater() {
@@ -896,14 +966,23 @@ class Player(
             if (!djMode.value || shuffle.value) return@launch
             val snapshot = queue.value
             val currentIndex = index.value
-            if (currentIndex < 0 || currentIndex >= snapshot.lastIndex) return@launch
+            if (currentIndex < 0 || currentIndex >= snapshot.lastIndex) {
+                djStatus.value = "Modo DJ: sem faixas suficientes depois da atual."
+                return@launch
+            }
             val window = snapshot.subList(
                 currentIndex + 1,
                 minOf(snapshot.size, currentIndex + 12),
             )
-            if (window.size < 3) return@launch
+            if (window.size < 3) {
+                djStatus.value = "Modo DJ: são necessárias pelo menos 3 faixas na frente."
+                return@launch
+            }
             val referenceBpm = withContext(Dispatchers.IO) { bpmFor(snapshot[currentIndex]) }
-                ?: return@launch
+                ?: run {
+                    djStatus.value = "Modo DJ: BPM da faixa atual indisponível."
+                    return@launch
+                }
             val scored = withContext(Dispatchers.IO) {
                 window.map { track ->
                     val bpm = bpmFor(track)
@@ -913,6 +992,7 @@ class Player(
             val known = scored.count { it.second != Double.MAX_VALUE }
             if (known < 3) {
                 com.openfy.core.Log.write("dj: BPM insuficiente (${known}/${scored.size})")
+                djStatus.value = "Modo DJ: BPM insuficiente; ordem mantida."
                 return@launch
             }
             if (!djMode.value || index.value != currentIndex || queue.value.size != snapshot.size) {
@@ -924,6 +1004,7 @@ class Player(
             sorted.forEachIndexed { offset, track -> newQueue[currentIndex + 1 + offset] = track }
             queue.value = newQueue
             save()
+            djStatus.value = "Modo DJ: próximas ${sorted.size} faixas reordenadas por BPM."
             com.openfy.core.Log.write(
                 "dj: fila reordenada por BPM (ref=${referenceBpm.roundToInt()}, conhecidos=$known)"
             )

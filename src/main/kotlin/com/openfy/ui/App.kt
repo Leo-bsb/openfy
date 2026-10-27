@@ -83,6 +83,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
@@ -277,6 +278,7 @@ private fun ToggleIconButton(
     iconSize: Dp = 16.dp,
     enabled: Boolean = true,
     tooltip: String = label,
+    activeColor: Color = Tokens.active,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
@@ -285,11 +287,7 @@ private fun ToggleIconButton(
             Modifier.size(size)
                 .clip(CircleShape)
                 .background(
-                    when {
-                        active -> Tokens.accent
-                        hovered && enabled -> Tokens.panelHigh
-                        else -> Color.Transparent
-                    }
+                    if (hovered && enabled) Tokens.panelHigh else Color.Transparent
                 )
                 .hoverable(interaction)
                 .clickable(enabled = enabled, onClick = onClick),
@@ -300,7 +298,7 @@ private fun ToggleIconButton(
                 label,
                 tint = when {
                     !enabled -> Tokens.textLow.copy(alpha = 0.35f)
-                    active -> Tokens.ink
+                    active -> activeColor
                     else -> Tokens.textLow
                 },
                 modifier = Modifier.size(iconSize),
@@ -2839,9 +2837,31 @@ private fun TrackRow(
                 modifier = Modifier.size(16.dp),
             )
         }
+        Tip("Tocar em seguida") {
+            IconButton(onClick = onPlayNext, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.AutoMirrored.Filled.PlaylistPlay,
+                    "Tocar em seguida",
+                    tint = Tokens.textLow,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
+        Tip("Adicionar à fila") {
+            IconButton(onClick = onQueue, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.AutoMirrored.Filled.QueueMusic,
+                    "Adicionar à fila",
+                    tint = Tokens.textLow,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
         Box {
-            IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Filled.Add, "Adicionar", tint = Tokens.textLow, modifier = Modifier.size(16.dp))
+            Tip("Mais ações: playlist, rádio, download…") {
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Filled.MoreVert, "Mais ações", tint = Tokens.textLow, modifier = Modifier.size(16.dp))
+                }
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 DropdownMenuItem(text = { Text("Tocar em seguida") }, onClick = {
@@ -3140,6 +3160,7 @@ private fun NowPlayingBar(c: AppController, queueOpen: Boolean, onQueue: () -> U
                     size = 32.dp,
                     iconSize = 16.dp,
                     tooltip = if (current.id in likedIds) "Remover curtida" else "Curtir",
+                    activeColor = Tokens.accent,
                 )
                 AddToPlaylistButton(c, current)
                 DownloadButton(c, current)
@@ -3560,6 +3581,7 @@ private fun NowPlayingScreen(c: AppController) {
                         size = 38.dp,
                         iconSize = 22.dp,
                         tooltip = if (liked) "Remover curtida" else "Curtir",
+                        activeColor = Tokens.accent,
                     )
                     AddToPlaylistButton(c, current, size = 38.dp, iconSize = 22.dp)
                     DownloadButton(c, current, size = 38.dp, iconSize = 22.dp)

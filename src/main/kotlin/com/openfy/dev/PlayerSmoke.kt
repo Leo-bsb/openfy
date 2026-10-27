@@ -93,6 +93,7 @@ fun main(): Unit = runBlocking {
     player.setVolume(0)
     player.setCrossfade(4)
     player.setTransitionStyle(Player.TRANSITION_BLEND)
+    player.shuffle.value = true
     val fadeA = Track("lYBUbBu4W08", "Never Gonna Give You Up", "Rick Astley")
     val fadeB = Track("rA8xvaObO3c", "COPYCAT", "Billie Eilish")
     player.playNow(listOf(fadeA, fadeB), 0)
@@ -110,6 +111,28 @@ fun main(): Unit = runBlocking {
     )
     player.setCrossfade(0)
     player.setTransitionStyle(Player.TRANSITION_CROSSFADE)
+    player.shuffle.value = false
+
+    // Shuffle deve reordenar a fila visivel e restaurar a ordem ao desligar.
+    val shuffleTracks = listOf(
+        Track("s1", "A", "teste"),
+        Track("s2", "B", "teste"),
+        Track("s3", "C", "teste"),
+        Track("s4", "D", "teste"),
+    )
+    player.queue.value = shuffleTracks
+    player.index.value = 0
+    player.current.value = shuffleTracks[0]
+    player.shuffle.value = false
+    player.toggleShuffle()
+    val shuffledOk = player.shuffle.value &&
+        player.queue.value.size == 4 &&
+        player.queue.value.first().id == "s1" &&
+        player.queue.value.map { it.id }.toSet() == shuffleTracks.map { it.id }.toSet()
+    player.toggleShuffle()
+    val restoredOk = !player.shuffle.value &&
+        player.queue.value.map { it.id } == shuffleTracks.map { it.id }
+    println("shuffle=$shuffledOk restaurado=$restoredOk")
 
     player.playSingle(Track("aaaaaaaaaaa", "Faixa invalida", "teste"))
     val failure = withTimeoutOrNull(15_000) { player.error.first { it != null } }
@@ -118,7 +141,7 @@ fun main(): Unit = runBlocking {
     val autoplayOk = (radioAfterTrack?.size ?: 0) > 1 && (radioAtEnd?.size ?: 0) > 1
     val downloadOk = dlSize > 1_000_000
     val ok = position > 2.0 && seeked != null && second > 1.5 && failure != null &&
-        autoplayOk && downloadOk && crossfadeOk
+        autoplayOk && downloadOk && crossfadeOk && shuffledOk && restoredOk
     println("autoplay=$autoplayOk download=$downloadOk crossfade=$crossfadeOk")
     runCatching { dlDir.toFile().deleteRecursively() }
     player.shutdown()

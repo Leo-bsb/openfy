@@ -15,6 +15,8 @@ private val TextHigh = Color(0xFFF1F7F4)
 private val TextLow = Color(0xFF8CA6A0)
 private val Accent = Color(0xFF2FBFA0)
 private val Accent2 = Color(0xFF19D3E6)
+/** Azul de estado ativo (diferencia de cor sem depender de preenchimento). */
+private val ActiveBlue = Color(0xFF4D9BFF)
 
 val OpenfyColors = darkColorScheme(
     primary = Accent,
@@ -39,6 +41,7 @@ object Tokens {
     val textLow = TextLow
     val accent = Accent
     val accent2 = Accent2
+    val active = ActiveBlue
 
     /** Gradiente da marca (verde-água -> ciano). */
     val brandGradient: Brush = Brush.linearGradient(listOf(Accent, Accent2))

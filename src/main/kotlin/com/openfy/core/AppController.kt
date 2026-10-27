@@ -172,6 +172,11 @@ class AppController(
                 if (text != null) message.value = text
             }
         }
+        scope.launch {
+            player.djStatus.collect { text ->
+                if (text != null) message.value = text
+            }
+        }
         scope.launch { yt.prewarm() }
         scope.launch { refreshRecentSearches() }
         scope.launch { refreshDownloads() }
@@ -827,8 +832,7 @@ class AppController(
     /** Toca a lista embaralhada imediatamente (botoes "Aleatorio" dos cabecalhos). */
     fun playShuffled(tracks: List<Track>) {
         if (tracks.isEmpty()) return
-        player.shuffle.value = true
-        player.playNow(tracks.shuffled(), 0)
+        player.playShuffled(tracks)
         scope.launch(Dispatchers.IO) { tracks.forEach { db.remember(it) } }
         message.value = "Aleatório: ${tracks.size} faixas."
     }
