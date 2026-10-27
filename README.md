@@ -188,24 +188,23 @@ laços com cabeça de cobra, usada na sidebar, na bandeja e como ícone da janel
 - **Compartilhar playlist**: no cabeçalho da playlist, "Compartilhar" gera um
   arquivo `.openfyplaylist` para enviar a outra pessoa. No importador, "Playlist
   Openfy" abre esse arquivo e recria a playlist com os mesmos videoIds.
-  Playlist colaborativa em tempo real depende do backend (Supabase), ainda pendente.
+  Com conta, o mesmo diálogo também gera um código/link para convidar outras
+  pessoas a editar a playlist (backend Supabase ja aplicado).
 - **Letras**: botão de letras na tela do player; busca no LRCLIB, prioriza LRC
   sincronizado e destaca a linha atual. Sufixos como "(Official Video)" são limpos.
 - **Timer**: 15/30/45/60 min na tela do player; pausa ao terminar.
 - **Estatísticas**: execuções, horas ouvidas e artista top no Início.
 - **Shuffle inteligente**: evita repetir as últimas tocadas e dá peso a curtidas.
 
-OAuth de conta (Spotify/Google) e sincronização via Supabase ficam para o
-próximo pacote: exigem um app/credenciais externas e um backend configurado.
+A conta própria e o sync via Supabase já estão ativos. OAuth Spotify/Google
+para importar a conta ainda não; use o CSV do Exportify.
 
 ## Ajustes, transição e DJ
 
 - **Ajustes** (engrenagem no topo): qualidade Alta/Econômica, transição entre
   faixas, modo DJ, equalizador, download automático, fechar para a bandeja,
   backup, cache e pasta de dados.
-- **Capas de playlist**: no cabeçalho da playlist, "Capa" → escolher imagem
-  (copiada para `%LOCALAPPDATA%\OpenfyData\covers\`) ou remover. Sem capa própria,
-  usa a arte da primeira faixa.
+- **Capas de playlist**: no cabeçalho da playlist, "Capa" > escolher imagem. A imagem é copiada para `%LOCALAPPDATA%\OpenfyData\covers\`, sobe para o Storage da conta e aparece no celular; sem capa própria, usa a arte da primeira faixa.
 - **Transição**: crossfade real de 0–12 s com dois players mpv e curva
   equal-power: no meio da transição as duas faixas ficam audíveis, sem o "buraco"
   do fade linear. O estilo **DJ blend** vai além e corta os graves da faixa que
@@ -221,9 +220,7 @@ próximo pacote: exigem um app/credenciais externas e um backend configurado.
   hora; a seta de aleatório da barra liga o modo e, se nada estiver tocando,
   começa o contexto aberto (playlist, álbum, artista, curtidas ou busca).
 - **Qualidade**: Alta usa o teto do extrator; Econômica reduz o consumo.
-- **Sync**: o schema já tem `updated_at` e soft delete (tombstones) em curtidas,
-  playlists e itens; falta apenas o backend Supabase. A mesma base servirá para
-  playlists compartilhadas/colaborativas com convite e sincronização em tempo real.
+- **Sync**: conta própria + Supabase ativos para playlists, itens, curtidas e eventos. O merge é LWW por `updated_at`; outbox + `server_rev` e realtime são os próximos passos.
 - **Confiabilidade**: instância única (a segunda abertura foca a janela atual),
   log rotativo, crash handler registrando stack traces e backup consistente do
   banco a cada encerramento.
@@ -231,15 +228,18 @@ próximo pacote: exigem um app/credenciais externas e um backend configurado.
 ## Conta e sync com o celular
 
 O sync é opcional: sem login, o Openfy continua local. Com conta, o PC e o
-Android compartilham playlists, itens e curtidas via Supabase.
+Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase.
 
-- No PC: **Ajustes → Conta e sincronização** → entrar/criar conta e
+- No PC: **Ajustes > Conta e sincronização** > entrar/criar conta e
   **Sincronizar agora**.
-- No Android: login, playlists, busca e player Media3. Criar uma playlist no
-  celular e sincronizar no PC traz a playlist para a sidebar; criar no PC e
-  sincronizar no celular traz para o app.
+- No Android: login, playlists, busca, curtidas, fila, ajustes de crossfade e
+  player Media3. Criar uma playlist no celular e sincronizar no PC traz a
+  playlist para a sidebar; criar no PC e sincronizar no celular traz para o app.
+- Capas de playlist personalizadas no PC sobem para o Storage público e
+  aparecem no Android; o PC mantém a cópia local para uso offline.
+- Eventos de escuta do PC e do Android alimentam o recap mensal da conta.
 - O app Android ainda não tem reprodução em background/notificação, downloads
-  ou crossfade/EQ. Essas peças entram nas próximas etapas.
+  ou equalizador. Essas peças entram nas próximas etapas.
 - Nesta versão o merge é LWW por `updated_at`. O próximo passo é trocar por
   outbox + `server_rev` para conflitos offline mais seguros.
 
@@ -248,14 +248,14 @@ Android compartilham playlists, itens e curtidas via Supabase.
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.2.2.exe
-dist\Openfy-0.2.2.msi
-dist\Openfy-Android-0.2.4.apk
+dist\Openfy-0.2.3.exe
+dist\Openfy-0.2.3.msi
+dist\Openfy-Android-0.2.5.apk
 ```
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.2.2: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.2  
-Android 0.2.4: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.4-android
+Desktop 0.2.3: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.3  
+Android 0.2.5: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.5-android
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -275,8 +275,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.2.2.exe`
-- `build\compose\binaries\main\msi\Openfy-0.2.2.msi`
+- `build\compose\binaries\main\exe\Openfy-0.2.3.exe`
+- `build\compose\binaries\main\msi\Openfy-0.2.3.msi`
 
 Rodar em desenvolvimento:
 

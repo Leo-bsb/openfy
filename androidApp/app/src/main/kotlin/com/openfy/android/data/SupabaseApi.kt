@@ -8,6 +8,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
+import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -20,7 +21,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import java.time.Instant
 
-class SupabaseException(message: String) : Exception(message)
+class SupabaseException(message: String, val status: Int = 0) : Exception(message)
 
 class SupabaseApi {
 
@@ -59,7 +60,7 @@ class SupabaseApi {
             ?: parsed?.error
             ?: text.takeIf { it.isNotBlank() }
             ?: "Erro ${response.status.value}"
-        throw SupabaseException(message)
+        throw SupabaseException(message, response.status.value)
     }
 
     private suspend inline fun <reified T> decoded(response: HttpResponse): T {
@@ -194,6 +195,77 @@ class SupabaseApi {
             header("Prefer", "return=minimal")
             contentType(ContentType.Application.Json)
             setBody(event)
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
+    suspend fun likes(accessToken: String): Set<String> {
+        val response = client.get("$baseUrl/rest/v1/likes") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "track_id")
+            parameter("deleted", "eq.false")
+            parameter("limit", "5000")
+        }
+        return decoded<List<LikeRow>>(response).mapTo(HashSet()) { it.trackId }
+    }
+
+    suspend fun setLike(
+        accessToken: String,
+        userId: String,
+        track: com.openfy.core.Track,
+        liked: Boolean,
+    ) {
+        pushTrack(accessToken, track)
+        val response = client.post("$baseUrl/rest/v1/likes") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "resolution=merge-duplicates,return=minimal")
+            parameter("on_conflict", "user_id,track_id")
+            contentType(ContentType.Application.Json)
+            setBody(LikeUpsert(userId, track.id, deleted = !liked))
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
+    suspend fun addPlaylistItem(
+        accessToken: String,
+        playlistId: String,
+        track: com.openfy.core.Track,
+    ): String {
+        pushTrack(accessToken, track)
+        val itemId = java.util.UUID.nameUUIDFromBytes(
+            "openfy:$playlistId:${track.id}".toByteArray(Charsets.UTF_8),
+        ).toString()
+        val rank = "z${System.currentTimeMillis()}"
+        val response = client.post("$baseUrl/rest/v1/playlist_items") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "resolution=merge-duplicates,return=minimal")
+            parameter("on_conflict", "id")
+            contentType(ContentType.Application.Json)
+            setBody(
+                PushPlaylistItem(
+                    id = itemId,
+                    playlistId = playlistId,
+                    trackId = track.id,
+                    rank = rank,
+                    deleted = false,
+                ),
+            )
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+        return itemId
+    }
+
+    suspend fun removePlaylistItem(accessToken: String, itemId: String) {
+        val response = client.patch("$baseUrl/rest/v1/playlist_items") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=minimal")
+            parameter("id", "eq.$itemId")
+            contentType(ContentType.Application.Json)
+            setBody(DeletedPatch())
         }
         if (!response.status.isSuccess()) decodeError(response)
     }

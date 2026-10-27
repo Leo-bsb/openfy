@@ -777,33 +777,44 @@ class AppController(
         }
     }
 
-    /** Copia a imagem escolhida para a pasta local e usa como capa. */
+    /** Copia a imagem escolhida, usa localmente e sobe para o Storage quando há conta. */
     fun setPlaylistCover(id: String, source: File) {
         scope.launch {
-            val ok = withContext(Dispatchers.IO) {
+            val target = withContext(Dispatchers.IO) {
                 runCatching {
                     val dir = com.openfy.core.AppPaths.home.resolve("covers")
                     Files.createDirectories(dir)
                     val ext = source.extension.ifBlank { "img" }
-                    val target = dir.resolve("$id.$ext")
-                    Files.copy(source.toPath(), target, StandardCopyOption.REPLACE_EXISTING)
-                    db.setPlaylistCover(id, target.toString())
-                }.isSuccess
+                    dir.resolve("$id.$ext").toFile().also { file ->
+                        Files.copy(source.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                    }
+                }.getOrNull()
             }
-            if (ok) {
+            if (target == null) {
+                message.value = "Não foi possível usar essa imagem."
+                return@launch
+            }
+            withContext(Dispatchers.IO) { db.setPlaylistCover(id, target.toString()) }
+            loadPlaylist(id)
+            refreshLibrary()
+            message.value = "Capa atualizada."
+            val url = runCatching { account.uploadCover(id, target) }.getOrNull()
+            if (url != null) {
+                withContext(Dispatchers.IO) { db.setPlaylistCoverUrl(id, url) }
                 loadPlaylist(id)
                 refreshLibrary()
                 account.requestSync()
-                message.value = "Capa atualizada."
-            } else {
-                message.value = "Não foi possível usar essa imagem."
+                message.value = "Capa atualizada e enviada para a conta."
             }
         }
     }
 
     fun clearPlaylistCover(id: String) {
         scope.launch {
-            withContext(Dispatchers.IO) { db.setPlaylistCover(id, "") }
+            withContext(Dispatchers.IO) {
+                db.setPlaylistCover(id, "")
+                db.setPlaylistCoverUrl(id, "")
+            }
             loadPlaylist(id)
             refreshLibrary()
             account.requestSync()

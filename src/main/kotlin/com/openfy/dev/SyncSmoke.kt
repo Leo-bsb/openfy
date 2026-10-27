@@ -42,12 +42,26 @@ fun main() {
                 val track = Track("rA8xvaObO3c", "COPYCAT", "Billie Eilish", durationSec = 197)
                 db.addToPlaylist(local.id, track)
                 db.like(track.id)
+                val coverUrl = api.uploadCover(
+                    auth.accessToken,
+                    userId,
+                    local.id,
+                    java.io.File("src/main/resources/logo.png"),
+                )
+                check(coverUrl.startsWith("https://"), "capa do PC subiu para o Storage")
+                db.setPlaylistCoverUrl(local.id, coverUrl)
+                db.recordPlay(track.id)
 
                 val result = SyncEngine(db, api).sync(session)
                 println(result.summary())
+                check(result.pushedEvents >= 1, "evento de escuta do PC subiu para o recap")
 
                 val remotePlaylist = api.playlists(auth.accessToken, listOf(local.id)).firstOrNull()
                 check(remotePlaylist?.name == "Smoke PC", "playlist do PC subiu para o servidor")
+                check(
+                    remotePlaylist?.coverUrl == coverUrl,
+                    "capa do PC subiu junto com a playlist",
+                )
 
                 val remoteItems = api.items(auth.accessToken, listOf(local.id))
                 check(remoteItems.any { it.trackId == track.id && !it.deleted }, "item do PC subiu")

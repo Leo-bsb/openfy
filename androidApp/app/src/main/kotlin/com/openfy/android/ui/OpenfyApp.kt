@@ -12,12 +12,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,11 +27,21 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.PlaylistPlay
+import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.AlertDialog
@@ -37,6 +49,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -45,10 +59,13 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -83,6 +100,7 @@ import com.openfy.android.ui.theme.OpenfyPanelHigh
 import com.openfy.android.ui.theme.OpenfyTextHigh
 import com.openfy.android.ui.theme.OpenfyTextLow
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 @Composable
 fun OpenfyApp(viewModel: AuthViewModel = viewModel()) {
@@ -111,10 +129,21 @@ private fun LoadingScreen() {
 private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
     var tab by remember { mutableStateOf(0) }
     var playerOpen by remember { mutableStateOf(false) }
+    var addToPlaylistTrack by remember { mutableStateOf<Track?>(null) }
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(state.error, state.message) {
+        val text = state.error ?: state.message
+        if (text != null) {
+            snackbar.showSnackbar(text)
+            viewModel.clearFeedback()
+        }
+    }
+    BackHandler(enabled = state.openPlaylist != null) { viewModel.closePlaylist() }
 
     Box(Modifier.fillMaxSize()) {
         Scaffold(
             containerColor = OpenfyInk,
+            snackbarHost = { SnackbarHost(snackbar) },
             bottomBar = {
                 Column {
                     if (state.track != null) {
@@ -122,28 +151,77 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                     }
                     NavigationBar(containerColor = OpenfyPanel) {
                         NavigationBarItem(
-                            selected = tab == 0,
-                            onClick = { tab = 0 },
+                            selected = tab == 0 && state.openPlaylist == null,
+                            onClick = {
+                                viewModel.closePlaylist()
+                                tab = 0
+                            },
                             icon = { Icon(Icons.Filled.Home, null, modifier = Modifier.size(22.dp)) },
                             label = { Text("Início") },
                         )
                         NavigationBarItem(
-                            selected = tab == 1,
-                            onClick = { tab = 1 },
+                            selected = tab == 1 && state.openPlaylist == null,
+                            onClick = {
+                                viewModel.closePlaylist()
+                                tab = 1
+                            },
                             icon = { Icon(Icons.Filled.Search, null, modifier = Modifier.size(22.dp)) },
                             label = { Text("Buscar") },
+                        )
+                        NavigationBarItem(
+                            selected = tab == 2 && state.openPlaylist == null,
+                            onClick = {
+                                viewModel.closePlaylist()
+                                tab = 2
+                            },
+                            icon = { Icon(Icons.Filled.Favorite, null, modifier = Modifier.size(22.dp)) },
+                            label = { Text("Curtidas") },
+                        )
+                        NavigationBarItem(
+                            selected = tab == 3 && state.openPlaylist == null,
+                            onClick = {
+                                viewModel.closePlaylist()
+                                tab = 3
+                            },
+                            icon = { Icon(Icons.Filled.Settings, null, modifier = Modifier.size(22.dp)) },
+                            label = { Text("Ajustes") },
                         )
                     }
                 }
             },
         ) { padding ->
-            when (tab) {
-                0 -> HomeScreen(state, viewModel, Modifier.padding(padding))
-                else -> SearchScreen(state, viewModel, Modifier.padding(padding))
+            when {
+                state.openPlaylist != null -> PlaylistDetailScreen(state, viewModel, Modifier.padding(padding)) {
+                    addToPlaylistTrack = it
+                }
+                tab == 0 -> HomeScreen(state, viewModel, Modifier.padding(padding))
+                tab == 1 -> SearchScreen(state, viewModel, Modifier.padding(padding)) {
+                    addToPlaylistTrack = it
+                }
+                tab == 2 -> LikedScreen(state, viewModel, Modifier.padding(padding)) {
+                    addToPlaylistTrack = it
+                }
+                else -> SettingsScreen(state, viewModel, Modifier.padding(padding))
             }
         }
         if (playerOpen) {
-            PlayerOverlay(state, viewModel) { playerOpen = false }
+            PlayerOverlay(
+                state = state,
+                viewModel = viewModel,
+                onClose = { playerOpen = false },
+                onAddToPlaylist = { addToPlaylistTrack = it },
+            )
+        }
+        addToPlaylistTrack?.let { track ->
+            AddToPlaylistDialog(
+                track = track,
+                playlists = state.playlists,
+                onDismiss = { addToPlaylistTrack = null },
+                onSelect = { playlist ->
+                    viewModel.addToPlaylist(playlist, track)
+                    addToPlaylistTrack = null
+                },
+            )
         }
     }
 }
@@ -225,13 +303,6 @@ private fun HomeScreen(state: AuthUiState, viewModel: AuthViewModel, modifier: M
             }
         }
 
-        state.error?.let { error ->
-            item { Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
-        }
-        state.message?.let { message ->
-            item { Text(message, color = OpenfyAccent, fontSize = 12.sp) }
-        }
-
         item {
             Row(
                 Modifier.fillMaxWidth().padding(top = 8.dp),
@@ -273,13 +344,17 @@ private fun HomeScreen(state: AuthUiState, viewModel: AuthViewModel, modifier: M
             }
         } else {
             items(state.playlists, key = { it.id }) { playlist ->
-                PlaylistCard(playlist) { viewModel.playPlaylist(playlist.id) }
+                PlaylistCard(
+                    playlist = playlist,
+                    onOpen = { viewModel.openPlaylist(playlist) },
+                    onPlay = { viewModel.playPlaylist(playlist.id) },
+                )
             }
         }
 
         item {
             Text(
-                "Toque numa playlist para tocar. O player usa Media3/ExoPlayer.",
+                "Toque para abrir a playlist; use ▶ para tocar direto.",
                 color = OpenfyTextLow.copy(alpha = 0.7f),
                 fontSize = 11.sp,
                 modifier = Modifier.padding(top = 8.dp, bottom = 24.dp),
@@ -299,17 +374,17 @@ private fun HomeScreen(state: AuthUiState, viewModel: AuthViewModel, modifier: M
 }
 
 @Composable
-private fun PlaylistCard(playlist: PlaylistDto, onClick: () -> Unit) {
+private fun PlaylistCard(playlist: PlaylistDto, onOpen: () -> Unit, onPlay: () -> Unit) {
     Card(
         colors = CardDefaults.cardColors(containerColor = OpenfyPanel),
         shape = RoundedCornerShape(14.dp),
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            CoverImage(playlist.coverUrl, 42.dp, 10.dp)
+            CoverImage(playlist.coverUrl, 48.dp, 10.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -320,20 +395,27 @@ private fun PlaylistCard(playlist: PlaylistDto, onClick: () -> Unit) {
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text("Toque para tocar", color = OpenfyTextLow, fontSize = 11.sp)
+                Text("Toque para abrir", color = OpenfyTextLow, fontSize = 11.sp)
             }
-            Icon(
-                Icons.Filled.PlayArrow,
-                null,
-                tint = OpenfyAccent,
-                modifier = Modifier.size(18.dp),
-            )
+            IconButton(onClick = onPlay) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    "Tocar playlist",
+                    tint = OpenfyAccent,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun SearchScreen(state: AuthUiState, viewModel: AuthViewModel, modifier: Modifier = Modifier) {
+private fun SearchScreen(
+    state: AuthUiState,
+    viewModel: AuthViewModel,
+    modifier: Modifier = Modifier,
+    onAddToPlaylist: (Track) -> Unit,
+) {
     var query by remember { mutableStateOf(state.searchQuery) }
     Column(modifier.fillMaxSize().padding(horizontal = 18.dp)) {
         Text(
@@ -380,9 +462,16 @@ private fun SearchScreen(state: AuthUiState, viewModel: AuthViewModel, modifier:
         }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(state.searchResults, key = { it.id }) { track ->
-                SearchResultRow(track, isCurrent = state.track?.id == track.id) {
-                    viewModel.playSearchResult(track)
-                }
+                TrackRow(
+                    track = track,
+                    isCurrent = state.track?.id == track.id,
+                    liked = track.id in state.likedIds,
+                    onPlay = { viewModel.playSearchResult(track) },
+                    onLike = { viewModel.toggleLike(track) },
+                    onPlayNext = { viewModel.playNext(track) },
+                    onAddQueue = { viewModel.addToQueue(track) },
+                    onAddPlaylist = { onAddToPlaylist(track) },
+                )
             }
             item { Spacer(Modifier.height(20.dp)) }
         }
@@ -390,17 +479,90 @@ private fun SearchScreen(state: AuthUiState, viewModel: AuthViewModel, modifier:
 }
 
 @Composable
-private fun SearchResultRow(track: Track, isCurrent: Boolean, onClick: () -> Unit) {
+private fun LikedScreen(
+    state: AuthUiState,
+    viewModel: AuthViewModel,
+    modifier: Modifier = Modifier,
+    onAddToPlaylist: (Track) -> Unit,
+) {
+    Column(modifier.fillMaxSize().padding(horizontal = 18.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.Favorite, null, tint = OpenfyAccent2, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text("Curtidas", color = OpenfyTextHigh, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "${state.likedTracks.size} faixas sincronizadas",
+                    color = OpenfyTextLow,
+                    fontSize = 12.sp,
+                )
+            }
+            IconButton(
+                onClick = {
+                    state.likedTracks.firstOrNull()?.let { viewModel.playLiked(it) }
+                },
+                enabled = state.likedTracks.isNotEmpty(),
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    "Tocar curtidas",
+                    tint = OpenfyAccent,
+                    modifier = Modifier.size(26.dp),
+                )
+            }
+        }
+        if (state.likedTracks.isEmpty()) {
+            Text(
+                "Toque no coração de uma faixa para guardar aqui. As curtidas aparecem no PC também.",
+                color = OpenfyTextLow,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+        }
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(state.likedTracks, key = { it.id }) { track ->
+                TrackRow(
+                    track = track,
+                    isCurrent = state.track?.id == track.id,
+                    liked = true,
+                    onPlay = { viewModel.playLiked(track) },
+                    onLike = { viewModel.toggleLike(track) },
+                    onPlayNext = { viewModel.playNext(track) },
+                    onAddQueue = { viewModel.addToQueue(track) },
+                    onAddPlaylist = { onAddToPlaylist(track) },
+                )
+            }
+            item { Spacer(Modifier.height(20.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun TrackRow(
+    track: Track,
+    isCurrent: Boolean,
+    liked: Boolean,
+    onPlay: () -> Unit,
+    onLike: () -> Unit,
+    onPlayNext: () -> Unit,
+    onAddQueue: () -> Unit,
+    onAddPlaylist: () -> Unit,
+    onRemove: (() -> Unit)? = null,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
     Card(
         colors = CardDefaults.cardColors(containerColor = OpenfyPanel),
         shape = RoundedCornerShape(12.dp),
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onPlay),
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(12.dp),
+            Modifier.fillMaxWidth().padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            CoverImage(track.thumbnail, 38.dp, 8.dp)
+            CoverImage(track.thumbnail, 42.dp, 8.dp)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -412,15 +574,260 @@ private fun SearchResultRow(track: Track, isCurrent: Boolean, onClick: () -> Uni
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    track.artist,
+                    "${track.artist} · ${formatTime(track.durationSec.toDouble())}",
                     color = OpenfyTextLow,
                     fontSize = 11.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            Text(formatTime(track.durationSec.toDouble()), color = OpenfyTextLow, fontSize = 11.sp)
+            IconButton(onClick = onLike) {
+                Icon(
+                    if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                    if (liked) "Remover curtida" else "Curtir",
+                    tint = if (liked) OpenfyAccent2 else OpenfyTextLow,
+                    modifier = Modifier.size(21.dp),
+                )
+            }
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        "Mais ações",
+                        tint = OpenfyTextLow,
+                        modifier = Modifier.size(21.dp),
+                    )
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Tocar em seguida") },
+                        leadingIcon = { Icon(Icons.Filled.PlaylistPlay, null) },
+                        onClick = {
+                            menuOpen = false
+                            onPlayNext()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Adicionar à fila") },
+                        leadingIcon = { Icon(Icons.Filled.QueueMusic, null) },
+                        onClick = {
+                            menuOpen = false
+                            onAddQueue()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Adicionar à playlist") },
+                        leadingIcon = { Icon(Icons.Filled.PlaylistAdd, null) },
+                        onClick = {
+                            menuOpen = false
+                            onAddPlaylist()
+                        },
+                    )
+                    if (onRemove != null) {
+                        DropdownMenuItem(
+                            text = { Text("Remover da playlist") },
+                            leadingIcon = { Icon(Icons.Filled.Delete, null) },
+                            onClick = {
+                                menuOpen = false
+                                onRemove()
+                            },
+                        )
+                    }
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun PlaylistDetailScreen(
+    state: AuthUiState,
+    viewModel: AuthViewModel,
+    modifier: Modifier = Modifier,
+    onAddToPlaylist: (Track) -> Unit,
+) {
+    val playlist = state.openPlaylist ?: return
+    Column(modifier.fillMaxSize().padding(horizontal = 18.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { viewModel.closePlaylist() }) {
+                Icon(Icons.Filled.ArrowBack, "Voltar", tint = OpenfyTextHigh)
+            }
+            CoverImage(playlist.coverUrl, 52.dp, 10.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    playlist.name,
+                    color = OpenfyTextHigh,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    if (state.playlistLoading) "Carregando…" else "${state.playlistTracks.size} faixas",
+                    color = OpenfyTextLow,
+                    fontSize = 12.sp,
+                )
+            }
+            IconButton(
+                onClick = { viewModel.playOpenedPlaylist() },
+                enabled = state.playlistTracks.isNotEmpty(),
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    "Tocar playlist",
+                    tint = OpenfyAccent,
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+        }
+        if (state.playlistLoading) {
+            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = OpenfyAccent, modifier = Modifier.size(24.dp))
+            }
+        } else if (state.playlistTracks.isEmpty()) {
+            Text(
+                "Playlist vazia. Adicione faixas pela busca ou pelo player.",
+                color = OpenfyTextLow,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 12.dp),
+            )
+        }
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            itemsIndexed(
+                state.playlistTracks,
+                key = { index, track -> "${track.id}-$index" },
+            ) { index, track ->
+                val item = state.playlistItems.firstOrNull { it.trackId == track.id }
+                TrackRow(
+                    track = track,
+                    isCurrent = state.track?.id == track.id,
+                    liked = track.id in state.likedIds,
+                    onPlay = { viewModel.playPlaylistTrack(track) },
+                    onLike = { viewModel.toggleLike(track) },
+                    onPlayNext = { viewModel.playNext(track) },
+                    onAddQueue = { viewModel.addToQueue(track) },
+                    onAddPlaylist = { onAddToPlaylist(track) },
+                    onRemove = item?.let { entry ->
+                        { viewModel.removeFromPlaylist(entry) }
+                    },
+                )
+            }
+            item { Spacer(Modifier.height(20.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(
+    state: AuthUiState,
+    viewModel: AuthViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val session = state.session ?: return
+    Column(
+        modifier.fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 18.dp),
+    ) {
+        Text(
+            "Ajustes",
+            color = OpenfyTextHigh,
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(top = 20.dp, bottom = 12.dp),
+        )
+        Card(
+            colors = CardDefaults.cardColors(containerColor = OpenfyPanelHigh),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Conta", color = OpenfyTextHigh, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Text(session.email, color = OpenfyTextLow, fontSize = 12.sp)
+                Text("Dispositivo: ${state.deviceName}", color = OpenfyTextLow, fontSize = 12.sp)
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { viewModel.refreshLibrary() }, enabled = !state.busy) {
+                        if (state.busy) {
+                            CircularProgressIndicator(
+                                Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = OpenfyInk,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                        }
+                        Text("Sincronizar")
+                    }
+                    TextButton(onClick = { viewModel.signOut() }) {
+                        Text("Sair", color = OpenfyTextLow)
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card(
+            colors = CardDefaults.cardColors(containerColor = OpenfyPanel),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Crossfade",
+                        color = OpenfyTextHigh,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        if (state.crossfadeSeconds == 0) "Desligado" else "${state.crossfadeSeconds}s",
+                        color = OpenfyAccent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Text(
+                    "Sobreposição entre a faixa atual e a próxima. 0 desliga.",
+                    color = OpenfyTextLow,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Slider(
+                    value = state.crossfadeSeconds.toFloat(),
+                    onValueChange = { viewModel.setCrossfadeSeconds(it.roundToInt()) },
+                    valueRange = 0f..12f,
+                    steps = 11,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card(
+            colors = CardDefaults.cardColors(containerColor = OpenfyPanel),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Openfy Android", color = OpenfyTextHigh, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Mesma conta, playlists e curtidas do PC. O recap mensal usa os eventos de reprodução desta conta.",
+                    color = OpenfyTextLow,
+                    fontSize = 11.sp,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Fila: ${state.queue.size} faixas · ${state.playlists.size} playlists · ${state.likedTracks.size} curtidas",
+                    color = OpenfyTextLow.copy(alpha = 0.8f),
+                    fontSize = 11.sp,
+                )
+            }
+        }
+        Spacer(Modifier.height(24.dp))
     }
 }
 
@@ -477,12 +884,19 @@ private fun MiniPlayer(state: AuthUiState, viewModel: AuthViewModel, onOpen: () 
 }
 
 @Composable
-private fun PlayerOverlay(state: AuthUiState, viewModel: AuthViewModel, onClose: () -> Unit) {
+private fun PlayerOverlay(
+    state: AuthUiState,
+    viewModel: AuthViewModel,
+    onClose: () -> Unit,
+    onAddToPlaylist: (Track) -> Unit,
+) {
     BackHandler(onBack = onClose)
     val track = state.track
     var dragging by remember { mutableStateOf<Float?>(null) }
+    var queueOpen by remember { mutableStateOf(false) }
     val total = max(1L, state.durationMs)
     val fraction = dragging ?: (state.positionMs.toFloat() / total).coerceIn(0f, 1f)
+    val liked = track?.id in state.likedIds
 
     Surface(Modifier.fillMaxSize(), color = OpenfyInk) {
         Column(
@@ -534,6 +948,43 @@ private fun PlayerOverlay(state: AuthUiState, viewModel: AuthViewModel, onClose:
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            Row(
+                Modifier.padding(top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = { track?.let { viewModel.toggleLike(it) } },
+                    enabled = track != null,
+                ) {
+                    Icon(
+                        if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                        if (liked) "Remover curtida" else "Curtir",
+                        tint = if (liked) OpenfyAccent2 else OpenfyTextLow,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+                IconButton(
+                    onClick = { track?.let(onAddToPlaylist) },
+                    enabled = track != null,
+                ) {
+                    Icon(
+                        Icons.Filled.PlaylistAdd,
+                        "Adicionar à playlist",
+                        tint = OpenfyTextLow,
+                        modifier = Modifier.size(24.dp),
+                    )
+                }
+                TextButton(onClick = { queueOpen = true }) {
+                    Icon(
+                        Icons.Filled.QueueMusic,
+                        null,
+                        tint = OpenfyTextLow,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Fila ${state.queue.size}", color = OpenfyTextLow, fontSize = 12.sp)
+                }
+            }
             Spacer(Modifier.weight(1f))
 
             Slider(
@@ -603,6 +1054,142 @@ private fun PlayerOverlay(state: AuthUiState, viewModel: AuthViewModel, onClose:
             )
         }
     }
+    if (queueOpen) {
+        QueueDialog(state, viewModel, onDismiss = { queueOpen = false })
+    }
+}
+
+@Composable
+private fun QueueDialog(
+    state: AuthUiState,
+    viewModel: AuthViewModel,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = OpenfyPanelHigh,
+        title = { Text("Fila · ${state.queue.size} faixas", color = OpenfyTextHigh) },
+        text = {
+            if (state.queue.isEmpty()) {
+                Text("A fila está vazia.", color = OpenfyTextLow, fontSize = 12.sp)
+            } else {
+                LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    itemsIndexed(state.queue) { index, track ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable {
+                                    viewModel.playQueueIndex(index)
+                                    onDismiss()
+                                }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "${index + 1}",
+                                color = if (index == state.queueIndex) OpenfyAccent else OpenfyTextLow,
+                                fontSize = 11.sp,
+                                modifier = Modifier.width(24.dp),
+                            )
+                            CoverImage(track.thumbnail, 34.dp, 6.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    track.title,
+                                    color = if (index == state.queueIndex) OpenfyAccent else OpenfyTextHigh,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    track.artist,
+                                    color = OpenfyTextLow,
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            IconButton(onClick = { viewModel.removeQueueIndex(index) }) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    "Remover da fila",
+                                    tint = OpenfyTextLow,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Fechar", color = OpenfyAccent)
+            }
+        },
+    )
+}
+
+@Composable
+private fun AddToPlaylistDialog(
+    track: Track,
+    playlists: List<PlaylistDto>,
+    onDismiss: () -> Unit,
+    onSelect: (PlaylistDto) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = OpenfyPanelHigh,
+        title = { Text("Adicionar à playlist", color = OpenfyTextHigh) },
+        text = {
+            Column {
+                Text(
+                    track.title,
+                    color = OpenfyTextLow,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(8.dp))
+                if (playlists.isEmpty()) {
+                    Text("Nenhuma playlist ainda. Crie uma na tela inicial.", color = OpenfyTextLow, fontSize = 12.sp)
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                        items(playlists, key = { it.id }) { playlist ->
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .clickable { onSelect(playlist) }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                CoverImage(playlist.coverUrl, 36.dp, 8.dp)
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    playlist.name,
+                                    color = OpenfyTextHigh,
+                                    fontSize = 13.sp,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Icon(
+                                    Icons.Filled.PlaylistAdd,
+                                    null,
+                                    tint = OpenfyAccent,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar", color = OpenfyTextLow)
+            }
+        },
+    )
 }
 
 @Composable

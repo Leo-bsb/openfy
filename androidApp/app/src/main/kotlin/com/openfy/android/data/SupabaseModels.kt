@@ -80,6 +80,30 @@ data class PushTrack(
 )
 
 @Serializable
+data class PushPlaylistItem(
+    val id: String,
+    @SerialName("playlist_id") val playlistId: String,
+    @SerialName("track_id") val trackId: String,
+    val rank: String,
+    val deleted: Boolean = false,
+)
+
+@Serializable
+data class LikeRow(
+    @SerialName("track_id") val trackId: String = "",
+)
+
+@Serializable
+data class LikeUpsert(
+    @SerialName("user_id") val userId: String,
+    @SerialName("track_id") val trackId: String,
+    val deleted: Boolean,
+)
+
+@Serializable
+data class DeletedPatch(val deleted: Boolean = true)
+
+@Serializable
 data class PushPlayEvent(
     @SerialName("user_id") val userId: String,
     @SerialName("device_id") val deviceId: String?,

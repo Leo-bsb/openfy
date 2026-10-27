@@ -1,5 +1,6 @@
 package com.openfy.data
 
+import com.openfy.core.PendingPlayEvent
 import com.openfy.core.Playlist
 import com.openfy.core.SyncLike
 import com.openfy.core.SyncPlaylist
@@ -144,6 +145,39 @@ class Db(file: Path) : AutoCloseable {
                 )
                 st.execute("pragma user_version=4")
             }
+            if (version < 5) {
+                // v5: capa remota no Storage. O caminho local continua em cover
+                // para funcionar offline; cover_url é o que os outros aparelhos veem.
+                if (!hasColumn("playlist", "cover_url")) {
+                    st.execute("alter table playlist add column cover_url text not null default ''")
+                }
+                st.execute("pragma user_version=5")
+            }
+            if (version < 6) {
+                // v6: eventos de reprodução completos para o recap na nuvem.
+                if (!hasColumn("play_event", "played_ms")) {
+                    st.execute("alter table play_event add column played_ms integer not null default 0")
+                }
+                if (!hasColumn("play_event", "completed")) {
+                    st.execute("alter table play_event add column completed integer not null default 0")
+                }
+                if (!hasColumn("play_event", "skipped")) {
+                    st.execute("alter table play_event add column skipped integer not null default 0")
+                }
+                if (!hasColumn("play_event", "source")) {
+                    st.execute("alter table play_event add column source text not null default 'desktop'")
+                }
+                if (!hasColumn("play_event", "synced")) {
+                    st.execute("alter table play_event add column synced integer not null default 0")
+                }
+                st.execute(
+                    "update play_event set played_ms=coalesce(" +
+                        "(select duration * 1000 from track t where t.id=play_event.id), 0) " +
+                        "where played_ms=0"
+                )
+                st.execute("update play_event set completed=1 where completed=0 and skipped=0")
+                st.execute("pragma user_version=6")
+            }
         }
     }
 
@@ -231,7 +265,7 @@ class Db(file: Path) : AutoCloseable {
         conn.prepareStatement(
             "select p.id, p.name, " +
                 "(select count(*) from playlist_item i where i.playlist_id = p.id and i.deleted=0) as c, " +
-                "coalesce(nullif(p.cover,''), (" +
+                "coalesce(nullif(p.cover_url,''), nullif(p.cover,''), (" +
                 "  select t.thumbnail from playlist_item i join track t on t.id = i.id " +
                 "  where i.playlist_id = p.id and i.deleted=0 order by i.position limit 1" +
                 "), '') as cover " +
@@ -297,8 +331,18 @@ class Db(file: Path) : AutoCloseable {
     }
 
     @Synchronized
+    fun setPlaylistCoverUrl(id: String, url: String) {
+        conn.prepareStatement("update playlist set cover_url=?, updated_at=? where id=?").use { ps ->
+            ps.setString(1, url); ps.setLong(2, System.currentTimeMillis()); ps.setString(3, id)
+            ps.executeUpdate()
+        }
+    }
+
+    @Synchronized
     fun playlistCover(id: String): String? =
-        conn.prepareStatement("select cover from playlist where id=? and deleted=0").use { ps ->
+        conn.prepareStatement(
+            "select coalesce(nullif(cover_url,''), cover) from playlist where id=? and deleted=0"
+        ).use { ps ->
             ps.setString(1, id)
             ps.executeQuery().use { rs -> if (rs.next()) rs.getString(1) else null }
         }
@@ -365,7 +409,7 @@ class Db(file: Path) : AutoCloseable {
     @Synchronized
     fun syncPlaylists(): List<SyncPlaylist> =
         conn.createStatement().use { st ->
-            st.executeQuery("select id, name, updated_at, deleted from playlist").use { rs ->
+            st.executeQuery("select id, name, updated_at, deleted, cover_url from playlist").use { rs ->
                 buildList {
                     while (rs.next()) {
                         add(
@@ -374,6 +418,7 @@ class Db(file: Path) : AutoCloseable {
                                 name = rs.getString("name"),
                                 updatedAt = rs.getLong("updated_at"),
                                 deleted = rs.getInt("deleted") != 0,
+                                coverUrl = rs.getString("cover_url") ?: "",
                             )
                         )
                     }
@@ -427,7 +472,7 @@ class Db(file: Path) : AutoCloseable {
         conn.createStatement().use { st ->
             st.executeQuery(
                 "select * from track where id in (" +
-                    "select id from playlist_item union select id from liked)"
+                    "select id from playlist_item union select id from liked union select id from play_event)"
             ).use { rs -> readTracks(rs) }
         }
 
@@ -436,10 +481,11 @@ class Db(file: Path) : AutoCloseable {
     fun mergeRemotePlaylist(remote: SyncPlaylist) {
         conn.prepareStatement(
             """
-            insert into playlist(id, name, created_at, cover, updated_at, deleted)
-            values(?,?,?,'',?,?)
+            insert into playlist(id, name, created_at, cover, cover_url, updated_at, deleted)
+            values(?,?,?,'',?,?,?)
             on conflict(id) do update set
                 name=excluded.name,
+                cover_url=excluded.cover_url,
                 updated_at=excluded.updated_at,
                 deleted=excluded.deleted
             where excluded.updated_at > playlist.updated_at
@@ -448,8 +494,9 @@ class Db(file: Path) : AutoCloseable {
             ps.setString(1, remote.id)
             ps.setString(2, remote.name)
             ps.setLong(3, remote.updatedAt)
-            ps.setLong(4, remote.updatedAt)
-            ps.setInt(5, if (remote.deleted) 1 else 0)
+            ps.setString(4, remote.coverUrl)
+            ps.setLong(5, remote.updatedAt)
+            ps.setInt(6, if (remote.deleted) 1 else 0)
             ps.executeUpdate()
         }
     }
@@ -515,8 +562,44 @@ class Db(file: Path) : AutoCloseable {
     // ------------------------------------------------------------------ history
     @Synchronized
     fun recordPlay(id: String) {
-        conn.prepareStatement("insert into play_event(id, at) values(?,?)").use { ps ->
-            ps.setString(1, id); ps.setLong(2, System.currentTimeMillis()); ps.executeUpdate()
+        val now = System.currentTimeMillis()
+        conn.prepareStatement(
+            "insert into play_event(id, at, played_ms, completed, skipped, source, synced) " +
+                "values(?, ?, coalesce((select duration from track where id=?), 0) * 1000, 1, 0, 'desktop', 0)"
+        ).use { ps ->
+            ps.setString(1, id); ps.setLong(2, now); ps.setString(3, id); ps.executeUpdate()
+        }
+    }
+
+    /** Eventos ainda não enviados ao Supabase, em ordem cronológica. */
+    @Synchronized
+    fun pendingPlayEvents(limit: Int = 200): List<PendingPlayEvent> =
+        conn.prepareStatement(
+            "select seq, id, at, played_ms from play_event where synced=0 order by seq asc limit ?"
+        ).use { ps ->
+            ps.setInt(1, limit)
+            ps.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            PendingPlayEvent(
+                                seq = rs.getInt("seq"),
+                                trackId = rs.getString("id"),
+                                startedAt = rs.getLong("at"),
+                                playedMs = rs.getInt("played_ms"),
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+    @Synchronized
+    fun markPlayEventsSynced(seqs: List<Int>) {
+        if (seqs.isEmpty()) return
+        val list = seqs.joinToString(",") { it.toString() }
+        conn.createStatement().use { st ->
+            st.executeUpdate("update play_event set synced=1 where seq in ($list)")
         }
     }
 

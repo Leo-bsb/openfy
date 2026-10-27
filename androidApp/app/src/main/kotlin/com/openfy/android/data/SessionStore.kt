@@ -63,8 +63,16 @@ class SessionStore(context: Context) {
         return stored
     }
 
+    fun crossfadeSeconds(): Int =
+        prefs.getInt("crossfade_seconds", 6).coerceIn(0, 12)
+
+    fun setCrossfadeSeconds(seconds: Int) {
+        prefs.edit().putInt("crossfade_seconds", seconds.coerceIn(0, 12)).apply()
+    }
+
     fun clear() {
-        prefs.edit().clear().apply()
+        val crossfade = crossfadeSeconds()
+        prefs.edit().clear().putInt("crossfade_seconds", crossfade).apply()
     }
 
     /** ID estável do aparelho para a conta. */

@@ -6,6 +6,7 @@ data class SyncPlaylist(
     val name: String,
     val updatedAt: Long,
     val deleted: Boolean,
+    val coverUrl: String = "",
 )
 
 /** Item de playlist no formato local. O id remoto é preservado quando existe. */
@@ -25,6 +26,14 @@ data class SyncLike(
     val deleted: Boolean,
 )
 
+/** Evento de escuta local aguardando envio ao recap da conta. */
+data class PendingPlayEvent(
+    val seq: Int,
+    val trackId: String,
+    val startedAt: Long,
+    val playedMs: Int,
+)
+
 data class SyncResult(
     val remotePlaylists: Int = 0,
     val remoteItems: Int = 0,
@@ -32,8 +41,10 @@ data class SyncResult(
     val pushedPlaylists: Int = 0,
     val pushedItems: Int = 0,
     val pushedLikes: Int = 0,
+    val pushedEvents: Int = 0,
 ) {
     fun summary(): String =
         "Sync: $remotePlaylists playlists, $remoteItems itens e $remoteLikes curtidas recebidos; " +
-            "$pushedPlaylists playlists, $pushedItems itens e $pushedLikes curtidas enviados."
+            "$pushedPlaylists playlists, $pushedItems itens, $pushedLikes curtidas e " +
+            "$pushedEvents escutas enviados."
 }

@@ -305,6 +305,14 @@ class AccountManager(
         return playlistId
     }
 
+    /** Sobe a capa para o Storage e devolve a URL pública (null se offline/sem conta). */
+    suspend fun uploadCover(playlistId: String, file: java.io.File): String? {
+        val session = ensureSession() ?: return null
+        return runCatching {
+            api.uploadCover(session.accessToken, session.userId, playlistId, file)
+        }.getOrNull()
+    }
+
     fun clearFeedback() {
         _state.update { it.copy(error = null, status = null) }
     }

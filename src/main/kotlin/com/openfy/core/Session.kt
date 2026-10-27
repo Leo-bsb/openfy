@@ -17,6 +17,10 @@ data class SessionState(
     val volume: Int = 80,
     val shuffle: Boolean = false,
     val repeat: String = "OFF",
+    /** Ordem original guardada ao ligar shuffle/DJ, para desfazer após reiniciar. */
+    val shuffleQueue: List<Track> = emptyList(),
+    val shuffleIndex: Int = -1,
+    val djQueue: List<Track> = emptyList(),
 )
 
 object SessionCodec {

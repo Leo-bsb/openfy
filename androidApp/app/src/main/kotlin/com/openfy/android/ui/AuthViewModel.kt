@@ -19,10 +19,12 @@ import com.openfy.android.data.AuthSession
 import com.openfy.android.data.PlaylistDto
 import com.openfy.android.data.Profile
 import com.openfy.android.data.PushPlayEvent
+import com.openfy.android.data.RemotePlaylistItem
 import com.openfy.android.data.RemoteTrack
 import com.openfy.android.data.SessionStore
 import com.openfy.android.data.StoredSession
 import com.openfy.android.data.SupabaseApi
+import com.openfy.android.data.SupabaseException
 import com.openfy.core.Track
 import com.openfy.data.Media
 import com.openfy.data.YouTubeEngine
@@ -59,6 +61,13 @@ data class AuthUiState(
     val playing: Boolean = false,
     val positionMs: Long = 0,
     val durationMs: Long = 0,
+    val likedIds: Set<String> = emptySet(),
+    val likedTracks: List<Track> = emptyList(),
+    val openPlaylist: PlaylistDto? = null,
+    val playlistTracks: List<Track> = emptyList(),
+    val playlistItems: List<RemotePlaylistItem> = emptyList(),
+    val playlistLoading: Boolean = false,
+    val crossfadeSeconds: Int = 6,
 ) {
     val hasPrevious: Boolean get() = queueIndex > 0
     val hasNext: Boolean get() = queueIndex >= 0 && queueIndex < queue.lastIndex
@@ -72,7 +81,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val youtube = YouTubeEngine()
 
     private val _state = MutableStateFlow(
-        AuthUiState(deviceName = store.deviceName()),
+        AuthUiState(
+            deviceName = store.deviceName(),
+            crossfadeSeconds = store.crossfadeSeconds(),
+        ),
     )
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
 
@@ -144,7 +156,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var crossfadeJob: Job? = null
     private var crossfadeOld: ExoPlayer? = null
     private var crossfadeDurationMs: Long = 0
-    private val crossfadeSeconds = 6
+    private var crossfadeSeconds = store.crossfadeSeconds()
 
     init {
         activePlayer = playerA
@@ -161,7 +173,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                             durationMs = dur,
                         )
                     }
-                    if (dur > 0 && !crossfading) {
+                    if (dur > 0 && crossfadeSeconds > 0 && !crossfading) {
                         val remaining = dur - pos
                         if (remaining <= crossfadeSeconds * 1000L + 4_000L && preloadedTrack == null) {
                             maybePreloadNext()
@@ -199,16 +211,30 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun ensureSession(): StoredSession? {
         val current = store.load() ?: return null
         if (!current.isExpired) return current
-        if (current.refreshToken.isBlank()) {
+        return refreshSession(current) ?: run {
             store.clear()
-            return null
+            null
         }
+    }
+
+    private suspend fun refreshSession(current: StoredSession): StoredSession? {
+        if (current.refreshToken.isBlank()) return null
         return runCatching {
-            val refreshed = api.refresh(current.refreshToken)
-            store.save(refreshed, previous = current)
-        }.onFailure {
-            store.clear()
+            store.save(api.refresh(current.refreshToken), previous = current)
         }.getOrNull()
+    }
+
+    /** Executa uma chamada autenticada e, em caso de 401, renova o token uma vez. */
+    private suspend fun <T> withSession(block: suspend (StoredSession) -> T): T {
+        val session = ensureSession() ?: throw SupabaseException("Entre na conta para continuar.")
+        return try {
+            block(session)
+        } catch (error: SupabaseException) {
+            if (error.status != 401) throw error
+            val refreshed = refreshSession(session) ?: throw error
+            _state.update { it.copy(session = refreshed) }
+            block(refreshed)
+        }
     }
 
     private suspend fun loadHome(session: StoredSession) {
@@ -234,13 +260,20 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         api.upsertDevice(session.accessToken, store.deviceId(), store.deviceName())
         val profile = api.profile(session.accessToken, session.userId)
         val playlists = api.playlists(session.accessToken)
+        val likedIds = runCatching { api.likes(session.accessToken) }.getOrDefault(emptySet())
+        val likedTracks = runCatching {
+            likedIds.chunked(80).flatMap { api.tracks(session.accessToken, it) }.map { it.toTrack() }
+        }.getOrDefault(emptyList())
         _state.update {
             it.copy(
                 loading = false,
                 busy = false,
                 profile = profile,
                 playlists = playlists,
+                likedIds = likedIds,
+                likedTracks = likedTracks,
                 deviceName = store.deviceName(),
+                crossfadeSeconds = store.crossfadeSeconds(),
                 error = null,
             )
         }
@@ -345,18 +378,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playPlaylist(playlistId: String) {
-        val session = _state.value.session ?: return
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null, message = "Carregando playlist…") }
             runCatching {
-                val items = api.playlistItems(session.accessToken, playlistId)
-                val ids = items.map { it.trackId }.distinct()
-                val remoteTracks = ids.chunked(80)
-                    .flatMap { api.tracks(session.accessToken, it) }
-                val byId = remoteTracks.associateBy { it.id }
-                items.sortedBy { it.rank }.mapNotNull { item ->
-                    byId[item.trackId]?.toTrack()
-                }
+                withSession { session -> loadPlaylistTracks(session, playlistId).first }
             }.onSuccess { tracks ->
                 _state.update { it.copy(busy = false, message = null) }
                 val first = tracks.firstOrNull()
@@ -370,6 +395,236 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(busy = false, message = null, error = error.message ?: "Playlist falhou.")
                 }
             }
+        }
+    }
+
+    private suspend fun loadPlaylistTracks(
+        session: StoredSession,
+        playlistId: String,
+    ): Pair<List<Track>, List<RemotePlaylistItem>> {
+        val items = api.playlistItems(session.accessToken, playlistId)
+        val ids = items.map { it.trackId }.distinct()
+        val remoteTracks = ids.chunked(80).flatMap { api.tracks(session.accessToken, it) }
+        val byId = remoteTracks.associateBy { it.id }
+        val tracks = items.sortedBy { it.rank }.mapNotNull { item -> byId[item.trackId]?.toTrack() }
+        return tracks to items
+    }
+
+    fun openPlaylist(playlist: PlaylistDto) {
+        _state.update {
+            it.copy(
+                openPlaylist = playlist,
+                playlistTracks = emptyList(),
+                playlistItems = emptyList(),
+                playlistLoading = true,
+                error = null,
+                message = null,
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                withSession { session -> loadPlaylistTracks(session, playlist.id) }
+            }.onSuccess { (tracks, items) ->
+                _state.update {
+                    if (it.openPlaylist?.id != playlist.id) {
+                        it
+                    } else {
+                        it.copy(
+                            playlistTracks = tracks,
+                            playlistItems = items,
+                            playlistLoading = false,
+                        )
+                    }
+                }
+            }.onFailure { error ->
+                _state.update {
+                    if (it.openPlaylist?.id != playlist.id) {
+                        it
+                    } else {
+                        it.copy(
+                            playlistLoading = false,
+                            error = error.message ?: "Não foi possível abrir a playlist.",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun closePlaylist() {
+        _state.update {
+            it.copy(
+                openPlaylist = null,
+                playlistTracks = emptyList(),
+                playlistItems = emptyList(),
+                playlistLoading = false,
+            )
+        }
+    }
+
+    fun playOpenedPlaylist() {
+        val tracks = _state.value.playlistTracks
+        val first = tracks.firstOrNull() ?: return
+        play(first, tracks, "playlist")
+    }
+
+    fun playPlaylistTrack(track: Track) {
+        val tracks = _state.value.playlistTracks
+        if (tracks.isEmpty()) return
+        play(track, tracks, "playlist")
+    }
+
+    fun playLiked(track: Track) {
+        play(track, _state.value.likedTracks, "likes")
+    }
+
+    fun toggleLike(track: Track) {
+        val current = _state.value
+        if (current.session == null) return
+        val liked = track.id !in current.likedIds
+        _state.update {
+            it.copy(
+                likedIds = if (liked) it.likedIds + track.id else it.likedIds - track.id,
+                likedTracks = if (liked) {
+                    listOf(track) + it.likedTracks.filter { item -> item.id != track.id }
+                } else {
+                    it.likedTracks.filter { item -> item.id != track.id }
+                },
+                error = null,
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                withSession { fresh -> api.setLike(fresh.accessToken, fresh.userId, track, liked) }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        likedIds = if (liked) it.likedIds - track.id else it.likedIds + track.id,
+                        likedTracks = if (liked) {
+                            it.likedTracks.filter { item -> item.id != track.id }
+                        } else {
+                            listOf(track) + it.likedTracks.filter { item -> item.id != track.id }
+                        },
+                        error = "Curtida não sincronizou: ${error.message}",
+                    )
+                }
+            }
+        }
+    }
+
+    fun addToPlaylist(playlist: PlaylistDto, track: Track) {
+        viewModelScope.launch {
+            runCatching {
+                withSession { session -> api.addPlaylistItem(session.accessToken, playlist.id, track) }
+            }.onSuccess {
+                _state.update { it.copy(message = "\"${track.title}\" adicionada a ${playlist.name}.") }
+                val opened = _state.value.openPlaylist
+                if (opened?.id == playlist.id) openPlaylist(opened)
+            }.onFailure { error ->
+                _state.update { it.copy(error = error.message ?: "Não foi possível adicionar.") }
+            }
+        }
+    }
+
+    fun removeFromPlaylist(item: RemotePlaylistItem) {
+        val playlist = _state.value.openPlaylist ?: return
+        viewModelScope.launch {
+            runCatching {
+                withSession { session -> api.removePlaylistItem(session.accessToken, item.id) }
+            }.onSuccess {
+                _state.update {
+                    it.copy(
+                        playlistItems = it.playlistItems.filter { entry -> entry.id != item.id },
+                        playlistTracks = it.playlistTracks.filter { track -> track.id != item.trackId },
+                        message = "Faixa removida da playlist.",
+                    )
+                }
+            }.onFailure { error ->
+                _state.update { it.copy(error = error.message ?: "Não foi possível remover.") }
+            }
+        }
+    }
+
+    fun setCrossfadeSeconds(seconds: Int) {
+        val value = seconds.coerceIn(0, 12)
+        crossfadeSeconds = value
+        store.setCrossfadeSeconds(value)
+        _state.update { it.copy(crossfadeSeconds = value) }
+        if (value == 0) cancelCrossfade()
+    }
+
+    // ------------------------------------------------------------------ queue editing
+    fun playNext(track: Track) {
+        val current = _state.value
+        if (current.track == null) {
+            play(track, listOf(track), "queue")
+            return
+        }
+        val queue = current.queue.toMutableList()
+        val at = (current.queueIndex + 1).coerceIn(0, queue.size)
+        queue.add(at, track)
+        _state.update { it.copy(queue = queue, message = "Toca em seguida: ${track.title}") }
+        invalidatePreload()
+    }
+
+    fun addToQueue(track: Track) {
+        val current = _state.value
+        if (current.track == null) {
+            play(track, listOf(track), "queue")
+            return
+        }
+        _state.update {
+            it.copy(queue = it.queue + track, message = "Na fila: ${track.title}")
+        }
+        invalidatePreload()
+    }
+
+    fun playQueueIndex(index: Int) {
+        val current = _state.value
+        if (index !in current.queue.indices) return
+        play(current.queue[index], current.queue, "queue")
+    }
+
+    fun removeQueueIndex(index: Int) {
+        val current = _state.value
+        if (index !in current.queue.indices) return
+        val queue = current.queue.toMutableList()
+        val wasCurrent = index == current.queueIndex
+        queue.removeAt(index)
+        val newIndex = when {
+            queue.isEmpty() -> -1
+            index < current.queueIndex -> current.queueIndex - 1
+            else -> current.queueIndex.coerceAtMost(queue.lastIndex)
+        }
+        _state.update { it.copy(queue = queue, queueIndex = newIndex) }
+        invalidatePreload()
+        if (wasCurrent) {
+            if (newIndex < 0) {
+                cancelCrossfade()
+                player.stop()
+                player.clearMediaItems()
+                _state.update {
+                    it.copy(track = null, playing = false, positionMs = 0, durationMs = 0)
+                }
+            } else {
+                play(queue[newIndex], queue, "queue")
+            }
+        }
+    }
+
+    private fun invalidatePreload() {
+        if (crossfading) return
+        preloadJob?.cancel()
+        preloadJob = null
+        preloading = false
+        preloadedTrack = null
+        preloadedIndex = -1
+        crossfadePrepared = false
+        crossfadeReady = false
+        crossfadeDurationMs = 0
+        if (::activePlayer.isInitialized) {
+            standbyPlayer.stop()
+            standbyPlayer.clearMediaItems()
         }
     }
 
@@ -445,7 +700,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun maybePreloadNext() {
-        if (preloading || preloadedTrack != null || crossfading) return
+        if (crossfadeSeconds <= 0 || preloading || preloadedTrack != null || crossfading) return
         val s = _state.value
         val nextIndex = s.queueIndex + 1
         if (nextIndex !in s.queue.indices) return
@@ -480,6 +735,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun startCrossfade() {
+        if (crossfadeSeconds <= 0) return
         val nextTrack = preloadedTrack ?: return
         val nextIndex = preloadedIndex
         if (nextIndex !in _state.value.queue.indices) return
@@ -659,7 +915,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             playerB.clearMediaItems()
             session?.let { api.logout(it.accessToken) }
             store.clear()
-            _state.value = AuthUiState(loading = false, deviceName = store.deviceName())
+            _state.value = AuthUiState(
+                loading = false,
+                deviceName = store.deviceName(),
+                crossfadeSeconds = store.crossfadeSeconds(),
+            )
         }
     }
 

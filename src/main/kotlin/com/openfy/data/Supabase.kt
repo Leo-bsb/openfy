@@ -72,6 +72,7 @@ data class RemotePlaylist(
     @SerialName("updated_at") val updatedAt: String? = null,
     val deleted: Boolean = false,
     @SerialName("share_code") val shareCode: String? = null,
+    @SerialName("cover_url") val coverUrl: String = "",
 )
 
 @Serializable
@@ -106,6 +107,7 @@ data class PushPlaylist(
     val id: String,
     val name: String,
     val deleted: Boolean,
+    @SerialName("cover_url") val coverUrl: String = "",
 )
 
 @Serializable
@@ -122,6 +124,20 @@ data class PushLike(
     @SerialName("user_id") val userId: String,
     @SerialName("track_id") val trackId: String,
     val deleted: Boolean,
+)
+
+@Serializable
+data class PushPlayEvent(
+    @SerialName("user_id") val userId: String,
+    @SerialName("device_id") val deviceId: String? = null,
+    @SerialName("track_id") val trackId: String,
+    @SerialName("started_at") val startedAt: String,
+    @SerialName("played_ms") val playedMs: Int,
+    @SerialName("duration_ms") val durationMs: Int,
+    val completed: Boolean = true,
+    val skipped: Boolean = false,
+    val source: String = "desktop",
+    @SerialName("context_id") val contextId: String? = null,
 )
 
 @Serializable
@@ -266,7 +282,7 @@ class SupabaseApi {
         return decode(
             client.get("$baseUrl/rest/v1/playlists") {
                 auth(accessToken)
-                parameter("select", "id,name,updated_at,deleted,share_code")
+                parameter("select", "id,name,updated_at,deleted,share_code,cover_url")
                 parameter("id", inClause(ids))
                 parameter("limit", "1000")
             },
@@ -282,6 +298,32 @@ class SupabaseApi {
                 parameter("limit", "1")
             },
         ).firstOrNull()?.shareCode?.takeIf { it.isNotBlank() }
+
+    /** Sobe a capa para o bucket público e devolve a URL usada pelos outros aparelhos. */
+    suspend fun uploadCover(
+        accessToken: String,
+        userId: String,
+        playlistId: String,
+        file: java.io.File,
+    ): String {
+        val ext = file.extension.lowercase().ifBlank { "jpg" }
+        val mime = when (ext) {
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "gif" -> "image/gif"
+            else -> "image/jpeg"
+        }
+        val path = "$userId/$playlistId.$ext"
+        ensure(
+            client.post("$baseUrl/storage/v1/object/covers/$path") {
+                auth(accessToken)
+                header("x-upsert", "true")
+                contentType(ContentType.parse(mime))
+                setBody(file.readBytes())
+            },
+        )
+        return "$baseUrl/storage/v1/object/public/covers/$path"
+    }
 
     suspend fun joinPlaylist(accessToken: String, code: String): String =
         decode(
@@ -378,6 +420,20 @@ class SupabaseApi {
                     auth(accessToken)
                     header("Prefer", "resolution=merge-duplicates,return=minimal")
                     parameter("on_conflict", "user_id,track_id")
+                    contentType(ContentType.Application.Json)
+                    setBody(batch)
+                },
+            )
+        }
+    }
+
+    suspend fun pushPlayEvents(accessToken: String, events: List<PushPlayEvent>) {
+        if (events.isEmpty()) return
+        events.chunked(200).forEach { batch ->
+            ensure(
+                client.post("$baseUrl/rest/v1/play_events") {
+                    auth(accessToken)
+                    header("Prefer", "return=minimal")
                     contentType(ContentType.Application.Json)
                     setBody(batch)
                 },

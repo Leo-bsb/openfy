@@ -142,3 +142,41 @@ pausado, como no desktop.
 O crossfade 0.2.2 foi compilado e o APK assinado, mas o celular desconectou antes
 da validação auditiva final. O próximo teste no aparelho deve confirmar a
 transição e o comportamento de pausa/seek.
+
+
+---
+
+## Atualiza??o 0.2.5 (2026-10-27)
+
+### Entregue nesta rodada
+
+- Detalhe de playlist com lista de faixas, capa, play-all e estado de carregamento.
+- Curtir/descurtir faixas com atualiza??o otimista e sincroniza??o com o Supabase.
+- Aba **Curtidas** com as faixas curtidas na conta.
+- Adicionar faixa ? playlist, remover faixa e criar playlist.
+- Menu por faixa com **Tocar em seguida**, **Adicionar ? fila** e **Adicionar ? playlist**.
+- Tela de fila no player com tocar, remover e indicar a faixa atual.
+- Tela de ajustes com conta, sincroniza??o, sa?da e crossfade configur?vel (0?12 s).
+- Crossfade agora l? e grava a prefer?ncia local, em vez de 6 s fixos.
+- Retry autom?tico de token em chamadas autenticadas (401 -> refresh -> repete).
+- Capa de playlist vinda do Storage aparece no Android via `cover_url`.
+
+### Validado
+
+- `assembleRelease` do APK 0.2.5.
+- APIs mobile contra o Supabase real: criar playlist, inserir item, remover item
+  (soft delete), curtir e descurtir.
+- Upload de capa e `cover_url` j? validados pelo `syncSmoke` do desktop.
+
+### Ainda falta
+
+1. Background playback real (`MediaSessionService`, notifica??o, lockscreen,
+   Bluetooth). ? a lacuna mais importante para paridade com o desktop.
+2. Persistir fila/posi??o entre aberturas.
+3. Banco local/offline e downloads.
+4. EQ, DJ/BPM, letras e sleep timer.
+5. Recap mensal na UI (dados j? chegam ao Supabase).
+6. Importar/compartilhar/colaborar no Android (backend e desktop prontos).
+7. Capa pr?pria de playlist pelo celular.
+8. Mover sess?o para Keystore/EncryptedSharedPreferences.
+9. M?dulo KMP `:shared` para engine, modelos e sync.

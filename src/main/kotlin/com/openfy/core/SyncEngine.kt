@@ -2,6 +2,7 @@ package com.openfy.core
 
 import com.openfy.data.Db
 import com.openfy.data.PushLike
+import com.openfy.data.PushPlayEvent
 import com.openfy.data.PushPlaylist
 import com.openfy.data.PushPlaylistItem
 import com.openfy.data.PushTrack
@@ -12,6 +13,7 @@ import com.openfy.data.RemoteTrack
 import com.openfy.data.SupabaseApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.time.Instant
 import java.time.OffsetDateTime
 import java.util.Locale
 import java.util.UUID
@@ -75,7 +77,7 @@ class SyncEngine(
         )
         api.pushPlaylists(
             token,
-            localPlaylists.map { PushPlaylist(it.id, it.name, it.deleted) },
+            localPlaylists.map { PushPlaylist(it.id, it.name, it.deleted, it.coverUrl) },
         )
 
         val pushedItems = localItems.map { item ->
@@ -92,6 +94,26 @@ class SyncEngine(
             token,
             localLikes.map { PushLike(session.userId, it.trackId, it.deleted) },
         )
+
+        val pendingEvents = withContext(Dispatchers.IO) { db.pendingPlayEvents() }
+        if (pendingEvents.isNotEmpty()) {
+            api.pushPlayEvents(
+                token,
+                pendingEvents.map { event ->
+                    PushPlayEvent(
+                        userId = session.userId,
+                        trackId = event.trackId,
+                        startedAt = Instant.ofEpochMilli(event.startedAt).toString(),
+                        playedMs = event.playedMs,
+                        durationMs = event.playedMs,
+                        source = "desktop",
+                    )
+                },
+            )
+            withContext(Dispatchers.IO) {
+                db.markPlayEventsSynced(pendingEvents.map { it.seq })
+            }
+        }
 
         withContext(Dispatchers.IO) {
             localItems.forEach { item ->
@@ -112,6 +134,7 @@ class SyncEngine(
             pushedPlaylists = localPlaylists.size,
             pushedItems = localItems.size,
             pushedLikes = localLikes.size,
+            pushedEvents = pendingEvents.size,
         )
     }
 
@@ -129,6 +152,7 @@ class SyncEngine(
         name = name,
         updatedAt = parseTimestamp(updatedAt),
         deleted = deleted,
+        coverUrl = coverUrl,
     )
 
     private fun RemotePlaylistItem.toSyncItem(position: Int) = SyncPlaylistItem(

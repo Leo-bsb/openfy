@@ -186,6 +186,13 @@ class Player(
         stopRadio()
         queue.value = tracks
         index.value = startIndex.coerceIn(0, tracks.lastIndex)
+        // Uma nova fila invalida snapshots antigos; o desligar do shuffle
+        // restaura esta mesma ordem em vez da fila de outro contexto.
+        if (shuffle.value) {
+            shuffleSnapshotQueue = tracks
+            shuffleSnapshotIndex = index.value
+        }
+        if (djMode.value) djSnapshotQueue = tracks
         load(queue.value[index.value])
         save()
     }
@@ -269,10 +276,10 @@ class Player(
     fun playShuffled(tracks: List<Track>) {
         if (tracks.isEmpty()) return
         if (djMode.value) setDjMode(false)
-        shuffleSnapshotQueue = tracks
-        shuffleSnapshotIndex = 0
         shuffle.value = true
         playNow(tracks.shuffled(), 0)
+        shuffleSnapshotQueue = tracks
+        shuffleSnapshotIndex = 0
         save()
     }
 
@@ -559,6 +566,9 @@ class Player(
     fun restore() {
         val session = runCatching { SessionCodec.load(db) }.getOrNull() ?: return
         shuffle.value = session.shuffle
+        shuffleSnapshotQueue = session.shuffleQueue.takeIf { it.isNotEmpty() }
+        shuffleSnapshotIndex = session.shuffleIndex
+        djSnapshotQueue = session.djQueue.takeIf { it.isNotEmpty() }
         repeat.value = runCatching { RepeatMode.valueOf(session.repeat) }.getOrDefault(RepeatMode.OFF)
         volume.value = session.volume.coerceIn(0, 130)
         radioActive.value = false
@@ -602,6 +612,9 @@ class Player(
                     volume = volume.value,
                     shuffle = shuffle.value,
                     repeat = repeat.value.name,
+                    shuffleQueue = shuffleSnapshotQueue.orEmpty(),
+                    shuffleIndex = shuffleSnapshotIndex,
+                    djQueue = djSnapshotQueue.orEmpty(),
                 ),
             )
         }
