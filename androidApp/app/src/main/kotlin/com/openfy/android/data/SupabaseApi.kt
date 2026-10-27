@@ -141,6 +141,63 @@ class SupabaseApi {
         return decoded(response)
     }
 
+    suspend fun playlistItems(accessToken: String, playlistId: String): List<RemotePlaylistItem> {
+        val response = client.get("$baseUrl/rest/v1/playlist_items") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "id,playlist_id,track_id,rank,deleted")
+            parameter("playlist_id", "eq.$playlistId")
+            parameter("deleted", "eq.false")
+            parameter("order", "rank.asc")
+            parameter("limit", "1000")
+        }
+        return decoded(response)
+    }
+
+    suspend fun tracks(accessToken: String, ids: Collection<String>): List<RemoteTrack> {
+        if (ids.isEmpty()) return emptyList()
+        val response = client.get("$baseUrl/rest/v1/tracks") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "id,title,artist,album,duration,thumbnail")
+            parameter("id", "in.(${ids.joinToString(",")})")
+            parameter("limit", "1000")
+        }
+        return decoded(response)
+    }
+
+    suspend fun pushTrack(accessToken: String, track: com.openfy.core.Track) {
+        val response = client.post("$baseUrl/rest/v1/tracks") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "resolution=ignore-duplicates,return=minimal")
+            parameter("on_conflict", "id")
+            contentType(ContentType.Application.Json)
+            setBody(
+                PushTrack(
+                    id = track.id,
+                    title = track.title,
+                    artist = track.artist,
+                    album = track.album,
+                    duration = track.durationSec,
+                    thumbnail = track.thumbnail,
+                ),
+            )
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
+    suspend fun pushPlayEvent(accessToken: String, event: PushPlayEvent) {
+        val response = client.post("$baseUrl/rest/v1/play_events") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=minimal")
+            contentType(ContentType.Application.Json)
+            setBody(event)
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
     suspend fun createPlaylist(accessToken: String, name: String): PlaylistDto? {
         val response = client.post("$baseUrl/rest/v1/playlists") {
             header("apikey", anonKey)

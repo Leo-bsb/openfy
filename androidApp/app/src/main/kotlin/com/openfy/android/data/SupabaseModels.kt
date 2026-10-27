@@ -50,6 +50,49 @@ data class PlaylistDto(
 )
 
 @Serializable
+data class RemotePlaylistItem(
+    val id: String = "",
+    @SerialName("playlist_id") val playlistId: String = "",
+    @SerialName("track_id") val trackId: String = "",
+    val rank: String = "",
+    val deleted: Boolean = false,
+)
+
+@Serializable
+data class RemoteTrack(
+    val id: String = "",
+    val title: String = "",
+    val artist: String = "",
+    val album: String = "",
+    val duration: Int = 0,
+    val thumbnail: String = "",
+)
+
+@Serializable
+data class PushTrack(
+    val id: String,
+    val title: String,
+    val artist: String,
+    val album: String,
+    val duration: Int,
+    val thumbnail: String,
+)
+
+@Serializable
+data class PushPlayEvent(
+    @SerialName("user_id") val userId: String,
+    @SerialName("device_id") val deviceId: String?,
+    @SerialName("track_id") val trackId: String,
+    @SerialName("started_at") val startedAt: String,
+    @SerialName("played_ms") val playedMs: Int,
+    @SerialName("duration_ms") val durationMs: Int,
+    val completed: Boolean,
+    val skipped: Boolean,
+    val source: String,
+    @SerialName("context_id") val contextId: String?,
+)
+
+@Serializable
 data class CreatePlaylistRequest(
     val name: String,
     val description: String = "",

@@ -235,10 +235,11 @@ Android compartilham playlists, itens e curtidas via Supabase.
 
 - No PC: **Ajustes → Conta e sincronização** → entrar/criar conta e
   **Sincronizar agora**.
-- No Android: o app em `androidApp/` tem a tela de login e lista as playlists
-  da conta. Criar uma playlist no celular e sincronizar no PC deve trazê-la
-  para a sidebar.
-- O app Android ainda não tem player/busca; esta é a primeira etapa.
+- No Android: login, playlists, busca e player Media3. Criar uma playlist no
+  celular e sincronizar no PC traz a playlist para a sidebar; criar no PC e
+  sincronizar no celular traz para o app.
+- O app Android ainda não tem reprodução em background/notificação, downloads
+  ou crossfade/EQ. Essas peças entram nas próximas etapas.
 - Nesta versão o merge é LWW por `updated_at`. O próximo passo é trocar por
   outbox + `server_rev` para conflitos offline mais seguros.
 
@@ -249,6 +250,7 @@ Instaladores (usuário atual, sem admin):
 ```
 dist\Openfy-0.2.0.exe
 dist\Openfy-0.2.0.msi
+dist\Openfy-Android-0.2.0.apk
 ```
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
@@ -284,7 +286,8 @@ Rodar em desenvolvimento:
 .\.tools\gradle-dist\bin\gradle.bat smoke        # busca -> extração -> HTTP local
 .\.tools\gradle-dist\bin\gradle.bat playerSmoke  # Player -> IPC do mpv (volume 0)
 .\.tools\gradle-dist\bin\gradle.bat featureSmoke # busca filtrada, artista, coleções, explorar e rádio
-.\.tools\gradle-dist\bin\gradle.bat librarySmoke # importador (URL/CSV/match), backup JSON e backup do banco
+.\.tools\gradle-dist\bin\gradle.bat librarySmoke # importador, backup JSON e backup do banco
+.\.tools\gradle-dist\bin\gradle.bat syncSmoke    # pull/push real de playlists no Supabase
 .\.tools\gradle-dist\bin\gradle.bat extract -Pid=<videoId>  # mede uma extração
 .\.tools\gradle-dist\bin\gradle.bat probe        # salva respostas cruas em %TEMP%\openfy-probe
 ```

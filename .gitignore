@@ -18,3 +18,4 @@ out/
 captures/
 .externalNativeBuild/
 .cxx/
+androidApp/keystore.properties

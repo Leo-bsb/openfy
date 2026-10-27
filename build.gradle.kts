@@ -66,6 +66,13 @@ tasks.register<JavaExec>("librarySmoke") {
     mainClass.set("com.openfy.dev.LibrarySmokeKt")
 }
 
+tasks.register<JavaExec>("syncSmoke") {
+    group = "verification"
+    description = "Valida pull de playlists do Supabase no desktop"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.openfy.dev.SyncSmokeKt")
+}
+
 tasks.register<JavaExec>("extract") {
     group = "verification"
     description = "Mede a extracao de um videoId: gradle extract -Pid=..."
