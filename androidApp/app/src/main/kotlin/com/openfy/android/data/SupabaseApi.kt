@@ -133,7 +133,7 @@ class SupabaseApi {
         val response = client.get("$baseUrl/rest/v1/playlists") {
             header("apikey", anonKey)
             header(HttpHeaders.Authorization, "Bearer $accessToken")
-            parameter("select", "id,name,updated_at,deleted")
+            parameter("select", "id,name,updated_at,cover_url,deleted")
             parameter("deleted", "eq.false")
             parameter("order", "created_at.asc")
             parameter("limit", "200")

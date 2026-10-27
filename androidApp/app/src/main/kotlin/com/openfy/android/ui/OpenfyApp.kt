@@ -45,18 +45,22 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil3.compose.AsyncImage
 import com.openfy.android.R
 import com.openfy.android.data.PlaylistDto
 import com.openfy.core.Track
@@ -295,12 +299,7 @@ private fun PlaylistCard(playlist: PlaylistDto, onClick: () -> Unit) {
             Modifier.fillMaxWidth().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier.size(42.dp).background(OpenfyPanelHigh, RoundedCornerShape(10.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("♫", color = OpenfyAccent2, fontSize = 20.sp)
-            }
+            CoverImage(playlist.coverUrl, 42.dp, 10.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -386,12 +385,7 @@ private fun SearchResultRow(track: Track, isCurrent: Boolean, onClick: () -> Uni
             Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier.size(38.dp).background(OpenfyPanelHigh, RoundedCornerShape(8.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("♫", color = if (isCurrent) OpenfyAccent else OpenfyAccent2, fontSize = 18.sp)
-            }
+            CoverImage(track.thumbnail, 38.dp, 8.dp)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -427,7 +421,7 @@ private fun MiniPlayer(state: AuthUiState, viewModel: AuthViewModel, onOpen: () 
                 Modifier.size(38.dp).background(OpenfyPanel, RoundedCornerShape(8.dp)),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("♫", color = OpenfyAccent, fontSize = 18.sp)
+                CoverImage(track.thumbnail, 38.dp, 8.dp)
             }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
@@ -492,12 +486,7 @@ private fun PlayerOverlay(state: AuthUiState, viewModel: AuthViewModel, onClose:
             }
 
             Spacer(Modifier.weight(1f))
-            Box(
-                Modifier.size(250.dp).background(OpenfyPanelHigh, RoundedCornerShape(22.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("♫", color = OpenfyAccent, fontSize = 80.sp)
-            }
+            CoverImage(track?.thumbnail.orEmpty(), 250.dp, 22.dp)
             Spacer(Modifier.height(24.dp))
             Text(
                 track?.title ?: "Nada tocando",
@@ -566,6 +555,26 @@ private fun PlayerOverlay(state: AuthUiState, viewModel: AuthViewModel, onClose:
                 "Fila: ${state.queue.size} faixas · Media3",
                 color = OpenfyTextLow.copy(alpha = 0.7f),
                 fontSize = 10.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CoverImage(url: String, size: Dp, corner: Dp) {
+    Box(
+        Modifier.size(size)
+            .clip(RoundedCornerShape(corner))
+            .background(OpenfyPanelHigh),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("♫", color = OpenfyAccent, fontSize = (size.value * 0.32f).sp)
+        if (url.isNotBlank()) {
+            AsyncImage(
+                model = url,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
             )
         }
     }

@@ -46,6 +46,7 @@ data class PlaylistDto(
     val id: String = "",
     val name: String = "",
     @SerialName("updated_at") val updatedAt: String? = null,
+    @SerialName("cover_url") val coverUrl: String = "",
     val deleted: Boolean = false,
 )
 

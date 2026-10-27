@@ -14,6 +14,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.source.MediaSource
 import com.openfy.android.data.AuthSession
 import com.openfy.android.data.PlaylistDto
 import com.openfy.android.data.Profile
@@ -36,6 +37,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
+import kotlin.math.cos
+import kotlin.math.sin
 
 data class AuthUiState(
     val loading: Boolean = true,
@@ -73,21 +76,38 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     )
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
 
-    private val player: ExoPlayer = ExoPlayer.Builder(application).build().apply {
-        val attributes = AudioAttributes.Builder()
-            .setUsage(C.USAGE_MEDIA)
-            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-            .build()
-        setAudioAttributes(attributes, true)
-        setHandleAudioBecomingNoisy(true)
-        addListener(object : Player.Listener {
+    private val audioAttributes = AudioAttributes.Builder()
+        .setUsage(C.USAGE_MEDIA)
+        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+        .build()
+
+    private val playerA = createPlayer()
+    private val playerB = createPlayer()
+    private lateinit var activePlayer: ExoPlayer
+    private val player: ExoPlayer get() = activePlayer
+    private val standbyPlayer: ExoPlayer get() = if (activePlayer === playerA) playerB else playerA
+
+    private fun createPlayer(): ExoPlayer {
+        val p = ExoPlayer.Builder(getApplication()).build()
+        p.setAudioAttributes(audioAttributes, true)
+        p.setHandleAudioBecomingNoisy(true)
+        p.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                _state.update { it.copy(playing = isPlaying) }
+                if (p === activePlayer) {
+                    _state.update { it.copy(playing = isPlaying) }
+                }
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
+                if (p !== activePlayer) {
+                    if (playbackState == Player.STATE_READY && p === standbyPlayer) {
+                        crossfadeReady = true
+                        crossfadeDurationMs = p.duration.coerceAtLeast(0L)
+                    }
+                    return
+                }
                 if (playbackState == Player.STATE_READY) {
-                    _state.update { it.copy(durationMs = duration.coerceAtLeast(0)) }
+                    _state.update { it.copy(durationMs = p.duration.coerceAtLeast(0)) }
                 }
                 if (playbackState == Player.STATE_ENDED) {
                     finishEvent(completed = true, skipped = false)
@@ -96,33 +116,58 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             override fun onPlayerError(error: PlaybackException) {
-                _state.update {
-                    it.copy(
-                        busy = false,
-                        playing = false,
-                        error = "Falha ao tocar: ${error.message ?: "erro desconhecido"}",
-                    )
+                if (p === activePlayer) {
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            playing = false,
+                            error = "Falha ao tocar: ${error.message ?: "erro desconhecido"}",
+                        )
+                    }
                 }
             }
         })
+        return p
     }
 
     private var searchJob: Job? = null
     private var eventStartedAt: Long = 0
     private var eventTrack: Track? = null
     private var eventSource: String = "unknown"
+    private var preloadJob: Job? = null
+    private var preloadedTrack: Track? = null
+    private var preloadedIndex: Int = -1
+    private var crossfadePrepared = false
+    private var crossfadeReady = false
+    private var crossfading = false
+    private var crossfadeJob: Job? = null
+    private var crossfadeOld: ExoPlayer? = null
+    private var crossfadeDurationMs: Long = 0
+    private val crossfadeSeconds = 6
 
     init {
+        activePlayer = playerA
         restore()
         viewModelScope.launch {
             while (isActive) {
-                delay(500)
+                delay(250)
                 if (player.isPlaying) {
+                    val pos = player.currentPosition
+                    val dur = player.duration.coerceAtLeast(0)
                     _state.update {
                         it.copy(
-                            positionMs = player.currentPosition,
-                            durationMs = player.duration.coerceAtLeast(0),
+                            positionMs = pos,
+                            durationMs = dur,
                         )
+                    }
+                    if (dur > 0 && !crossfading) {
+                        val remaining = dur - pos
+                        if (remaining <= crossfadeSeconds * 1000L + 4_000L && preloadedTrack == null) {
+                            maybePreloadNext()
+                        }
+                        if (remaining <= crossfadeSeconds * 1000L && crossfadeReady) {
+                            startCrossfade()
+                        }
                     }
                 }
             }
@@ -331,6 +376,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(error = "Entre na conta para tocar.") }
             return
         }
+        cancelCrossfade()
         val current = _state.value
         if (current.track?.id != track.id) {
             finishEvent(completed = false, skipped = true)
@@ -364,36 +410,157 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 return@launch
             }
-            val dataSource = DefaultHttpDataSource.Factory()
-                .setDefaultRequestProperties(media.headers)
-                .setAllowCrossProtocolRedirects(true)
-            val metadata = MediaMetadata.Builder()
-                .setTitle(track.title)
-                .setArtist(track.artist)
-                .apply {
-                    if (track.thumbnail.isNotBlank()) {
-                        setArtworkUri(Uri.parse(track.thumbnail))
-                    }
-                }
-                .build()
-            val item = MediaItem.Builder()
-                .setUri(Uri.parse(media.url))
-                .setMediaId(track.id)
-                .setMediaMetadata(metadata)
-                .build()
-            player.setMediaSource(DefaultMediaSourceFactory(dataSource).createMediaSource(item))
-            player.prepare()
-            player.playWhenReady = true
+            standbyPlayer.stop()
+            standbyPlayer.clearMediaItems()
+            activePlayer.setAudioAttributes(audioAttributes, true)
+            activePlayer.volume = 1f
+            activePlayer.setMediaSource(mediaSource(track, media))
+            activePlayer.prepare()
+            activePlayer.playWhenReady = true
             _state.update { it.copy(busy = false) }
+        }
+    }
+
+    private fun mediaSource(track: Track, media: Media.Remote): MediaSource {
+        val dataSource = DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(media.headers)
+            .setAllowCrossProtocolRedirects(true)
+        val metadata = MediaMetadata.Builder()
+            .setTitle(track.title)
+            .setArtist(track.artist)
+            .apply {
+                if (track.thumbnail.isNotBlank()) {
+                    setArtworkUri(Uri.parse(track.thumbnail))
+                }
+            }
+            .build()
+        val item = MediaItem.Builder()
+            .setUri(Uri.parse(media.url))
+            .setMediaId(track.id)
+            .setMediaMetadata(metadata)
+            .build()
+        return DefaultMediaSourceFactory(dataSource).createMediaSource(item)
+    }
+
+    private fun maybePreloadNext() {
+        if (preloadedTrack != null || crossfading) return
+        val s = _state.value
+        val nextIndex = s.queueIndex + 1
+        if (nextIndex !in s.queue.indices) return
+        val track = s.queue[nextIndex]
+        val currentId = s.track?.id
+        com.openfy.core.Log.write("player: preparando crossfade ${track.id}")
+        preloadJob?.cancel()
+        preloadJob = viewModelScope.launch {
+            val media = withContext(Dispatchers.IO) { youtube.media(track.id) } as? Media.Remote
+                ?: return@launch
+            val now = _state.value
+            if (crossfading || now.track?.id != currentId || now.queueIndex + 1 != nextIndex) {
+                return@launch
+            }
+            val standby = standbyPlayer
+            standby.stop()
+            standby.setAudioAttributes(audioAttributes, true)
+            standby.volume = 0f
+            standby.setMediaSource(mediaSource(track, media))
+            standby.prepare()
+            standby.playWhenReady = false
+            preloadedTrack = track
+            preloadedIndex = nextIndex
+            crossfadePrepared = true
+            crossfadeReady = false
+        }
+    }
+
+    private fun startCrossfade() {
+        val nextTrack = preloadedTrack ?: return
+        val nextIndex = preloadedIndex
+        if (nextIndex !in _state.value.queue.indices) return
+        val old = activePlayer
+        val new = standbyPlayer
+        val oldPosition = old.currentPosition.coerceAtLeast(0L)
+        finishEvent(
+            completed = false,
+            skipped = false,
+            playedOverride = oldPosition,
+        )
+        crossfading = true
+        crossfadeOld = old
+        activePlayer = new
+        com.openfy.core.Log.write("player: crossfade ${nextTrack.id} (${crossfadeSeconds}s)")
+        eventStartedAt = System.currentTimeMillis()
+        eventTrack = nextTrack
+        new.setAudioAttributes(audioAttributes, true)
+        new.volume = 0f
+        new.playWhenReady = true
+        _state.update {
+            it.copy(
+                track = nextTrack,
+                queueIndex = nextIndex,
+                positionMs = 0,
+                durationMs = if (crossfadeDurationMs > 0) crossfadeDurationMs else nextTrack.durationSec * 1000L,
+                playing = true,
+                busy = false,
+            )
+        }
+        preloadedTrack = null
+        preloadedIndex = -1
+        crossfadePrepared = false
+        crossfadeReady = false
+        crossfadeDurationMs = 0
+        crossfadeJob?.cancel()
+        crossfadeJob = viewModelScope.launch {
+            val steps = (crossfadeSeconds * 10).coerceAtLeast(5)
+            for (i in 0..steps) {
+                if (!crossfading) return@launch
+                val fraction = i.toDouble() / steps
+                val angle = fraction * Math.PI / 2.0
+                old.volume = cos(angle).toFloat()
+                new.volume = sin(angle).toFloat()
+                delay(100)
+            }
+            if (!crossfading) return@launch
+            old.stop()
+            old.clearMediaItems()
+            old.volume = 1f
+            new.volume = 1f
+            crossfadeOld = null
+            crossfading = false
+            com.openfy.core.Log.write("player: crossfade concluido")
+            maybePreloadNext()
+        }
+    }
+
+    private fun cancelCrossfade() {
+        preloadJob?.cancel()
+        preloadJob = null
+        preloadedTrack = null
+        preloadedIndex = -1
+        crossfadePrepared = false
+        crossfadeReady = false
+        crossfadeDurationMs = 0
+        crossfadeJob?.cancel()
+        crossfadeJob = null
+        if (crossfading) {
+            crossfadeOld?.stop()
+            crossfadeOld = null
+            crossfading = false
+        }
+        if (::activePlayer.isInitialized) {
+            activePlayer.volume = 1f
+            standbyPlayer.stop()
+            standbyPlayer.clearMediaItems()
         }
     }
 
     fun togglePlay() {
         if (_state.value.track == null) return
+        if (crossfading) cancelCrossfade()
         if (player.isPlaying) player.pause() else player.play()
     }
 
     fun next() {
+        cancelCrossfade()
         val current = _state.value
         val next = current.queueIndex + 1
         if (next !in current.queue.indices) {
@@ -407,6 +574,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun previous() {
+        cancelCrossfade()
         if (player.currentPosition > 3_000) {
             player.seekTo(0)
             _state.update { it.copy(positionMs = 0) }
@@ -421,6 +589,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     fun seekTo(positionMs: Long) {
         if (_state.value.track == null) return
+        if (crossfading) cancelCrossfade()
         val target = positionMs.coerceIn(0, _state.value.durationMs.coerceAtLeast(0))
         player.seekTo(target)
         _state.update { it.copy(positionMs = target) }
@@ -430,11 +599,15 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(error = null) }
     }
 
-    private fun finishEvent(completed: Boolean, skipped: Boolean) {
+    private fun finishEvent(
+        completed: Boolean,
+        skipped: Boolean,
+        playedOverride: Long? = null,
+    ) {
         val track = eventTrack ?: return
         val session = _state.value.session ?: return
         val startedAt = eventStartedAt
-        val played = if (completed) {
+        val played = playedOverride ?: if (completed) {
             _state.value.durationMs.coerceAtLeast(0L)
         } else {
             player.currentPosition.coerceAtLeast(0L)
@@ -468,8 +641,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val session = _state.value.session
         viewModelScope.launch {
             finishEvent(completed = false, skipped = true)
-            player.stop()
-            player.clearMediaItems()
+            cancelCrossfade()
+            playerA.stop()
+            playerB.stop()
+            playerA.clearMediaItems()
+            playerB.clearMediaItems()
             session?.let { api.logout(it.accessToken) }
             store.clear()
             _state.value = AuthUiState(loading = false, deviceName = store.deviceName())
@@ -482,7 +658,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         runCatching { finishEvent(completed = false, skipped = true) }
-        player.release()
+        runCatching { cancelCrossfade() }
+        playerA.release()
+        playerB.release()
         youtube.close()
         api.close()
         super.onCleared()

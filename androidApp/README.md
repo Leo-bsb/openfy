@@ -10,13 +10,15 @@ App Android do Openfy: **conta, sync, busca e player**.
 - Leitura e criação de playlists na conta.
 - Busca de músicas no YouTube Music via InnerTubeX.
 - Player com Media3/ExoPlayer: tocar, pausar, seek, anterior/próxima.
+- **Crossfade real de 6 s** com dois ExoPlayers.
+- **Capas** nas buscas, mini player, tela cheia e playlists (Coil).
 - Tocar uma playlist sincronizada do PC.
 - Mini player + tela cheia do player.
 - Eventos de reprodução enviados ao Supabase (`play_events`) para o recap.
 - Tema escuro e logo do Openfy.
 
 Ainda faltam: reprodução em background com `MediaSessionService`, notificação de mídia,
-crossfade/EQ/DJ no Android, downloads/offline e biblioteca local.
+crossfade configurável/EQ/DJ, downloads/offline e biblioteca local.
 
 ## Requisitos
 

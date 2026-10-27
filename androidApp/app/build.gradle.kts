@@ -37,8 +37,8 @@ android {
         applicationId = "com.openfy.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 4
+        versionName = "0.2.2"
 
         buildConfigField("String", "SUPABASE_URL", "\"${localValue("openfy.supabase.url")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${localValue("openfy.supabase.anonKey")}\"")
@@ -111,4 +111,6 @@ dependencies {
     implementation(libs.innertubex)
     implementation(libs.androidx.media3.exoplayer)
     implementation(libs.androidx.media3.session)
+    implementation(libs.coil.compose)
+    implementation(libs.coil.network.okhttp)
 }
