@@ -165,6 +165,7 @@ import com.openfy.core.SearchMode
 import com.openfy.core.Track
 import com.openfy.core.formatTime
 import com.openfy.data.LyricLine
+import com.openfy.data.UpdateStatus
 import com.openfy.player.Player
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -3110,6 +3111,66 @@ private fun SettingsScreen(c: AppController) {
                 "O X minimiza e o áudio continua. Desligado, o X encerra.",
             ) {
                 Switch(checked = closeToTray, onCheckedChange = { c.setCloseToTray(it) }, colors = openfySwitchColors())
+            }
+        }
+
+        SettingsSection("Atualizações") {
+            val update by c.updateStatus.collectAsState()
+            val autoUpdate by c.updateAutoCheck.collectAsState()
+            SettingsRow(
+                "Verificar ao abrir",
+                "Procura versões novas no GitHub, no máximo 1x por dia.",
+            ) {
+                Switch(
+                    checked = autoUpdate,
+                    onCheckedChange = { c.setUpdateAutoCheck(it) },
+                    colors = openfySwitchColors(),
+                )
+            }
+            SettingsRow("Versão atual", "Openfy ${BuildInfo.VERSION}") {
+                TextButton(
+                    onClick = { c.checkForUpdate() },
+                    enabled = update !is UpdateStatus.Checking,
+                ) {
+                    Text(
+                        if (update is UpdateStatus.Checking) "Verificando…" else "Verificar agora",
+                        color = Tokens.accent,
+                    )
+                }
+            }
+            when (val status = update) {
+                is UpdateStatus.UpToDate -> Text(
+                    "Você está na versão mais recente.",
+                    color = Tokens.textLow,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                is UpdateStatus.Available -> SettingsRow(
+                    "Openfy ${status.release.version} disponível",
+                    if (status.release.installerUrl != null) {
+                        "Baixe o instalador ou veja os detalhes na release."
+                    } else {
+                        "Veja os arquivos da release no GitHub."
+                    },
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextButton(onClick = { c.openReleasePage() }) {
+                            Text("Abrir release", color = Tokens.accent)
+                        }
+                        if (status.release.installerUrl != null) {
+                            TextButton(onClick = { c.openInstaller() }) {
+                                Text("Baixar instalador", color = Tokens.accent)
+                            }
+                        }
+                    }
+                }
+                is UpdateStatus.Error -> Text(
+                    status.message,
+                    color = Color(0xFFFF8A80),
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                else -> Unit
             }
         }
 
