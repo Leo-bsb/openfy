@@ -113,8 +113,12 @@ import coil3.compose.AsyncImage
 import com.openfy.android.R
 import com.openfy.android.data.PlaylistDto
 import com.openfy.android.playback.EqualizerController
+import com.openfy.core.Artist
+import com.openfy.core.ArtistPage
 import com.openfy.core.ColorPalette
+import com.openfy.core.MediaKind
 import com.openfy.core.PlayerLayout
+import com.openfy.core.RemoteCollection
 import com.openfy.core.Track
 import com.openfy.core.formatTime
 import com.openfy.android.ui.theme.OpenfyAccent
@@ -179,6 +183,13 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
         }
     }
     BackHandler(enabled = state.openPlaylist != null) { viewModel.closePlaylist() }
+    BackHandler(enabled = state.remoteCollectionId != null) { viewModel.closeCollection() }
+    BackHandler(enabled = state.artistId != null) { viewModel.closeArtist() }
+    val closeScreens = {
+        viewModel.closePlaylist()
+        viewModel.closeCollection()
+        viewModel.closeArtist()
+    }
 
     Box(Modifier.fillMaxSize()) {
         Scaffold(
@@ -193,7 +204,7 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                         NavigationBarItem(
                             selected = tab == 0 && state.openPlaylist == null,
                             onClick = {
-                                viewModel.closePlaylist()
+                                closeScreens()
                                 tab = 0
                             },
                             icon = { Icon(Icons.Filled.Home, null, modifier = Modifier.size(22.dp)) },
@@ -202,7 +213,7 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                         NavigationBarItem(
                             selected = tab == 1 && state.openPlaylist == null,
                             onClick = {
-                                viewModel.closePlaylist()
+                                closeScreens()
                                 tab = 1
                             },
                             icon = { Icon(Icons.Filled.Search, null, modifier = Modifier.size(22.dp)) },
@@ -211,7 +222,7 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                         NavigationBarItem(
                             selected = tab == 2 && state.openPlaylist == null,
                             onClick = {
-                                viewModel.closePlaylist()
+                                closeScreens()
                                 tab = 2
                             },
                             icon = { Icon(Icons.Filled.Favorite, null, modifier = Modifier.size(22.dp)) },
@@ -220,7 +231,7 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                         NavigationBarItem(
                             selected = tab == 3 && state.openPlaylist == null,
                             onClick = {
-                                viewModel.closePlaylist()
+                                closeScreens()
                                 tab = 3
                             },
                             icon = { Icon(Icons.Filled.Insights, null, modifier = Modifier.size(22.dp)) },
@@ -229,7 +240,7 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                         NavigationBarItem(
                             selected = tab == 4 && state.openPlaylist == null,
                             onClick = {
-                                viewModel.closePlaylist()
+                                closeScreens()
                                 tab = 4
                             },
                             icon = { Icon(Icons.Filled.Settings, null, modifier = Modifier.size(22.dp)) },
@@ -243,6 +254,16 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                 state.openPlaylist != null -> PlaylistDetailScreen(state, viewModel, Modifier.padding(padding)) {
                     addToPlaylistTrack = it
                 }
+                state.remoteCollectionId != null -> RemoteCollectionScreen(
+                    state,
+                    viewModel,
+                    Modifier.padding(padding),
+                ) { addToPlaylistTrack = it }
+                state.artistId != null -> ArtistScreen(
+                    state,
+                    viewModel,
+                    Modifier.padding(padding),
+                ) { addToPlaylistTrack = it }
                 tab == 0 -> HomeScreen(state, viewModel, Modifier.padding(padding))
                 tab == 1 -> SearchScreen(state, viewModel, Modifier.padding(padding)) {
                     addToPlaylistTrack = it
@@ -262,6 +283,10 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                 viewModel = viewModel,
                 onClose = { playerOpen = false },
                 onAddToPlaylist = { addToPlaylistTrack = it },
+                onArtist = { name ->
+                    playerOpen = false
+                    viewModel.openArtistFromName(name)
+                },
             )
         }
         addToPlaylistTrack?.let { track ->
@@ -386,7 +411,10 @@ private fun HomeScreen(state: AuthUiState, viewModel: AuthViewModel, modifier: M
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(state.recentTracks.take(12), key = { "recent-${it.id}" }) { track ->
-                        TrackTile(track) { viewModel.playSearchResult(track) }
+                        TrackTile(
+                            track,
+                            onArtist = { viewModel.openArtistFromName(track.artist) },
+                        ) { viewModel.playSearchResult(track) }
                     }
                 }
             }
@@ -404,7 +432,10 @@ private fun HomeScreen(state: AuthUiState, viewModel: AuthViewModel, modifier: M
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(state.topTracks.take(12), key = { "top-${it.id}" }) { track ->
-                        TrackTile(track) { viewModel.playTopTrack(track) }
+                        TrackTile(
+                            track,
+                            onArtist = { viewModel.openArtistFromName(track.artist) },
+                        ) { viewModel.playTopTrack(track) }
                     }
                 }
             }
@@ -538,7 +569,7 @@ private fun PlaylistCard(playlist: PlaylistDto, onOpen: () -> Unit, onPlay: () -
 }
 
 @Composable
-private fun TrackTile(track: Track, onClick: () -> Unit) {
+private fun TrackTile(track: Track, onArtist: (() -> Unit)? = null, onClick: () -> Unit) {
     Column(Modifier.width(116.dp).clickable(onClick = onClick)) {
         CoverImage(track.thumbnail, 116.dp, 12.dp)
         Text(
@@ -556,7 +587,40 @@ private fun TrackTile(track: Track, onClick: () -> Unit) {
             fontSize = 10.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            modifier = if (onArtist != null) {
+                Modifier.clickable(onClick = onArtist)
+            } else {
+                Modifier
+            },
         )
+    }
+}
+
+@Composable
+private fun ArtistTile(artist: Artist, onClick: () -> Unit) {
+    Column(
+        Modifier.width(96.dp).clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        CoverImage(artist.thumbnail, 84.dp, 42.dp)
+        Text(
+            artist.name,
+            color = OpenfyTextHigh,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        if (artist.subtitle.isNotBlank()) {
+            Text(
+                artist.subtitle,
+                color = OpenfyTextLow,
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -603,15 +667,42 @@ private fun SearchScreen(
             Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
         }
         Spacer(Modifier.height(12.dp))
-        if (state.searchResults.isEmpty() && !state.searching) {
+        if (state.searchResults.isEmpty() && state.searchArtists.isEmpty() && !state.searching) {
             Text(
-                "Busque uma música e toque para ouvir. O catálogo é o YouTube Music, sem anúncios.",
+                "Busque uma música ou artista e toque para ouvir. O catálogo é o YouTube Music, sem anúncios.",
                 color = OpenfyTextLow,
                 fontSize = 12.sp,
                 modifier = Modifier.padding(top = 8.dp),
             )
         }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (state.searchArtists.isNotEmpty()) {
+                item {
+                    Text(
+                        "Artistas",
+                        color = OpenfyTextHigh,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                item {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        items(state.searchArtists, key = { it.id }) { artist ->
+                            ArtistTile(artist) { viewModel.openArtistById(artist.id) }
+                        }
+                    }
+                }
+                item {
+                    Text(
+                        "Músicas",
+                        color = OpenfyTextHigh,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
             items(state.searchResults, key = { it.id }) { track ->
                 TrackRow(
                     track = track,
@@ -622,6 +713,7 @@ private fun SearchScreen(
                     onPlayNext = { viewModel.playNext(track) },
                     onAddQueue = { viewModel.addToQueue(track) },
                     onAddPlaylist = { onAddToPlaylist(track) },
+                    onArtist = { viewModel.openArtistFromName(track.artist) },
                 )
             }
             item { Spacer(Modifier.height(20.dp)) }
@@ -684,6 +776,7 @@ private fun LikedScreen(
                     onPlayNext = { viewModel.playNext(track) },
                     onAddQueue = { viewModel.addToQueue(track) },
                     onAddPlaylist = { onAddToPlaylist(track) },
+                    onArtist = { viewModel.openArtistFromName(track.artist) },
                 )
             }
             item { Spacer(Modifier.height(20.dp)) }
@@ -702,6 +795,7 @@ private fun TrackRow(
     onAddQueue: () -> Unit,
     onAddPlaylist: () -> Unit,
     onRemove: (() -> Unit)? = null,
+    onArtist: (() -> Unit)? = null,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Card(
@@ -730,6 +824,11 @@ private fun TrackRow(
                     fontSize = 11.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = if (onArtist != null) {
+                        Modifier.clickable(onClick = onArtist)
+                    } else {
+                        Modifier
+                    },
                 )
             }
             IconButton(onClick = onLike) {
@@ -898,6 +997,7 @@ private fun PlaylistDetailScreen(
                     onRemove = item?.let { entry ->
                         { viewModel.removeFromPlaylist(entry) }
                     },
+                    onArtist = { viewModel.openArtistFromName(track.artist) },
                 )
             }
             item { Spacer(Modifier.height(20.dp)) }
@@ -913,6 +1013,286 @@ private fun PlaylistDetailScreen(
                 viewModel.clearShareCode()
             },
         )
+    }
+}
+
+@Composable
+private fun ArtistScreen(
+    state: AuthUiState,
+    viewModel: AuthViewModel,
+    modifier: Modifier = Modifier,
+    onAddToPlaylist: (Track) -> Unit,
+) {
+    val page = state.artistPage
+    if (state.artistLoading && page == null) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = OpenfyAccent, modifier = Modifier.size(26.dp))
+        }
+        return
+    }
+    if (page == null) {
+        Column(
+            modifier.fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                state.artistError ?: "Artista não encontrado.",
+                color = OpenfyTextLow,
+                fontSize = 13.sp,
+            )
+            state.artistId?.let { id ->
+                TextButton(onClick = { viewModel.openArtistById(id) }) {
+                    Text("Tentar de novo", color = OpenfyAccent)
+                }
+            }
+        }
+        return
+    }
+    LazyColumn(
+        modifier.fillMaxSize().padding(horizontal = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { viewModel.closeArtist() }) {
+                    Icon(Icons.Filled.ArrowBack, "Voltar", tint = OpenfyTextHigh)
+                }
+                Spacer(Modifier.width(4.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("ARTISTA", color = OpenfyTextLow, fontSize = 10.sp, letterSpacing = 1.4.sp)
+                    Text(
+                        page.name,
+                        color = OpenfyTextHigh,
+                        fontSize = 26.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (page.listeners.isNotBlank()) {
+                        Text(page.listeners, color = OpenfyTextLow, fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CoverImage(
+                    page.avatar.ifBlank { page.banner },
+                    108.dp,
+                    54.dp,
+                )
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Button(
+                        onClick = {
+                            page.topTracks.firstOrNull()?.let { viewModel.playArtistTop(it) }
+                        },
+                        enabled = page.topTracks.isNotEmpty(),
+                    ) {
+                        Text("Tocar populares")
+                    }
+                    TextButton(
+                        onClick = { viewModel.playArtistRadio() },
+                        enabled = page.radioVideoId != null || page.topTracks.isNotEmpty(),
+                    ) {
+                        Text("Rádio do artista", color = OpenfyAccent)
+                    }
+                }
+            }
+        }
+        if (page.description.isNotBlank()) {
+            item {
+                Text(
+                    page.description,
+                    color = OpenfyTextLow,
+                    fontSize = 12.sp,
+                    maxLines = 4,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (page.topTracks.isNotEmpty()) {
+            item {
+                Text(
+                    "Populares",
+                    color = OpenfyTextHigh,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+            }
+            items(page.topTracks, key = { "artist-${it.id}" }) { track ->
+                TrackRow(
+                    track = track,
+                    isCurrent = state.track?.id == track.id,
+                    liked = track.id in state.likedIds,
+                    onPlay = { viewModel.playArtistTop(track) },
+                    onLike = { viewModel.toggleLike(track) },
+                    onPlayNext = { viewModel.playNext(track) },
+                    onAddQueue = { viewModel.addToQueue(track) },
+                    onAddPlaylist = { onAddToPlaylist(track) },
+                )
+            }
+        }
+        page.sections.forEach { section ->
+            if (section.cards.isNotEmpty()) {
+                item(key = "artist-section-${section.title}") {
+                    Text(
+                        section.title,
+                        color = OpenfyTextHigh,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                }
+                item(key = "artist-cards-${section.title}") {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        items(section.cards, key = { "${it.kind}:${it.id}" }) { card ->
+                            ArtistMediaCard(card) {
+                                when (card.kind) {
+                                    MediaKind.ARTIST -> viewModel.openArtistById(card.id)
+                                    MediaKind.ALBUM, MediaKind.PLAYLIST -> viewModel.openCollection(card.id)
+                                    MediaKind.TRACK -> viewModel.playSearchResult(
+                                        Track(
+                                            id = card.id,
+                                            title = card.title,
+                                            artist = page.name,
+                                            thumbnail = card.thumbnail,
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+@Composable
+private fun ArtistMediaCard(card: com.openfy.core.MediaCard, onClick: () -> Unit) {
+    Column(Modifier.width(116.dp).clickable(onClick = onClick)) {
+        CoverImage(
+            card.thumbnail,
+            116.dp,
+            if (card.kind == MediaKind.ARTIST) 58.dp else 12.dp,
+        )
+        Text(
+            card.title,
+            color = OpenfyTextHigh,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        if (card.subtitle.isNotBlank()) {
+            Text(
+                card.subtitle,
+                color = OpenfyTextLow,
+                fontSize = 10.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RemoteCollectionScreen(
+    state: AuthUiState,
+    viewModel: AuthViewModel,
+    modifier: Modifier = Modifier,
+    onAddToPlaylist: (Track) -> Unit,
+) {
+    val collection = state.remoteCollection
+    if (state.collectionLoading && collection == null) {
+        Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = OpenfyAccent, modifier = Modifier.size(26.dp))
+        }
+        return
+    }
+    if (collection == null) {
+        Column(
+            modifier.fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                state.collectionError ?: "Coleção não encontrada.",
+                color = OpenfyTextLow,
+                fontSize = 13.sp,
+            )
+            state.remoteCollectionId?.let { id ->
+                TextButton(onClick = { viewModel.openCollection(id) }) {
+                    Text("Tentar de novo", color = OpenfyAccent)
+                }
+            }
+        }
+        return
+    }
+    Column(modifier.fillMaxSize().padding(horizontal = 18.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { viewModel.closeCollection() }) {
+                Icon(Icons.Filled.ArrowBack, "Voltar", tint = OpenfyTextHigh)
+            }
+            CoverImage(collection.thumbnail, 56.dp, 10.dp)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    collection.title,
+                    color = OpenfyTextHigh,
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "${collection.tracks.size} faixas",
+                    color = OpenfyTextLow,
+                    fontSize = 11.sp,
+                )
+            }
+            IconButton(
+                onClick = { viewModel.playCollection() },
+                enabled = collection.tracks.isNotEmpty(),
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    "Tocar",
+                    tint = OpenfyAccent,
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+        }
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            itemsIndexed(collection.tracks, key = { index, track -> "${track.id}-$index" }) { _, track ->
+                TrackRow(
+                    track = track,
+                    isCurrent = state.track?.id == track.id,
+                    liked = track.id in state.likedIds,
+                    onPlay = { viewModel.playCollectionTrack(track) },
+                    onLike = { viewModel.toggleLike(track) },
+                    onPlayNext = { viewModel.playNext(track) },
+                    onAddQueue = { viewModel.addToQueue(track) },
+                    onAddPlaylist = { onAddToPlaylist(track) },
+                    onArtist = { viewModel.openArtistFromName(track.artist) },
+                )
+            }
+            item { Spacer(Modifier.height(20.dp)) }
+        }
     }
 }
 
@@ -1036,6 +1416,7 @@ private fun RecapScreen(
                             onPlayNext = { viewModel.playNext(track) },
                             onAddQueue = { viewModel.addToQueue(track) },
                             onAddPlaylist = { onAddToPlaylist(track) },
+                            onArtist = { viewModel.openArtistFromName(track.artist) },
                         )
                     }
                 }
@@ -1350,6 +1731,7 @@ private fun PlayerOverlay(
     viewModel: AuthViewModel,
     onClose: () -> Unit,
     onAddToPlaylist: (Track) -> Unit,
+    onArtist: (String) -> Unit,
 ) {
     BackHandler(onBack = onClose)
     val track = state.track
@@ -1429,6 +1811,9 @@ private fun PlayerOverlay(
                             fontSize = 13.sp,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.clickable {
+                                track?.artist?.takeIf { it.isNotBlank() }?.let(onArtist)
+                            },
                         )
                     }
                 }
@@ -1450,6 +1835,9 @@ private fun PlayerOverlay(
                     fontSize = 14.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable {
+                        track?.artist?.takeIf { it.isNotBlank() }?.let(onArtist)
+                    },
                 )
             }
             Row(
@@ -1940,11 +2328,11 @@ private fun ImportPlaylistDialog(onDismiss: () -> Unit, onImport: (String) -> Un
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = OpenfyPanelHigh,
-        title = { Text("Importar do YouTube Music", color = OpenfyTextHigh) },
+        title = { Text("Importar playlist", color = OpenfyTextHigh) },
         text = {
             Column {
                 Text(
-                    "Cole o link de uma playlist ou álbum público. As faixas entram na sua conta e aparecem no PC.",
+                    "Cole o link de uma playlist ou álbum público do YouTube Music, ou de uma playlist pública do Spotify. As faixas entram na sua conta e aparecem no PC.",
                     color = OpenfyTextLow,
                     fontSize = 12.sp,
                 )
@@ -1953,7 +2341,7 @@ private fun ImportPlaylistDialog(onDismiss: () -> Unit, onImport: (String) -> Un
                     value = url,
                     onValueChange = { url = it },
                     singleLine = true,
-                    label = { Text("Link da playlist ou álbum") },
+                    label = { Text("Link do YouTube Music ou Spotify") },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }

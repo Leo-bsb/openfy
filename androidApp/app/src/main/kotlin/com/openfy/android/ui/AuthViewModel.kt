@@ -26,6 +26,7 @@ import com.openfy.android.data.PushPlayEvent
 import com.openfy.android.data.RemotePlaylistItem
 import com.openfy.android.data.RemoteTrack
 import com.openfy.android.data.SessionStore
+import com.openfy.android.data.SpotifyClient
 import com.openfy.android.data.StoredSession
 import com.openfy.android.data.SupabaseApi
 import com.openfy.android.data.SupabaseException
@@ -33,8 +34,12 @@ import com.openfy.android.playback.EqualizerController
 import com.openfy.android.playback.PlaybackBridge
 import com.openfy.android.playback.PlaybackService
 import com.openfy.core.ColorPalette
+import com.openfy.core.Artist
+import com.openfy.core.ArtistPage
 import com.openfy.core.Importer
 import com.openfy.core.PlayerLayout
+import com.openfy.core.RemoteCollection
+import com.openfy.core.SearchMode
 import com.openfy.core.Track
 import com.openfy.data.Media
 import com.openfy.data.YouTubeEngine
@@ -74,6 +79,7 @@ data class AuthUiState(
     val searchQuery: String = "",
     val searching: Boolean = false,
     val searchResults: List<Track> = emptyList(),
+    val searchArtists: List<Artist> = emptyList(),
     val searchError: String? = null,
     val track: Track? = null,
     val queue: List<Track> = emptyList(),
@@ -105,6 +111,14 @@ data class AuthUiState(
     val recapLoading: Boolean = false,
     val recapError: String? = null,
     val shareCode: String? = null,
+    val artistId: String? = null,
+    val artistPage: ArtistPage? = null,
+    val artistLoading: Boolean = false,
+    val artistError: String? = null,
+    val remoteCollectionId: String? = null,
+    val remoteCollection: RemoteCollection? = null,
+    val collectionLoading: Boolean = false,
+    val collectionError: String? = null,
 ) {
     val hasPrevious: Boolean get() = queueIndex > 0
     val hasNext: Boolean get() = queueIndex >= 0 && queueIndex < queue.lastIndex
@@ -193,6 +207,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private var searchJob: Job? = null
+    private var artistJob: Job? = null
+    private var collectionJob: Job? = null
     private var eventStartedAt: Long = 0
     private var eventTrack: Track? = null
     private var eventSource: String = "unknown"
@@ -573,16 +589,25 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(searchQuery = clean, searchError = null) }
         searchJob?.cancel()
         if (clean.isBlank()) {
-            _state.update { it.copy(searchResults = emptyList(), searching = false) }
+            _state.update {
+                it.copy(searchResults = emptyList(), searchArtists = emptyList(), searching = false)
+            }
             return
         }
         searchJob = viewModelScope.launch {
-            _state.update { it.copy(searching = true, searchResults = emptyList()) }
+            _state.update {
+                it.copy(searching = true, searchResults = emptyList(), searchArtists = emptyList())
+            }
             delay(300)
-            runCatching { youtube.searchSongs(clean, 20) }
-                .onSuccess { tracks ->
+            runCatching { youtube.search(clean, SearchMode.SONGS) }
+                .onSuccess { result ->
                     _state.update {
-                        it.copy(searching = false, searchResults = tracks, searchError = null)
+                        it.copy(
+                            searching = false,
+                            searchResults = result.tracks,
+                            searchArtists = result.artists,
+                            searchError = null,
+                        )
                     }
                 }
                 .onFailure { error ->
@@ -591,6 +616,159 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
         }
+    }
+
+    fun openArtistById(id: String) {
+        val clean = id.trim()
+        if (clean.isBlank()) return
+        artistJob?.cancel()
+        _state.update {
+            it.copy(
+                artistId = clean,
+                artistPage = null,
+                artistLoading = true,
+                artistError = null,
+                remoteCollectionId = null,
+                remoteCollection = null,
+            )
+        }
+        artistJob = viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { youtube.artist(clean) } }
+                .onSuccess { page ->
+                    if (_state.value.artistId != clean) return@onSuccess
+                    _state.update {
+                        it.copy(artistPage = page, artistLoading = false, artistError = null)
+                    }
+                }
+                .onFailure { error ->
+                    if (_state.value.artistId != clean) return@onFailure
+                    _state.update {
+                        it.copy(
+                            artistLoading = false,
+                            artistError = error.message ?: "Não foi possível carregar o artista.",
+                        )
+                    }
+                }
+        }
+    }
+
+    fun openArtistFromName(name: String) {
+        val clean = name.substringBefore("•").substringBefore(",").trim()
+        if (clean.isBlank()) return
+        artistJob?.cancel()
+        _state.update {
+            it.copy(
+                artistId = clean,
+                artistPage = null,
+                artistLoading = true,
+                artistError = null,
+                remoteCollectionId = null,
+                remoteCollection = null,
+            )
+        }
+        artistJob = viewModelScope.launch {
+            val found = runCatching {
+                withContext(Dispatchers.IO) { youtube.search(clean, SearchMode.ARTISTS) }
+            }.getOrNull()
+            val artist = found?.artists?.firstOrNull()
+            if (artist == null) {
+                if (_state.value.artistId == clean) {
+                    _state.update {
+                        it.copy(artistLoading = false, artistError = "Artista não encontrado.")
+                    }
+                }
+                return@launch
+            }
+            openArtistById(artist.id)
+        }
+    }
+
+    fun closeArtist() {
+        artistJob?.cancel()
+        _state.update {
+            it.copy(
+                artistId = null,
+                artistPage = null,
+                artistLoading = false,
+                artistError = null,
+            )
+        }
+    }
+
+    fun openCollection(id: String) {
+        val clean = id.trim()
+        if (clean.isBlank()) return
+        collectionJob?.cancel()
+        _state.update {
+            it.copy(
+                remoteCollectionId = clean,
+                remoteCollection = null,
+                collectionLoading = true,
+                collectionError = null,
+            )
+        }
+        collectionJob = viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { youtube.collection(clean) } }
+                .onSuccess { collection ->
+                    if (_state.value.remoteCollectionId != clean) return@onSuccess
+                    _state.update {
+                        it.copy(
+                            remoteCollection = collection,
+                            collectionLoading = false,
+                            collectionError = null,
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    if (_state.value.remoteCollectionId != clean) return@onFailure
+                    _state.update {
+                        it.copy(
+                            collectionLoading = false,
+                            collectionError = error.message ?: "Não foi possível carregar.",
+                        )
+                    }
+                }
+        }
+    }
+
+    fun closeCollection() {
+        collectionJob?.cancel()
+        _state.update {
+            it.copy(
+                remoteCollectionId = null,
+                remoteCollection = null,
+                collectionLoading = false,
+                collectionError = null,
+            )
+        }
+    }
+
+    fun playArtistTop(track: Track) {
+        val tracks = _state.value.artistPage?.topTracks.orEmpty()
+        play(track, tracks.ifEmpty { listOf(track) }, "artist")
+    }
+
+    fun playArtistRadio() {
+        val page = _state.value.artistPage ?: return
+        val id = page.radioVideoId ?: page.topTracks.firstOrNull()?.id ?: return
+        val seed = Track(
+            id = id,
+            title = page.name,
+            artist = page.name,
+            thumbnail = page.avatar,
+        )
+        play(seed, listOf(seed), "artist")
+        startRadio(seed, page.radioPlaylistId)
+    }
+
+    fun playCollectionTrack(track: Track) {
+        val tracks = _state.value.remoteCollection?.tracks.orEmpty()
+        play(track, tracks.ifEmpty { listOf(track) }, "collection")
+    }
+
+    fun playCollection() {
+        val tracks = _state.value.remoteCollection?.tracks.orEmpty()
+        if (tracks.isNotEmpty()) play(tracks.first(), tracks, "collection")
     }
 
     // ------------------------------------------------------------------ playback
@@ -609,13 +787,17 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         radioAdvancePending = false
     }
 
-    private fun startRadio(seed: Track) {
+    private fun startRadio(seed: Track, playlistId: String? = null) {
         resetRadio()
         radioSeed = seed
         val epoch = radioEpoch
         radioLoading = true
         radioJob = viewModelScope.launch {
-            val page = runCatching { withContext(Dispatchers.IO) { youtube.radio(seed.id) } }.getOrNull()
+            val page = runCatching {
+                withContext(Dispatchers.IO) {
+                    if (playlistId == null) youtube.radio(seed.id) else youtube.radio(seed.id, playlistId)
+                }
+            }.getOrNull()
             if (epoch != radioEpoch) return@launch
             radioLoading = false
             if (page == null || page.tracks.isEmpty() || _state.value.track?.id != seed.id) return@launch
@@ -1111,6 +1293,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun importPlaylist(url: String) {
+        if (SpotifyClient.playlistId(url) != null) {
+            importSpotifyPlaylist(url)
+            return
+        }
         val browse = Importer.parseYtmBrowseId(url)
         if (browse == null) {
             _state.update {
@@ -1164,6 +1350,74 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     _state.update {
                         it.copy(busy = false, error = error.message ?: "Falha ao importar a playlist.")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun importSpotifyPlaylist(url: String) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null, message = "Lendo playlist do Spotify…") }
+            var partial: PlaylistDto? = null
+            runCatching {
+                withSession { session ->
+                    val spotify = SpotifyClient.playlist(url)
+                        ?: throw SupabaseException("Não foi possível ler a playlist pública do Spotify.")
+                    if (spotify.tracks.isEmpty()) {
+                        throw SupabaseException("A playlist do Spotify está vazia.")
+                    }
+                    val name = spotify.name.ifBlank { "Importada do Spotify" }
+                    val playlist = api.createPlaylist(session.accessToken, name)
+                        ?: throw SupabaseException("O servidor não devolveu a playlist criada.")
+                    partial = playlist
+                    val matched = mutableListOf<Track>()
+                    spotify.tracks.take(200).forEachIndexed { index, item ->
+                        val candidates = runCatching {
+                            withContext(Dispatchers.IO) {
+                                youtube.searchSongs("${item.artist} ${item.title}", 6)
+                            }
+                        }.getOrDefault(emptyList())
+                        Importer.bestMatch(item.title, item.artist, item.durationMs, candidates)
+                            ?.let { track ->
+                                if (matched.none { it.id == track.id }) matched += track
+                            }
+                        if (index % 5 == 0) {
+                            _state.update {
+                                it.copy(message = "Casando ${index + 1}/${spotify.tracks.size}…")
+                            }
+                        }
+                        delay(80)
+                    }
+                    if (matched.isEmpty()) {
+                        throw SupabaseException("Nenhuma faixa foi encontrada no YouTube Music.")
+                    }
+                    val added = api.addPlaylistItems(session.accessToken, playlist.id, matched)
+                    playlist to (spotify.tracks.size to added)
+                }
+            }.onSuccess { (playlist, counts) ->
+                _state.value.session?.let { loadHome(it) }
+                val (total, added) = counts
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        message = "\"${playlist.name}\" importada: $added de $total faixas encontradas.",
+                    )
+                }
+            }.onFailure { error ->
+                android.util.Log.e("OpenfySpotify", "import falhou: ${error.message}", error)
+                val created = partial
+                if (created != null) {
+                    _state.value.session?.let { loadHome(it) }
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = "\"${created.name}\" foi criada, mas as faixas não entraram: ${error.message}",
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(busy = false, error = error.message ?: "Falha ao importar do Spotify.")
                     }
                 }
             }
@@ -1595,6 +1849,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             lyricsJob?.cancel()
             sleepJob?.cancel()
             recapJob?.cancel()
+            artistJob?.cancel()
+            collectionJob?.cancel()
             lyricsCache.clear()
             PlaybackService.stop(getApplication())
             store.clear()
@@ -1627,6 +1883,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         lyricsJob?.cancel()
         sleepJob?.cancel()
         recapJob?.cancel()
+        artistJob?.cancel()
+        collectionJob?.cancel()
         PlaybackService.stop(getApplication())
         PlaybackBridge.clear()
         equalizer.releaseAll()
