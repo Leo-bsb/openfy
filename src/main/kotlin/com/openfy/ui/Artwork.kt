@@ -54,7 +54,9 @@ object ArtworkCache {
         if (url.isBlank() || !url.startsWith("http")) return null
         peekPalette(url)?.let { return it }
         val bitmap = get(url) ?: return null
-        val extracted = withContext(Dispatchers.Default) { extractPalette(bitmap) } ?: return null
+        val extracted = withContext(Dispatchers.Default) {
+            runCatching { extractPalette(bitmap) }.getOrNull()
+        } ?: return null
         synchronized(palettes) { palettes[url] = extracted }
         return extracted
     }
