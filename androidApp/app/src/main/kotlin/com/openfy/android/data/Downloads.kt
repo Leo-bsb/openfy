@@ -44,8 +44,20 @@ class DownloadStore(private val dir: File) {
             if (!dir.isDirectory) dir.mkdirs()
             val temp = File(dir, "$INDEX_NAME.tmp")
             temp.writeText(json.encodeToString(index.values.toList()))
-            if (indexFile().exists()) indexFile().delete()
-            temp.renameTo(indexFile())
+            runCatching {
+                java.nio.file.Files.move(
+                    temp.toPath(),
+                    indexFile().toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                )
+            }.onFailure {
+                java.nio.file.Files.move(
+                    temp.toPath(),
+                    indexFile().toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                )
+            }
         }
     }
 

@@ -31,13 +31,30 @@ class HomeCache(dir: File) {
     private val json = Json { ignoreUnknownKeys = true }
 
     /** Grava o snapshot de forma atômica (tmp + rename). Falha não apaga o cache anterior. */
+    @Synchronized
     fun save(snapshot: HomeSnapshot) {
         val ok = runCatching {
             temp.writeText(json.encodeToString(snapshot))
-            if (file.exists()) file.delete()
-            temp.renameTo(file)
+            moveReplacing(temp, file)
         }.isSuccess
         if (!ok) runCatching { temp.delete() }
+    }
+
+    private fun moveReplacing(from: File, to: File) {
+        runCatching {
+            java.nio.file.Files.move(
+                from.toPath(),
+                to.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            )
+        }.onFailure {
+            java.nio.file.Files.move(
+                from.toPath(),
+                to.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            )
+        }
     }
 
     fun load(): HomeSnapshot? {

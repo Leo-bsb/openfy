@@ -476,6 +476,7 @@ class SupabaseApi {
             header("apikey", anonKey)
             header(HttpHeaders.Authorization, "Bearer $accessToken")
             header("Prefer", "return=representation")
+            parameter("select", "id,name,updated_at,cover_url,deleted")
             contentType(ContentType.Application.Json)
             setBody(CreatePlaylistRequest(name.trim()))
         }

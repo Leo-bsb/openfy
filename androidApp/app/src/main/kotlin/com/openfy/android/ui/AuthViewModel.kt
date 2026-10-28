@@ -21,6 +21,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import com.openfy.android.data.AuthSession
 import com.openfy.android.data.AudioDownloader
+import com.openfy.android.data.CachedPlaylist
 import com.openfy.android.data.DownloadEntry
 import com.openfy.android.data.DownloadResult
 import com.openfy.android.data.DownloadStore
@@ -28,6 +29,7 @@ import com.openfy.android.data.HomeCache
 import com.openfy.android.data.HomeSnapshot
 import com.openfy.android.data.LyricLine
 import com.openfy.android.data.LyricsClient
+import com.openfy.android.data.PlaylistCache
 import com.openfy.android.data.MonthlyArtistRow
 import com.openfy.android.data.MonthlyListeningRow
 import com.openfy.android.data.PlaylistDto
@@ -55,6 +57,8 @@ import com.openfy.data.Media
 import com.openfy.data.YouTubeEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -150,6 +154,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val api = SupabaseApi()
     private val youtube = YouTubeEngine()
     private val homeCache = HomeCache(File(application.filesDir, "offline"))
+    private val playlistCache = PlaylistCache(File(application.filesDir, "offline"))
     private val downloadStore = DownloadStore(File(application.filesDir, "downloads"))
 
     private val _state = MutableStateFlow(
@@ -438,19 +443,25 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun ensureSession(): StoredSession? {
         val current = store.load() ?: return null
         if (!current.isExpired) return current
-        val refreshed = refreshSession(current)
+        val result = runCatching { refreshSession(current) }
+        val refreshed = result.getOrNull()
         if (refreshed != null) return refreshed
-        // Offline: mantém a sessão guardada para o modo cache; online: desloga como antes.
-        if (!isOnline()) return current
-        store.clear()
-        return null
+        // Null com sucesso = o servidor rejeitou o refresh (credencial inválida).
+        // Falha de rede/servidor não pode deslogar: mantém a sessão para o cache offline.
+        if (result.isSuccess) {
+            store.clear()
+            return null
+        }
+        return current
     }
 
     private suspend fun refreshSession(current: StoredSession): StoredSession? {
         if (current.refreshToken.isBlank()) return null
-        return runCatching {
+        return try {
             store.save(api.refresh(current.refreshToken), previous = current)
-        }.getOrNull()
+        } catch (error: SupabaseException) {
+            if (error.status == 400 || error.status == 401) null else throw error
+        }
     }
 
     /** Executa uma chamada autenticada e, em caso de 401, renova o token uma vez. */
@@ -1017,8 +1028,26 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     play(first, tracks, "playlist")
                 }
             }.onFailure { error ->
-                _state.update {
-                    it.copy(busy = false, message = null, error = error.message ?: "Playlist falhou.")
+                val cached = withContext(Dispatchers.IO) { playlistCache.get(playlistId) }
+                if (cached != null && cached.tracks.isNotEmpty()) {
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            message = "Playlist offline salva em ${formatCacheTime(cached.savedAtMs)}.",
+                            error = null,
+                            offline = true,
+                            offlineSavedAtMs = cached.savedAtMs,
+                        )
+                    }
+                    play(cached.tracks.first(), cached.tracks, "playlist")
+                } else {
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            message = null,
+                            error = error.message ?: "Playlist falhou.",
+                        )
+                    }
                 }
             }
         }
@@ -1051,6 +1080,16 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 withSession { session -> loadPlaylistTracks(session, playlist.id) }
             }.onSuccess { (tracks, items) ->
+                withContext(Dispatchers.IO) {
+                    playlistCache.put(
+                        CachedPlaylist(
+                            id = playlist.id,
+                            tracks = tracks,
+                            items = items,
+                            savedAtMs = System.currentTimeMillis(),
+                        ),
+                    )
+                }
                 _state.update {
                     if (it.openPlaylist?.id != playlist.id) {
                         it
@@ -1063,14 +1102,33 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }.onFailure { error ->
-                _state.update {
-                    if (it.openPlaylist?.id != playlist.id) {
-                        it
-                    } else {
-                        it.copy(
-                            playlistLoading = false,
-                            error = error.message ?: "Não foi possível abrir a playlist.",
-                        )
+                val cached = withContext(Dispatchers.IO) { playlistCache.get(playlist.id) }
+                if (cached != null) {
+                    _state.update {
+                        if (it.openPlaylist?.id != playlist.id) {
+                            it
+                        } else {
+                            it.copy(
+                                playlistTracks = cached.tracks,
+                                playlistItems = cached.items,
+                                playlistLoading = false,
+                                offline = true,
+                                offlineSavedAtMs = cached.savedAtMs,
+                                message = "Playlist offline salva em ${formatCacheTime(cached.savedAtMs)}.",
+                                error = null,
+                            )
+                        }
+                    }
+                } else {
+                    _state.update {
+                        if (it.openPlaylist?.id != playlist.id) {
+                            it
+                        } else {
+                            it.copy(
+                                playlistLoading = false,
+                                error = error.message ?: "Não foi possível abrir a playlist.",
+                            )
+                        }
                     }
                 }
             }
@@ -2025,6 +2083,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             lyricsCache.clear()
             PlaybackService.stop(getApplication())
             store.clear()
+            homeCache.clear()
+            playlistCache.clear()
             lastHomeLoad = 0L
             _state.value = AuthUiState(
                 loading = false,
@@ -2096,20 +2156,24 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(message = "Baixando ${pending.size} faixas…") }
             var done = 0
             var failures = 0
-            for (track in pending) {
-                if (!isActive) break
-                val ok = runDownload(track)
-                if (ok) {
-                    done++
-                } else {
-                    failures++
-                    if (!isOnline()) break
-                }
-                if (failures >= 3) {
-                    _state.update {
-                        it.copy(error = "Parei a fila de downloads após várias falhas. Verifique a conexão.")
+            coroutineScope {
+                for (track in pending) {
+                    if (!isActive) break
+                    val job = async { runDownload(track) }
+                    downloadJobs[track.id] = job
+                    val ok = runCatching { job.await() }.getOrDefault(false)
+                    if (ok) {
+                        done++
+                    } else {
+                        failures++
+                        if (!isOnline()) break
                     }
-                    break
+                    if (failures >= 3) {
+                        _state.update {
+                            it.copy(error = "Parei a fila de downloads após várias falhas. Verifique a conexão.")
+                        }
+                        break
+                    }
                 }
             }
             playlistDownloadJob = null
@@ -2230,6 +2294,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
     }
+
+    private fun formatCacheTime(ms: Long): String =
+        java.time.format.DateTimeFormatter.ofPattern("dd/MM HH:mm")
+            .format(Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault()))
 
     override fun onCleared() {
         runCatching { finishEvent(completed = false, skipped = true) }
