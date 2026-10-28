@@ -1,6 +1,9 @@
 package com.openfy.android.ui
 
 import android.app.Application
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -11,11 +14,18 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import com.openfy.android.data.AuthSession
+import com.openfy.android.data.AudioDownloader
+import com.openfy.android.data.DownloadEntry
+import com.openfy.android.data.DownloadResult
+import com.openfy.android.data.DownloadStore
+import com.openfy.android.data.HomeCache
+import com.openfy.android.data.HomeSnapshot
 import com.openfy.android.data.LyricLine
 import com.openfy.android.data.LyricsClient
 import com.openfy.android.data.MonthlyArtistRow
@@ -55,8 +65,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.time.Instant
 import java.time.YearMonth
+import kotlin.coroutines.coroutineContext
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -119,9 +131,16 @@ data class AuthUiState(
     val remoteCollection: RemoteCollection? = null,
     val collectionLoading: Boolean = false,
     val collectionError: String? = null,
+    val offline: Boolean = false,
+    val offlineSavedAtMs: Long = 0,
+    val downloadedIds: Set<String> = emptySet(),
+    val downloads: List<DownloadEntry> = emptyList(),
+    val downloadProgress: Map<String, Float> = emptyMap(),
+    val downloadLimitMb: Int = SessionStore.DEFAULT_DOWNLOAD_LIMIT_MB,
 ) {
     val hasPrevious: Boolean get() = queueIndex > 0
     val hasNext: Boolean get() = queueIndex >= 0 && queueIndex < queue.lastIndex
+    val downloadUsedBytes: Long get() = downloads.sumOf { it.sizeBytes }
 }
 
 @UnstableApi
@@ -130,6 +149,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val store = SessionStore(application)
     private val api = SupabaseApi()
     private val youtube = YouTubeEngine()
+    private val homeCache = HomeCache(File(application.filesDir, "offline"))
+    private val downloadStore = DownloadStore(File(application.filesDir, "downloads"))
 
     private val _state = MutableStateFlow(
         AuthUiState(
@@ -141,6 +162,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             recentTracks = store.recentTracks(),
             eqEnabled = store.eqEnabled(),
             eqGains = store.eqGains(),
+            downloadLimitMb = store.downloadLimitMb(),
         ),
     )
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
@@ -238,6 +260,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val lyricsCache = mutableMapOf<String, List<LyricLine>>()
     private var lastSessionSave = 0L
     private var lastSavedTrack = ""
+    private val downloader = AudioDownloader(downloadStore) {
+        _state.value.downloadLimitMb.toLong() * BYTES_PER_MB
+    }
+    private val downloadJobs = mutableMapOf<String, Job>()
+    private var playlistDownloadJob: Job? = null
 
     init {
         activePlayer = playerA
@@ -284,6 +311,17 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         restore()
+        viewModelScope.launch(Dispatchers.IO) {
+            // Carrega o índice de downloads fora da main thread e limpa temporários órfãos.
+            downloadStore.repair()
+            val entries = downloadStore.all()
+            _state.update {
+                it.copy(
+                    downloads = entries,
+                    downloadedIds = entries.mapTo(HashSet()) { entry -> entry.track.id },
+                )
+            }
+        }
         viewModelScope.launch {
             while (isActive) {
                 delay(250)
@@ -351,10 +389,33 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         viewModelScope.launch {
+            val local = withContext(Dispatchers.IO) { downloadStore.fileFor(track.id) }
+            if (local != null) {
+                activePlayer.stop()
+                activePlayer.clearMediaItems()
+                activePlayer.setAudioAttributes(audioAttributes, false)
+                activePlayer.setMediaSource(mediaSourceLocal(track, local))
+                activePlayer.prepare()
+                activePlayer.seekTo(position)
+                activePlayer.playWhenReady = false
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        playing = false,
+                        durationMs = activePlayer.duration.coerceAtLeast(0L),
+                    )
+                }
+                return@launch
+            }
             val media = withContext(Dispatchers.IO) { youtube.media(track.id) } as? Media.Remote
             if (_state.value.track?.id != track.id || _state.value.session == null) return@launch
             if (media == null) {
-                _state.update { it.copy(busy = false, track = null) }
+                val offlineNotice = if (!isOnline()) {
+                    "Você está offline. Toque em uma faixa baixada para continuar ouvindo."
+                } else {
+                    null
+                }
+                _state.update { it.copy(busy = false, track = null, error = offlineNotice ?: it.error) }
                 return@launch
             }
             activePlayer.stop()
@@ -377,10 +438,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun ensureSession(): StoredSession? {
         val current = store.load() ?: return null
         if (!current.isExpired) return current
-        return refreshSession(current) ?: run {
-            store.clear()
-            null
-        }
+        val refreshed = refreshSession(current)
+        if (refreshed != null) return refreshed
+        // Offline: mantém a sessão guardada para o modo cache; online: desloga como antes.
+        if (!isOnline()) return current
+        store.clear()
+        return null
     }
 
     private suspend fun refreshSession(current: StoredSession): StoredSession? {
@@ -403,8 +466,30 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Conexão de internet ativa (usa ACCESS_NETWORK_STATE, permissão de instalação). */
+    private fun isOnline(): Boolean {
+        val manager = getApplication<Application>()
+            .getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
+        val network = manager.activeNetwork ?: return false
+        val capabilities = manager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
     private suspend fun loadHome(session: StoredSession) {
         homeMutex.withLock {
+            if (!isOnline()) {
+                // Sem rede: abre o último snapshot salvo e não tenta chamadas ao servidor.
+                if (!applyHomeSnapshot(session.userId)) {
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            busy = false,
+                            error = "Sem conexão e nenhum dado salvo neste aparelho.",
+                        )
+                    }
+                }
+                return@withLock
+            }
             try {
                 loadHomeOnce(session)
             } catch (first: Exception) {
@@ -415,13 +500,44 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                         loadHomeOnce(refreshed)
                         return
                     } catch (second: Exception) {
-                        _state.update { it.copy(loading = false, busy = false, error = second.message) }
+                        if (!applyHomeSnapshot(refreshed.userId)) {
+                            _state.update { it.copy(loading = false, busy = false, error = second.message) }
+                        }
                         return
                     }
                 }
-                _state.update { it.copy(loading = false, busy = false, error = first.message) }
+                if (!applyHomeSnapshot(session.userId)) {
+                    _state.update { it.copy(loading = false, busy = false, error = first.message) }
+                }
             }
         }
+    }
+
+    /**
+     * Restaura o snapshot da Home salvo no aparelho (modo offline).
+     * O cache nunca é apagado por falha de rede; só é substituído por um load com sucesso.
+     * Retorna false quando não existe snapshot para este usuário.
+     */
+    private suspend fun applyHomeSnapshot(userId: String): Boolean {
+        if (userId.isBlank()) return false
+        val snapshot = withContext(Dispatchers.IO) { homeCache.load() } ?: return false
+        if (snapshot.userId != userId) return false
+        _state.update {
+            it.copy(
+                loading = false,
+                busy = false,
+                offline = true,
+                offlineSavedAtMs = snapshot.savedAtMs,
+                profile = snapshot.profile ?: it.profile,
+                playlists = snapshot.playlists,
+                likedIds = snapshot.likedIds.toSet(),
+                likedTracks = snapshot.likedTracks,
+                topTracks = snapshot.topTracks,
+                recentTracks = snapshot.recentTracks.ifEmpty { it.recentTracks },
+                error = null,
+            )
+        }
+        return true
     }
 
     /** Atualiza ao voltar ao app, com throttle para não bater no servidor a cada composição. */
@@ -459,10 +575,24 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 topTracks = topTracks ?: it.topTracks,
                 deviceName = store.deviceName(),
                 crossfadeSeconds = store.crossfadeSeconds(),
+                offline = false,
+                offlineSavedAtMs = 0,
                 error = null,
             )
         }
         lastHomeLoad = System.currentTimeMillis()
+        // Salva o snapshot para uso offline. Nunca bloqueia a UI nem apaga cache em falha.
+        val snapshot = HomeSnapshot(
+            userId = session.userId,
+            savedAtMs = System.currentTimeMillis(),
+            profile = profile,
+            playlists = playlists,
+            likedIds = _state.value.likedIds.toList(),
+            likedTracks = _state.value.likedTracks,
+            topTracks = _state.value.topTracks,
+            recentTracks = store.recentTracks(),
+        )
+        viewModelScope.launch(Dispatchers.IO) { homeCache.save(snapshot) }
         val open = _state.value.openPlaylist
         if (open != null) {
             val fresh = playlists.firstOrNull { it.id == open.id }
@@ -1571,6 +1701,21 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         playJob = viewModelScope.launch {
+            val local = withContext(Dispatchers.IO) { downloadStore.fileFor(track.id) }
+            if (local != null) {
+                // Faixa baixada: toca direto do aparelho, sem rede.
+                standbyPlayer.stop()
+                standbyPlayer.clearMediaItems()
+                standbyPlayer.setAudioAttributes(audioAttributes, false)
+                activePlayer.setAudioAttributes(audioAttributes, true)
+                activePlayer.volume = 1f
+                activePlayer.setMediaSource(mediaSourceLocal(track, local))
+                activePlayer.prepare()
+                activePlayer.playWhenReady = true
+                _state.update { it.copy(busy = false) }
+                rememberRecent(track)
+                return@launch
+            }
             val media = withContext(Dispatchers.IO) { youtube.media(track.id) } as? Media.Remote
             if (_state.value.track?.id != track.id) return@launch
             if (media == null) {
@@ -1579,7 +1724,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                         busy = false,
                         track = null,
                         playing = false,
-                        error = "Não foi possível extrair o áudio desta faixa.",
+                        error = if (!isOnline()) {
+                            "Sem conexão. Baixe a faixa (menu ▸ Baixar) para ouvir offline."
+                        } else {
+                            "Não foi possível extrair o áudio desta faixa."
+                        },
                     )
                 }
                 return@launch
@@ -1597,10 +1746,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun mediaSource(track: Track, media: Media.Remote): MediaSource {
-        val dataSource = DefaultHttpDataSource.Factory()
-            .setDefaultRequestProperties(media.headers)
-            .setAllowCrossProtocolRedirects(true)
+    private fun mediaItem(track: Track, uri: Uri): MediaItem {
         val metadata = MediaMetadata.Builder()
             .setTitle(track.title)
             .setArtist(track.artist)
@@ -1610,12 +1756,26 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             .build()
-        val item = MediaItem.Builder()
-            .setUri(Uri.parse(media.url))
+        return MediaItem.Builder()
+            .setUri(uri)
             .setMediaId(track.id)
             .setMediaMetadata(metadata)
             .build()
-        return DefaultMediaSourceFactory(dataSource).createMediaSource(item)
+    }
+
+    private fun mediaSource(track: Track, media: Media.Remote): MediaSource {
+        val dataSource = DefaultHttpDataSource.Factory()
+            .setDefaultRequestProperties(media.headers)
+            .setAllowCrossProtocolRedirects(true)
+        return DefaultMediaSourceFactory(dataSource)
+            .createMediaSource(mediaItem(track, Uri.parse(media.url)))
+    }
+
+    /** Fonte de áudio local para faixa baixada; funciona sem rede. */
+    private fun mediaSourceLocal(track: Track, file: File): MediaSource {
+        val dataSource = DefaultDataSource.Factory(getApplication())
+        return DefaultMediaSourceFactory(dataSource)
+            .createMediaSource(mediaItem(track, Uri.fromFile(file)))
     }
 
     private fun maybePreloadNext() {
@@ -1630,8 +1790,16 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         preloadJob?.cancel()
         preloadJob = viewModelScope.launch {
             try {
-                val media = withContext(Dispatchers.IO) { youtube.media(track.id) } as? Media.Remote
-                    ?: return@launch
+                // Baixada? Usa o arquivo local; senão extrai o stream remoto.
+                val source = withContext(Dispatchers.IO) {
+                    val local = downloadStore.fileFor(track.id)
+                    if (local != null) {
+                        return@withContext mediaSourceLocal(track, local)
+                    }
+                    val media = youtube.media(track.id) as? Media.Remote
+                        ?: return@withContext null
+                    mediaSource(track, media)
+                } ?: return@launch
                 val now = _state.value
                 if (crossfading || now.track?.id != currentId || now.queueIndex + 1 != nextIndex) {
                     return@launch
@@ -1640,7 +1808,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 standby.stop()
                 standby.setAudioAttributes(audioAttributes, false)
                 standby.volume = 0f
-                standby.setMediaSource(mediaSource(track, media))
+                standby.setMediaSource(source)
                 standby.prepare()
                 standby.playWhenReady = false
                 preloadedTrack = track
@@ -1841,6 +2009,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             finishEvent(completed = false, skipped = true)
             resetRadio()
             cancelCrossfade()
+            playlistDownloadJob?.cancel()
+            downloadJobs.values.forEach { it.cancel() }
+            downloadJobs.clear()
             playerA.stop()
             playerB.stop()
             playerA.clearMediaItems()
@@ -1864,12 +2035,200 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 coverGradient = store.coverGradient(),
                 eqEnabled = store.eqEnabled(),
                 eqGains = store.eqGains(),
+                downloadLimitMb = store.downloadLimitMb(),
             )
+            // Arquivos baixados continuam no aparelho; o índice volta a popular o estado.
+            refreshDownloads()
         }
     }
 
     fun clearFeedback() {
         _state.update { it.copy(error = null, message = null, searchError = null) }
+    }
+
+    // ------------------------------------------------------------------ downloads
+
+    fun toggleDownload(track: Track) {
+        if (track.id in _state.value.downloadedIds || downloadStore.entry(track.id) != null) {
+            removeDownload(track.id)
+        } else {
+            startDownload(track)
+        }
+    }
+
+    fun startDownload(track: Track) {
+        if (downloadStore.entry(track.id) != null || track.id in _state.value.downloadedIds) {
+            _state.update { it.copy(message = "Esta faixa já está baixada.") }
+            return
+        }
+        if (downloadJobs[track.id]?.isActive == true) return
+        launchDownload(track)
+    }
+
+    fun cancelDownload(trackId: String) {
+        downloadJobs[trackId]?.cancel()
+    }
+
+    fun removeDownload(trackId: String) {
+        downloadJobs[trackId]?.cancel()
+        viewModelScope.launch {
+            val removed = withContext(Dispatchers.IO) { downloadStore.remove(trackId) }
+            refreshDownloads()
+            if (removed != null) {
+                _state.update { it.copy(message = "Download removido.") }
+            }
+        }
+    }
+
+    /** Baixa as faixas ainda não baixadas de uma playlist, em fila. */
+    fun downloadPlaylist(tracks: List<Track>) {
+        val pending = tracks.filterNot {
+            it.id in _state.value.downloadedIds ||
+                downloadStore.entry(it.id) != null ||
+                downloadJobs[it.id]?.isActive == true
+        }
+        if (pending.isEmpty()) {
+            _state.update { it.copy(message = "Todas as faixas desta playlist já estão baixadas.") }
+            return
+        }
+        playlistDownloadJob?.cancel()
+        playlistDownloadJob = viewModelScope.launch {
+            _state.update { it.copy(message = "Baixando ${pending.size} faixas…") }
+            var done = 0
+            var failures = 0
+            for (track in pending) {
+                if (!isActive) break
+                val ok = runDownload(track)
+                if (ok) {
+                    done++
+                } else {
+                    failures++
+                    if (!isOnline()) break
+                }
+                if (failures >= 3) {
+                    _state.update {
+                        it.copy(error = "Parei a fila de downloads após várias falhas. Verifique a conexão.")
+                    }
+                    break
+                }
+            }
+            playlistDownloadJob = null
+            _state.update { it.copy(message = "Playlist: $done de ${pending.size} faixas baixadas.") }
+        }
+    }
+
+    fun clearDownloads() {
+        playlistDownloadJob?.cancel()
+        downloadJobs.values.forEach { it.cancel() }
+        downloadJobs.clear()
+        viewModelScope.launch {
+            val count = withContext(Dispatchers.IO) { downloadStore.clearAll() }
+            _state.update { it.copy(downloadProgress = emptyMap()) }
+            refreshDownloads()
+            _state.update {
+                it.copy(message = if (count > 0) "$count downloads apagados." else "Nenhum download para apagar.")
+            }
+        }
+    }
+
+    fun setDownloadLimitMb(mb: Int) {
+        val value = mb.coerceIn(128, 20_480)
+        store.setDownloadLimitMb(value)
+        _state.update { it.copy(downloadLimitMb = value) }
+        if (_state.value.downloadUsedBytes > value.toLong() * BYTES_PER_MB) {
+            _state.update { it.copy(message = "Limite abaixo do espaço usado. Apague downloads se precisar.") }
+        }
+    }
+
+    private fun launchDownload(track: Track): Job {
+        val job = viewModelScope.launch { runDownload(track) }
+        downloadJobs[track.id] = job
+        return job
+    }
+
+    private suspend fun refreshDownloads() {
+        val entries = withContext(Dispatchers.IO) { downloadStore.all() }
+        _state.update {
+            it.copy(
+                downloads = entries,
+                downloadedIds = entries.mapTo(HashSet()) { entry -> entry.track.id },
+            )
+        }
+    }
+
+    private suspend fun runDownload(track: Track): Boolean {
+        val self = coroutineContext[Job] ?: return false
+        if (downloadStore.entry(track.id) != null || track.id in _state.value.downloadedIds) {
+            _state.update { it.copy(message = "Esta faixa já está baixada.") }
+            return false
+        }
+        if (downloadJobs[track.id]?.isActive == true && downloadJobs[track.id] !== self) return false
+        val limitBytes = _state.value.downloadLimitMb.toLong() * BYTES_PER_MB
+        val estimate = track.durationSec.coerceAtLeast(60).toLong() * ESTIMATED_AUDIO_BYTES_PER_SECOND
+        if (downloadStore.usedBytes() + estimate > limitBytes) {
+            _state.update {
+                it.copy(error = "Limite de ${_state.value.downloadLimitMb} MB de downloads atingido. Ajuste em Ajustes › Downloads.")
+            }
+            return false
+        }
+        if (!isOnline()) {
+            _state.update { it.copy(error = "Sem conexão para baixar esta faixa.") }
+            return false
+        }
+        downloadJobs[track.id] = self
+        _state.update { it.copy(downloadProgress = it.downloadProgress + (track.id to 0f)) }
+        try {
+            var outcome = attemptDownload(track, self)
+            if ((outcome as? DownloadResult.Failed)?.expired == true) {
+                // URL expirada (401/403): descarta o stream em cache e reextrai uma vez.
+                withContext(Dispatchers.IO) { youtube.forgetStream(track.id) }
+                outcome = attemptDownload(track, self)
+            }
+            return when (outcome) {
+                is DownloadResult.Success -> {
+                    refreshDownloads()
+                    _state.update { it.copy(message = "Baixada: ${track.title}") }
+                    true
+                }
+                is DownloadResult.Failed -> {
+                    _state.update {
+                        it.copy(
+                            error = if (outcome.expired) {
+                                "O link do áudio expirou. Tente baixar de novo."
+                            } else {
+                                outcome.reason
+                            },
+                        )
+                    }
+                    false
+                }
+                DownloadResult.Cancelled -> false
+            }
+        } finally {
+            if (downloadJobs[track.id] === self) downloadJobs.remove(track.id)
+            _state.update { it.copy(downloadProgress = it.downloadProgress - track.id) }
+        }
+    }
+
+    private suspend fun attemptDownload(track: Track, job: Job): DownloadResult {
+        val media = withContext(Dispatchers.IO) { youtube.media(track.id) } as? Media.Remote
+            ?: return DownloadResult.Failed("Não foi possível obter o áudio desta faixa.")
+        var lastUpdate = 0L
+        return withContext(Dispatchers.IO) {
+            downloader.download(
+                track = track,
+                url = media.url,
+                headers = media.headers,
+                onProgress = { fraction ->
+                    val now = System.currentTimeMillis()
+                    if (now - lastUpdate >= 150) {
+                        lastUpdate = now
+                        _state.update { it.copy(downloadProgress = it.downloadProgress + (track.id to fraction)) }
+                    }
+                },
+                isCancelled = { !job.isActive },
+            )
+        }
     }
 
     override fun onCleared() {
@@ -1893,6 +2252,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         youtube.close()
         api.close()
         super.onCleared()
+    }
+
+    private companion object {
+        const val BYTES_PER_MB = 1024L * 1024L
+
+        /** Estimativa ~128 kbps para checar o limite antes de começar o download. */
+        const val ESTIMATED_AUDIO_BYTES_PER_SECOND = 16_000L
     }
 }
 
