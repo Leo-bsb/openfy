@@ -297,3 +297,24 @@ própria de playlist pelo celular.
   privadas exigem OAuth/Exportify; o CSV ainda não está no Android.
 - A página de embed do Spotify pode mudar; se isso acontecer, a importação falha
   com aviso e não cria playlist vazia.
+
+---
+
+## Atualização 0.4.0 (2026-10-28)
+
+- **Cache local da Home**: perfil, playlists, curtidas, top tracks e recentes
+  ficam em snapshot local e abrem sem rede, com banner e data do snapshot.
+- **Downloads de faixas e playlists**: arquivo `.part`, progresso, cancelamento,
+  retry de URL expirada, limite de 512 MB–10 GB, remoção e card em Ajustes.
+- **Reprodução local**: faixas baixadas tocam do armazenamento interno, no
+  player, na fila restaurada e no crossfade; o preload também usa o arquivo local.
+- **Segurança**: convite de playlist via RPC `playlist_share_code`; a migration
+  `0002_security_hardening.sql` restringe o SELECT de `share_code` e deve ser
+  aplicada **depois** de publicar desktop 0.2.8 e Android 0.4.0.
+- Testes: 22 no desktop (importadores/BuildInfo) e 20 no Android
+  (DownloadStore, HomeCache, Importer e SpotifyClient); CI no GitHub Actions.
+- APK 0.4.0 (versionCode 12) assinado.
+  SHA-256: `A2477959736425B8852BE9FA47E9FAA330FEE594FC5204D7BA28BD754F47120B`.
+
+Ainda faltam: downloads em background com WorkManager, importar CSV/backup JSON,
+MediaSessionService com player dentro do serviço, KMP e Keystore.

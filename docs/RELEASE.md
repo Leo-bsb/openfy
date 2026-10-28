@@ -1,6 +1,6 @@
 # RELEASE — checklist do desktop
 
-Versão atual: **0.2.7** (mesmo número em `BuildInfo.VERSION`, `version` e
+Versão atual: **0.2.8** (mesmo número em `BuildInfo.VERSION`, `version` e
 `packageVersion` no `build.gradle.kts`). O verificador de atualizações do app
 (`UpdateChecker`) compara com a maior tag `vX.Y.Z` estável publicada aqui;
 tags com sufixo (`-android`) e prereleases/drafts são ignoradas.

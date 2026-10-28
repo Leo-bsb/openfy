@@ -1,6 +1,6 @@
 # Avaliação do Openfy Desktop — estado, correções e próximos passos
 
-Data: 2026-10-28. Base avaliada: desktop 0.2.7 e Android 0.3.1.
+Data: 2026-10-28. Base avaliada: desktop 0.2.8 e Android 0.4.0.
 
 ## Resumo
 
@@ -264,3 +264,16 @@ Build 0.2.5 validado com `compileKotlin`, abertura real do app, troca de paleta
   não tem superfície de vídeo. Exibir vídeo inteiro com áudio ou um Canvas
   exigiria uma segunda pipeline, sincronização e uma janela nativa; ficou para
   uma rodada dedicada, sem aumentar o peso do instalador agora.
+
+---
+
+## Atualização 0.2.8 (2026-10-28)
+
+- **Ajustes > Atualizações**: verificação manual e automática (1x/dia) das
+  releases do GitHub, com botões para abrir a release e baixar o `.exe`.
+- `docs/RELEASE.md` com checklist de versão, empacotamento, hashes, tag, assets,
+  site e rollback.
+- Convite de playlist via RPC `playlist_share_code`; o cliente não lê mais
+  `share_code` diretamente.
+- A migration `0002_security_hardening.sql` deve ser aplicada depois que desktop
+  0.2.8 e Android 0.4.0 estiverem publicados.
