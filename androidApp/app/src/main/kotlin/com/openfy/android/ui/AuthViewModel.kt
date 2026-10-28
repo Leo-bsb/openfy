@@ -55,9 +55,11 @@ import com.openfy.core.SearchMode
 import com.openfy.core.Track
 import com.openfy.data.Media
 import com.openfy.data.YouTubeEngine
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -270,6 +272,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
     private val downloadJobs = mutableMapOf<String, Job>()
     private var playlistDownloadJob: Job? = null
+    private val downloadMutex = Mutex()
+
+    @Volatile
+    private var activeDownloadId: String? = null
 
     init {
         activePlayer = playerA
@@ -503,6 +509,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }
             try {
                 loadHomeOnce(session)
+            } catch (cancel: CancellationException) {
+                throw cancel
             } catch (first: Exception) {
                 val refreshed = ensureSession()
                 if (refreshed != null && refreshed.accessToken != session.accessToken) {
@@ -510,6 +518,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     try {
                         loadHomeOnce(refreshed)
                         return
+                    } catch (cancel: CancellationException) {
+                        throw cancel
                     } catch (second: Exception) {
                         if (!applyHomeSnapshot(refreshed.userId)) {
                             _state.update { it.copy(loading = false, busy = false, error = second.message) }
@@ -2070,6 +2080,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             playlistDownloadJob?.cancel()
             downloadJobs.values.forEach { it.cancel() }
             downloadJobs.clear()
+            downloader.cancelCurrent()
             playerA.stop()
             playerB.stop()
             playerA.clearMediaItems()
@@ -2126,12 +2137,16 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelDownload(trackId: String) {
+        if (activeDownloadId == trackId) downloader.cancelCurrent()
         downloadJobs[trackId]?.cancel()
     }
 
     fun removeDownload(trackId: String) {
-        downloadJobs[trackId]?.cancel()
+        val job = downloadJobs[trackId]
+        if (activeDownloadId == trackId) downloader.cancelCurrent()
+        job?.cancel()
         viewModelScope.launch {
+            job?.cancelAndJoin()
             val removed = withContext(Dispatchers.IO) { downloadStore.remove(trackId) }
             refreshDownloads()
             if (removed != null) {
@@ -2182,10 +2197,16 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearDownloads() {
-        playlistDownloadJob?.cancel()
-        downloadJobs.values.forEach { it.cancel() }
+        val playlistJob = playlistDownloadJob
+        playlistDownloadJob = null
+        val jobs = downloadJobs.values.toList()
         downloadJobs.clear()
+        downloader.cancelCurrent()
+        playlistJob?.cancel()
+        jobs.forEach { it.cancel() }
         viewModelScope.launch {
+            playlistJob?.cancelAndJoin()
+            jobs.forEach { it.cancelAndJoin() }
             val count = withContext(Dispatchers.IO) { downloadStore.clearAll() }
             _state.update { it.copy(downloadProgress = emptyMap()) }
             refreshDownloads()
@@ -2220,7 +2241,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun runDownload(track: Track): Boolean {
+    private suspend fun runDownload(track: Track): Boolean =
+        downloadMutex.withLock { runDownloadLocked(track) }
+
+    /** Um download por vez: o saldo do limite não é lido por duas conexões ao mesmo tempo. */
+    private suspend fun runDownloadLocked(track: Track): Boolean {
         val self = coroutineContext[Job] ?: return false
         if (downloadStore.entry(track.id) != null || track.id in _state.value.downloadedIds) {
             _state.update { it.copy(message = "Esta faixa já está baixada.") }
@@ -2278,20 +2303,25 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val media = withContext(Dispatchers.IO) { youtube.media(track.id) } as? Media.Remote
             ?: return DownloadResult.Failed("Não foi possível obter o áudio desta faixa.")
         var lastUpdate = 0L
-        return withContext(Dispatchers.IO) {
-            downloader.download(
-                track = track,
-                url = media.url,
-                headers = media.headers,
-                onProgress = { fraction ->
-                    val now = System.currentTimeMillis()
-                    if (now - lastUpdate >= 150) {
-                        lastUpdate = now
-                        _state.update { it.copy(downloadProgress = it.downloadProgress + (track.id to fraction)) }
-                    }
-                },
-                isCancelled = { !job.isActive },
-            )
+        activeDownloadId = track.id
+        return try {
+            withContext(Dispatchers.IO) {
+                downloader.download(
+                    track = track,
+                    url = media.url,
+                    headers = media.headers,
+                    onProgress = { fraction ->
+                        val now = System.currentTimeMillis()
+                        if (now - lastUpdate >= 150 || fraction < 0f) {
+                            lastUpdate = now
+                            _state.update { it.copy(downloadProgress = it.downloadProgress + (track.id to fraction)) }
+                        }
+                    },
+                    isCancelled = { !job.isActive },
+                )
+            }
+        } finally {
+            if (activeDownloadId == track.id) activeDownloadId = null
         }
     }
 

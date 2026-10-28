@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URI
 
@@ -25,12 +26,15 @@ class DownloadStore(private val dir: File) {
 
     private val json = Json { ignoreUnknownKeys = true }
     private val lock = Any()
-    private var index: LinkedHashMap<String, DownloadEntry> = loadIndex()
+    private var index: LinkedHashMap<String, DownloadEntry>? = null
 
     val downloadsDir: File
         get() = dir.also { if (!it.isDirectory) it.mkdirs() }
 
     private fun indexFile(): File = File(dir, INDEX_NAME)
+
+    private fun loadedIndex(): LinkedHashMap<String, DownloadEntry> =
+        index ?: loadIndex().also { index = it }
 
     private fun loadIndex(): LinkedHashMap<String, DownloadEntry> {
         val text = runCatching { indexFile().readText() }.getOrNull() ?: return LinkedHashMap()
@@ -43,7 +47,7 @@ class DownloadStore(private val dir: File) {
         runCatching {
             if (!dir.isDirectory) dir.mkdirs()
             val temp = File(dir, "$INDEX_NAME.tmp")
-            temp.writeText(json.encodeToString(index.values.toList()))
+            temp.writeText(json.encodeToString(loadedIndex().values.toList()))
             runCatching {
                 java.nio.file.Files.move(
                     temp.toPath(),
@@ -61,11 +65,11 @@ class DownloadStore(private val dir: File) {
         }
     }
 
-    fun all(): List<DownloadEntry> = synchronized(lock) { index.values.toList() }
+    fun all(): List<DownloadEntry> = synchronized(lock) { loadedIndex().values.toList() }
 
-    fun ids(): Set<String> = synchronized(lock) { index.keys.toSet() }
+    fun ids(): Set<String> = synchronized(lock) { loadedIndex().keys.toSet() }
 
-    fun entry(trackId: String): DownloadEntry? = synchronized(lock) { index[trackId] }
+    fun entry(trackId: String): DownloadEntry? = synchronized(lock) { loadedIndex()[trackId] }
 
     /** Arquivo local pronto para tocar, ou null se não baixado/ausente. */
     fun fileFor(trackId: String): File? {
@@ -76,21 +80,26 @@ class DownloadStore(private val dir: File) {
 
     fun isDownloaded(trackId: String): Boolean = fileFor(trackId) != null
 
-    fun usedBytes(): Long = synchronized(lock) { index.values.sumOf { it.sizeBytes } }
+    fun usedBytes(): Long = synchronized(lock) { loadedIndex().values.sumOf { it.sizeBytes } }
+
+    /** Espaço ainda disponível dentro do limite. */
+    fun availableBytes(limitBytes: Long): Long = synchronized(lock) {
+        (limitBytes - loadedIndex().values.sumOf { it.sizeBytes }).coerceAtLeast(0)
+    }
 
     fun fileNameFor(track: Track, contentType: String?): String =
         "${sanitizeId(track.id)}.${extensionFor(contentType)}"
 
     /** Registra o download concluído no índice e devolve o arquivo final. */
     fun put(entry: DownloadEntry): DownloadEntry = synchronized(lock) {
-        index[entry.track.id] = entry
+        loadedIndex()[entry.track.id] = entry
         persist()
         entry
     }
 
     /** Remove o registro e o arquivo; ignora se não existir. */
     fun remove(trackId: String): DownloadEntry? = synchronized(lock) {
-        val removed = index.remove(trackId) ?: return null
+        val removed = loadedIndex().remove(trackId) ?: return null
         persist()
         runCatching { File(dir, removed.fileName).delete() }
         runCatching { File(dir, partialNameFor(removed.fileName)).delete() }
@@ -99,8 +108,8 @@ class DownloadStore(private val dir: File) {
 
     /** Apaga todos os áudios e o índice; devolve quantos existiam. */
     fun clearAll(): Int = synchronized(lock) {
-        val count = index.size
-        index.clear()
+        val count = loadedIndex().size
+        loadedIndex().clear()
         persist()
         dir.listFiles()?.forEach { f ->
             if (f.name != INDEX_NAME) runCatching { f.delete() }
@@ -108,7 +117,10 @@ class DownloadStore(private val dir: File) {
         count
     }
 
-    /** Chamado na inicialização: remove `.part` órfãos e entradas cujo arquivo sumiu. */
+    /**
+     * Chamado na inicialização: remove `.part` órfãos, entradas cujo arquivo
+     * sumiu/truncou e arquivos que não constam no índice.
+     */
     fun repair(): Int {
         var fixed = 0
         dir.listFiles()?.forEach { f ->
@@ -118,17 +130,27 @@ class DownloadStore(private val dir: File) {
             }
         }
         val missing = synchronized(lock) {
-            index.values.filter { entry ->
+            loadedIndex().values.filter { entry ->
                 val file = File(dir, entry.fileName)
-                !(file.isFile && file.length() > 0)
+                !(file.isFile && file.length() > 0) ||
+                    (entry.sizeBytes > 0 && file.length() != entry.sizeBytes)
             }
         }
         if (missing.isNotEmpty()) {
             synchronized(lock) {
-                missing.forEach { index.remove(it.track.id) }
+                missing.forEach { loadedIndex().remove(it.track.id) }
                 persist()
             }
             fixed += missing.size
+        }
+        val keep = synchronized(lock) {
+            loadedIndex().values.mapTo(HashSet()) { it.fileName } + INDEX_NAME + "$INDEX_NAME.tmp"
+        }
+        dir.listFiles()?.forEach { f ->
+            if (f.isFile && f.name !in keep) {
+                runCatching { f.delete() }
+                fixed++
+            }
         }
         return fixed
     }
@@ -170,6 +192,14 @@ class AudioDownloader(
     private val limitBytes: () -> Long,
 ) {
 
+    @Volatile
+    private var activeConnection: HttpURLConnection? = null
+
+    /** Interrompe a conexão em andamento (usado ao cancelar/remover um download). */
+    fun cancelCurrent() {
+        runCatching { activeConnection?.disconnect() }
+    }
+
     /** Executa em IO. `isCancelled` é checado a cada bloco lido. */
     fun download(
         track: Track,
@@ -188,7 +218,10 @@ class AudioDownloader(
         val finalName = store.fileNameFor(track, null)
         val temp = File(dir, "$finalName${DownloadStore.PART_SUFFIX}")
         runCatching { if (temp.exists()) temp.delete() }
-        val budget = limitBytes() - store.usedBytes()
+        val budget = minOf(
+            store.availableBytes(limitBytes()),
+            (dir.usableSpace - DISK_SAFETY_BYTES).coerceAtLeast(0),
+        )
         if (budget <= MIN_FREE_BYTES) {
             return DownloadResult.Failed("Limite de armazenamento atingido. Apague downloads em Ajustes.")
         }
@@ -196,13 +229,14 @@ class AudioDownloader(
         return try {
             connection = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
                 connectTimeout = 15_000
-                readTimeout = 30_000
+                readTimeout = 15_000
                 instanceFollowRedirects = true
                 headers.forEach { (key, value) -> setRequestProperty(key, value) }
                 if (getRequestProperty("User-Agent").isNullOrBlank()) {
                     setRequestProperty("User-Agent", DEFAULT_USER_AGENT)
                 }
             }
+            activeConnection = connection
             val code = connection.responseCode
             if (code == 401 || code == 403) {
                 // Google devolve 403 quando o link temporário expira.
@@ -217,24 +251,39 @@ class AudioDownloader(
                     "Sem espaço: faltam ${formatMegabytes(declared - budget)} dentro do limite atual.",
                 )
             }
-            connection.inputStream.use { input ->
-                temp.outputStream().buffered(64 * 1024).use { output ->
+            if (declared <= 0) onProgress(UNKNOWN_PROGRESS)
+            var written = 0L
+            FileOutputStream(temp).use { file ->
+                val output = file.buffered(64 * 1024)
+                connection.inputStream.use { input ->
                     val buffer = ByteArray(64 * 1024)
-                    var written = 0L
                     while (true) {
-                        if (isCancelled()) return DownloadResult.Cancelled.also { temp.deleteQuietly() }
+                        if (isCancelled()) {
+                            temp.deleteQuietly()
+                            return DownloadResult.Cancelled
+                        }
                         val read = input.read(buffer)
                         if (read < 0) break
                         written += read
                         if (written > budget) {
+                            temp.deleteQuietly()
                             return DownloadResult.Failed(
                                 "Limite de armazenamento atingido durante o download.",
-                            ).also { temp.deleteQuietly() }
+                            )
                         }
                         output.write(buffer, 0, read)
-                        if (declared > 0) onProgress((written.toFloat() / declared.toFloat()).coerceIn(0f, 1f))
+                        if (declared > 0) {
+                            onProgress((written.toFloat() / declared.toFloat()).coerceIn(0f, 1f))
+                        }
                     }
                 }
+                output.flush()
+                // fsync evita arquivo truncado por queda de energia.
+                runCatching { file.fd.sync() }
+            }
+            if (declared > 0 && written != declared) {
+                temp.deleteQuietly()
+                return DownloadResult.Failed("Download incompleto ($written de $declared bytes).")
             }
             val realName = store.fileNameFor(track, connection.contentType)
             val finalFile = File(dir, realName)
@@ -242,7 +291,7 @@ class AudioDownloader(
                 runCatching { temp.copyTo(finalFile, overwrite = true) }
                 temp.deleteQuietly()
             }
-            if (!finalFile.isFile || finalFile.length() <= 0) {
+            if (!finalFile.isFile || finalFile.length() != written || written <= 0) {
                 finalFile.deleteQuietly()
                 return DownloadResult.Failed("Download terminou vazio ou corrompido.")
             }
@@ -257,8 +306,13 @@ class AudioDownloader(
                 ),
             )
         } catch (error: Exception) {
-            DownloadResult.Failed(error.message ?: "Falha ao baixar o áudio.")
+            if (isCancelled()) {
+                DownloadResult.Cancelled
+            } else {
+                DownloadResult.Failed(error.message ?: "Falha ao baixar o áudio.")
+            }
         } finally {
+            activeConnection = null
             runCatching { connection?.disconnect() }
             if (temp.exists()) temp.deleteQuietly()
         }
@@ -273,6 +327,8 @@ class AudioDownloader(
 
     private companion object {
         const val MIN_FREE_BYTES = 1L
+        const val DISK_SAFETY_BYTES = 32L * 1024 * 1024
+        const val UNKNOWN_PROGRESS = -1f
         const val DEFAULT_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/124.0.0.0 Safari/537.36"

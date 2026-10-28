@@ -898,12 +898,20 @@ private fun TrackRow(
                         Text("Baixada", color = OpenfyAccent, fontSize = 10.sp)
                     }
                 } else if (downloadProgress != null) {
-                    LinearProgressIndicator(
-                        progress = { downloadProgress ?: 0f },
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
-                        color = OpenfyAccent,
-                        trackColor = OpenfyLine,
-                    )
+                    if (downloadProgress < 0f) {
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
+                            color = OpenfyAccent,
+                            trackColor = OpenfyLine,
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            progress = { downloadProgress },
+                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
+                            color = OpenfyAccent,
+                            trackColor = OpenfyLine,
+                        )
+                    }
                 }
             }
             IconButton(onClick = onLike) {
@@ -1712,6 +1720,12 @@ private fun SettingsScreen(
                     fontSize = 11.sp,
                     modifier = Modifier.padding(top = 4.dp),
                 )
+                Text(
+                    "Os arquivos ficam neste aparelho e continuam após sair da conta.",
+                    color = OpenfyTextLow,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
                 Spacer(Modifier.height(10.dp))
                 Text("Limite de armazenamento", color = OpenfyTextHigh, fontSize = 13.sp)
                 LazyRow(
@@ -2006,13 +2020,22 @@ private fun PlayerOverlay(
                     enabled = track != null && currentDownloadProgress == null,
                 ) {
                     if (currentDownloadProgress != null) {
-                        CircularProgressIndicator(
-                            progress = { currentDownloadProgress ?: 0f },
-                            modifier = Modifier.size(22.dp),
-                            color = OpenfyAccent,
-                            strokeWidth = 2.dp,
-                            trackColor = OpenfyLine,
-                        )
+                        if (currentDownloadProgress < 0f) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(22.dp),
+                                color = OpenfyAccent,
+                                strokeWidth = 2.dp,
+                                trackColor = OpenfyLine,
+                            )
+                        } else {
+                            CircularProgressIndicator(
+                                progress = { currentDownloadProgress },
+                                modifier = Modifier.size(22.dp),
+                                color = OpenfyAccent,
+                                strokeWidth = 2.dp,
+                                trackColor = OpenfyLine,
+                            )
+                        }
                     } else {
                         Icon(
                             if (currentDownloaded) Icons.Filled.DownloadDone else Icons.Filled.Download,
