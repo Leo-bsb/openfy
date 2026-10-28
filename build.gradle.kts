@@ -29,6 +29,8 @@ dependencies {
     implementation("org.xerial:sqlite-jdbc:3.53.4.0")
     implementation("net.java.dev.jna:jna:5.14.0")
     implementation("net.java.dev.jna:jna-platform:5.14.0")
+
+    testImplementation("junit:junit:4.13.2")
 }
 
 tasks.register<JavaExec>("smoke") {
