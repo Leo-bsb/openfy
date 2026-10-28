@@ -277,3 +277,6 @@ Build 0.2.5 validado com `compileKotlin`, abertura real do app, troca de paleta
   `share_code` diretamente.
 - A migration `0002_security_hardening.sql` deve ser aplicada depois que desktop
   0.2.8 e Android 0.4.0 estiverem publicados.
+- O updater valida que os links abertos são do host `github.com`, consulta até
+  100 releases e só grava o timestamp diário quando a verificação não falha.
+- Testes: 25 no desktop (importadores, BuildInfo e UpdateChecker).

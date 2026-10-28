@@ -65,11 +65,12 @@ A migration é idempotente: pode ser re-executada sem efeito colateral.
 
 **Ordem de deploy**: publicar os apps atualizados **antes** de aplicar a
 migration. Os apps novos funcionam contra o schema velho (a RPC ainda não
-existe e `shareCode()` retorna `null` — o convite apenas fica indisponível até
-a migration entrar). Os apps **velhos** param de funcionar com a migration
-nova (SELECT em `share_code` passa a dar erro de permissão), então não deixe
-a janela entre publicar os apps e aplicar a migration ser longa demais para
-usuários que ainda não atualizaram.
+existe; o desktop trata a falha e devolve `null`, o Android lança exceção
+tratada por `runCatching` — o convite apenas fica indisponível até a migration
+entrar). Os apps **velhos** quebram por inteiro na listagem de playlists: o
+SELECT antigo incluía `share_code`, então a permissão negada faz a chamada
+inteira falhar (não é só o botão de convite). Não deixe a janela entre publicar
+os apps e aplicar a migration ser longa demais para quem ainda não atualizou.
 
 ## 4. Como aplicar
 
@@ -139,3 +140,9 @@ Use dois contas autenticadas (A = dona, B = estranho, C = membro):
   com o dono).
 - `select=*` em `playlists` por anon agora devolve só as colunas granteadas;
   clientes que dependerem de `*` precisam ser auditados.
+- **Não reexecute a 0001 depois da 0002**: a 0001 volta a dar `grant select`
+  na tabela inteira e desfaz o revoke de `share_code`. Se precisar rodar a 0001
+  de novo, rode a 0002 em seguida.
+- A 0002 é idempotente, mas o `create or replace function` só é seguro porque a
+  assinatura não mudou. Uma alteração futura de parâmetros exige `drop function`
+  explícito.

@@ -311,10 +311,22 @@ própria de playlist pelo celular.
 - **Segurança**: convite de playlist via RPC `playlist_share_code`; a migration
   `0002_security_hardening.sql` restringe o SELECT de `share_code` e deve ser
   aplicada **depois** de publicar desktop 0.2.8 e Android 0.4.0.
-- Testes: 22 no desktop (importadores/BuildInfo) e 20 no Android
-  (DownloadStore, HomeCache, Importer e SpotifyClient); CI no GitHub Actions.
+- Testes: 25 no desktop (importadores, BuildInfo e UpdateChecker) e 26 no
+  Android (DownloadStore, AudioDownloader, HomeCache, Importer e SpotifyClient);
+  CI no GitHub Actions.
 - APK 0.4.0 (versionCode 12) assinado.
   SHA-256: `A2477959736425B8852BE9FA47E9FAA330FEE594FC5204D7BA28BD754F47120B`.
+
+### Limitações conhecidas
+
+- Downloads são do aparelho e continuam após sair da conta; snapshots da Home e
+  playlists abertas são limpos no logout.
+- Eventos de reprodução gerados offline (histórico/recap) não entram em fila:
+  são descartados até a próxima carga online.
+- Downloads param se o processo do app for encerrado; ainda não há WorkManager.
+- Quando o servidor não envia `Content-Length`, a barra fica indeterminada.
+- A 0.4.0 não foi validada em aparelho após as correções de robustez; o último
+  teste real foi na 0.3.1.
 
 Ainda faltam: downloads em background com WorkManager, importar CSV/backup JSON,
 MediaSessionService com player dentro do serviço, KMP e Keystore.
