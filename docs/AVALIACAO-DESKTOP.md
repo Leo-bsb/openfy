@@ -1,7 +1,6 @@
 # Avaliação do Openfy Desktop — estado, correções e próximos passos
 
-Data: 2026-10-27. Base avaliada: desktop 0.2.2 + correções desta rodada (0.2.3);
-Android 0.2.5 + paridade de biblioteca desta rodada.
+Data: 2026-10-28. Base avaliada: desktop 0.2.6 e Android 0.2.7.
 
 ## Resumo
 

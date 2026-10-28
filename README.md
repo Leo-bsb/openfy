@@ -230,10 +230,12 @@ O sync é opcional: sem login, o Openfy continua local. Com conta, o PC e o
 Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase.
 
 - No PC: **Ajustes > Conta e sincronização** > entrar/criar conta e
-  **Sincronizar agora**.
-- No Android: login, playlists, busca, curtidas, fila, ajustes de crossfade e
-  player Media3. Criar uma playlist no celular e sincronizar no PC traz a
-  playlist para a sidebar; criar no PC e sincronizar no celular traz para o app.
+  **Sincronizar agora**. Ao abrir o app com a sessão salva, o sync começa
+  sozinho, sem esperar o ciclo de dois minutos.
+- No Android: login, playlists, busca, curtidas, fila, ajustes de crossfade,
+  recentes, “Mais ouvidas”, aparência e player Media3. A biblioteca é
+  atualizada ao voltar ao app; criar uma playlist no celular e sincronizar no PC
+  traz a playlist para a sidebar, e criar no PC e abrir o celular traz para o app.
 - Capas de playlist personalizadas no PC sobem para o Storage público e
   aparecem no Android; o PC mantém a cópia local para uso offline.
 - Eventos de escuta do PC e do Android alimentam o recap mensal da conta.
@@ -247,14 +249,14 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.2.5.exe
-dist\Openfy-0.2.5.msi
-dist\Openfy-Android-0.2.6.apk
+dist\Openfy-0.2.6.exe
+dist\Openfy-0.2.6.msi
+dist\Openfy-Android-0.2.7.apk
 ```
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.2.5: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.5  
-Android 0.2.6: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.6-android
+Desktop 0.2.6: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.6
+Android 0.2.7: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.7-android
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -274,8 +276,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.2.5.exe`
-- `build\compose\binaries\main\msi\Openfy-0.2.5.msi`
+- `build\compose\binaries\main\exe\Openfy-0.2.6.exe`
+- `build\compose\binaries\main\msi\Openfy-0.2.6.msi`
 
 Rodar em desenvolvimento:
 

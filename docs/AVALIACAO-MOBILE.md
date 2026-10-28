@@ -193,3 +193,27 @@ transição e o comportamento de pausa/seek.
 
 Ainda falta o bloco de background playback/MediaSessionService, banco local,
 downloads e recap nativo no Android.
+
+---
+
+## Atualização 0.2.7 (2026-10-28)
+
+- Home do Android ganhou **“Ouvir de novo”**: as últimas faixas tocadas ficam
+  salvas no aparelho e o clique toca somente aquela faixa, emendando a rádio
+  dela; o histórico não vira fila.
+- **“Mais ouvidas no mês”** usa a view `monthly_top_tracks` da conta e toca a
+  lista em ordem, como no desktop.
+- O diálogo de adicionar à playlist sempre oferece **“Criar nova playlist”**,
+  inclusive quando ainda não existe nenhuma; a playlist é criada já com a faixa
+  e aparece no desktop na sincronização seguinte.
+- **Aparência** com as cinco paletas do desktop, layout do player
+  Central/Lateral, switch de gradiente pela capa e persistência entre aberturas.
+- A biblioteca é recarregada ao voltar ao app (throttle de 30 s) e o desktop
+  sincroniza ao abrir com a sessão salva. Playlists criadas no PC aparecem no
+  celular e vice-versa, sempre na mesma conta.
+- APK 0.2.7 (versionCode 9) assinado com a keystore Openfy.
+  SHA-256: `41A22B1D18A76F90476749C0557F2E0C13E6BA19FBAA6D40955971F9E7BEF0CC`.
+
+Ainda faltam no Android: background playback/MediaSessionService, banco local e
+modo offline, downloads, recap nativo, importar/compartilhar/colaborar e capa
+própria de playlist pelo celular.
