@@ -217,3 +217,50 @@ downloads e recap nativo no Android.
 Ainda faltam no Android: background playback/MediaSessionService, banco local e
 modo offline, downloads, recap nativo, importar/compartilhar/colaborar e capa
 própria de playlist pelo celular.
+
+---
+
+## Atualização 0.3.0 (2026-10-28)
+
+### Entregue nesta rodada
+
+- **Reprodução em background** com serviço foreground, notificação de mídia,
+  MediaSession, controles de play/pause/anterior/próxima, lockscreen e Bluetooth.
+- **Fila e posição restauradas** ao abrir o app, pausadas na posição salva.
+- **Letras** via LRCLIB, com LRC sincronizado e destaque da linha atual.
+- **Timer para dormir** de 15/30/45/60 minutos.
+- **Equalizador** de 5 bandas com presets Flat/Pop/Rock/Graves/Vocal, persistido.
+- **Recap mensal** na aba própria, com minutos, execuções, faixas, top faixas e
+  top artistas da conta.
+- **Capa de playlist pelo celular**, enviada ao Storage e sincronizada.
+- **Compartilhar/entrar por código** e **importar playlist/álbum do YouTube
+  Music por link**.
+- Backup do app desativado e regras de extração excluem a sessão; a sessão
+  continua em SharedPreferences privadas e deve migrar para Keystore.
+- APK 0.3.0 (versionCode 10) assinado com a keystore Openfy.
+  SHA-256: `A86C74D5981B2CD5F41EE96713CC0E0C16A6A2E46EEAAA324A0679E883C4711C`.
+
+### Validado no Galaxy A15
+
+- Instalação sobre a 0.2.7 e login existente.
+- Serviço foreground ativo, notificação 711, MediaSession PLAYING, pause/play
+  pelo sistema e áudio com o app em background.
+- Letras de "Limite" carregadas e sincronizadas.
+- Timer abrindo as opções e EQ aplicando o preset Graves.
+- Recap carregando 19 minutos, 7 execuções e 3 faixas.
+- Criar playlist, compartilhar código/link, abrir o seletor de capa e importar
+  pelo botão novo.
+- Fila restaurada pausada em 1:33 depois de forçar a parada do app.
+
+### Ainda falta / próximos passos
+
+1. Banco local/offline, downloads e reprodução sem rede.
+2. Importar CSV do Exportify e backup JSON no Android.
+3. Módulo KMP `:shared` para engine, modelos e sync.
+4. Migrar a sessão para EncryptedSharedPreferences/Keystore.
+5. Servidor: restringir a leitura de `playlists.share_code` (hoje o select é
+   amplo para playlists públicas) e expor o código só ao dono/membro por RPC.
+6. Reprodução em background depende do processo vivo; se o app for removido dos
+   recentes, o serviço para. Um `MediaSessionService` com o player dentro do
+   serviço é a evolução.
+7. Vídeo/clipe no player ainda não implementado.

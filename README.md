@@ -232,15 +232,20 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 - No PC: **Ajustes > Conta e sincronização** > entrar/criar conta e
   **Sincronizar agora**. Ao abrir o app com a sessão salva, o sync começa
   sozinho, sem esperar o ciclo de dois minutos.
-- No Android: login, playlists, busca, curtidas, fila, ajustes de crossfade,
-  recentes, “Mais ouvidas”, aparência e player Media3. A biblioteca é
-  atualizada ao voltar ao app; criar uma playlist no celular e sincronizar no PC
-  traz a playlist para a sidebar, e criar no PC e abrir o celular traz para o app.
-- Capas de playlist personalizadas no PC sobem para o Storage público e
-  aparecem no Android; o PC mantém a cópia local para uso offline.
+- No Android: login, playlists, busca, curtidas, fila, recentes, “Mais
+  ouvidas”, aparência, player Media3, reprodução em background com notificação,
+  letras, timer, equalizador e recap mensal. A biblioteca é atualizada ao voltar
+  ao app; criar uma playlist no celular e sincronizar no PC traz a playlist para
+  a sidebar, e criar no PC e abrir o celular traz para o app.
+- Capas de playlist personalizadas sobem para o Storage público e aparecem nos
+  dois aparelhos; o Android também pode escolher a capa pela galeria.
+- Compartilhar por código/link e entrar em playlist colaborativa funcionam no PC
+  e no celular. O celular também importa playlist/álbum público do YouTube
+  Music por link.
 - Eventos de escuta do PC e do Android alimentam o recap mensal da conta.
-- O app Android ainda não tem reprodução em background/notificação, downloads
-  ou equalizador. Essas peças entram nas próximas etapas.
+- Ainda faltam no Android: downloads/offline com banco local, importar CSV/backup
+  e o módulo compartilhado KMP. O player em background mantém o processo vivo;
+  se o app for removido dos recentes, a reprodução para.
 - Nesta versão o merge é LWW por `updated_at`. O próximo passo é trocar por
   outbox + `server_rev` para conflitos offline mais seguros.
 
@@ -249,14 +254,14 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.2.6.exe
-dist\Openfy-0.2.6.msi
-dist\Openfy-Android-0.2.7.apk
+dist\Openfy-0.2.7.exe
+dist\Openfy-0.2.7.msi
+dist\Openfy-Android-0.3.0.apk
 ```
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.2.6: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.6
-Android 0.2.7: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.7-android
+Desktop 0.2.7: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.7
+Android 0.3.0: https://github.com/Leo-bsb/openfy/releases/tag/v0.3.0-android
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -276,8 +281,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.2.6.exe`
-- `build\compose\binaries\main\msi\Openfy-0.2.6.msi`
+- `build\compose\binaries\main\exe\Openfy-0.2.7.exe`
+- `build\compose\binaries\main\msi\Openfy-0.2.7.msi`
 
 Rodar em desenvolvimento:
 

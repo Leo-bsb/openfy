@@ -1,6 +1,6 @@
 # Avaliação do Openfy Desktop — estado, correções e próximos passos
 
-Data: 2026-10-28. Base avaliada: desktop 0.2.6 e Android 0.2.7.
+Data: 2026-10-28. Base avaliada: desktop 0.2.7 e Android 0.3.0.
 
 ## Resumo
 
@@ -252,3 +252,15 @@ assinatura Authenticode, atualiza??o autom?tica e event idempotency no Supabase.
 
 Build 0.2.5 validado com `compileKotlin`, abertura real do app, troca de paleta
 (Violeta), layout Lateral e fundo pela capa.
+
+---
+
+## Atualização 0.2.7 (2026-10-28)
+
+- Tooltips de ícones agora ficam ancorados acima do botão, com 8 dp de
+  afastamento, em vez de seguir o cursor e cobrir o próprio botão.
+- O vídeo/clipe foi avaliado: o extrator já devolve URL de vídeo, mas o player
+  atual é audio-only (mpv `--no-video`), usa dois processos A/B para crossfade e
+  não tem superfície de vídeo. Exibir vídeo inteiro com áudio ou um Canvas
+  exigiria uma segunda pipeline, sincronização e uma janela nativa; ficou para
+  uma rodada dedicada, sem aumentar o peso do instalador agora.
