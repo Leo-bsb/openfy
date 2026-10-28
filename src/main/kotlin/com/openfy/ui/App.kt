@@ -272,7 +272,11 @@ private fun Tip(text: String, content: @Composable () -> Unit) {
             }
         },
         delayMillis = 400,
-        tooltipPlacement = TooltipPlacement.CursorPoint(offset = DpOffset(0.dp, 16.dp)),
+        tooltipPlacement = TooltipPlacement.ComponentRect(
+            anchor = Alignment.TopCenter,
+            alignment = Alignment.BottomCenter,
+            offset = DpOffset(0.dp, (-8).dp),
+        ),
         content = content,
     )
 }
