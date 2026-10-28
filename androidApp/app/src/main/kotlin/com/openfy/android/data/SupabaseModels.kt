@@ -142,7 +142,7 @@ data class MonthRow(val month: String = "")
 data class CoverPatch(@SerialName("cover_url") val coverUrl: String)
 
 @Serializable
-data class ShareCodeRow(@SerialName("share_code") val shareCode: String? = null)
+data class ShareCodeBody(@SerialName("p_playlist_id") val playlistId: String)
 
 @Serializable
 data class JoinBody(@SerialName("p_code") val code: String)

@@ -269,17 +269,22 @@ class SupabaseApi {
         if (!response.status.isSuccess()) decodeError(response)
     }
 
+    /**
+     * Lê o código de convite via RPC `playlist_share_code` (SECURITY DEFINER),
+     * que só responde para owner/membros ativos. A coluna `share_code` deixou de
+     * ser visível por SELECT direto na tabela (migration 0002).
+     */
     suspend fun shareCode(accessToken: String, playlistId: String): String? {
-        val response = client.get("$baseUrl/rest/v1/playlists") {
+        val response = client.post("$baseUrl/rest/v1/rpc/playlist_share_code") {
             header("apikey", anonKey)
             header(HttpHeaders.Authorization, "Bearer $accessToken")
-            parameter("select", "share_code")
-            parameter("id", "eq.$playlistId")
-            parameter("limit", "1")
+            contentType(ContentType.Application.Json)
+            setBody(ShareCodeBody(playlistId))
         }
-        return decoded<List<ShareCodeRow>>(response).firstOrNull()
-            ?.shareCode
-            ?.takeIf { it.isNotBlank() }
+        if (!response.status.isSuccess()) decodeError(response)
+        val text = response.bodyAsText().trim()
+        if (text.isEmpty()) return null  // PostgREST pode devolver corpo vazio para null
+        return json.decodeFromString<String?>(text)?.takeIf { it.isNotBlank() }
     }
 
     suspend fun joinPlaylist(accessToken: String, code: String): String {

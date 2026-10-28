@@ -185,7 +185,7 @@ private data class MemberRow(@SerialName("playlist_id") val playlistId: String)
 private data class IdRow(val id: String)
 
 @Serializable
-private data class ShareCodeRow(@SerialName("share_code") val shareCode: String? = null)
+private data class ShareCodeBody(@SerialName("p_playlist_id") val playlistId: String)
 
 @Serializable
 private data class JoinBody(@SerialName("p_code") val code: String)
@@ -307,22 +307,29 @@ class SupabaseApi {
         return decode(
             client.get("$baseUrl/rest/v1/playlists") {
                 auth(accessToken)
-                parameter("select", "id,name,updated_at,deleted,share_code,cover_url")
+                parameter("select", "id,name,updated_at,deleted,cover_url")
                 parameter("id", inClause(ids))
                 parameter("limit", "1000")
             },
         )
     }
 
-    suspend fun shareCode(accessToken: String, playlistId: String): String? =
-        decode<List<ShareCodeRow>>(
-            client.get("$baseUrl/rest/v1/playlists") {
-                auth(accessToken)
-                parameter("select", "share_code")
-                parameter("id", "eq.$playlistId")
-                parameter("limit", "1")
-            },
-        ).firstOrNull()?.shareCode?.takeIf { it.isNotBlank() }
+    /**
+     * Lê o código de convite via RPC `playlist_share_code` (SECURITY DEFINER),
+     * que só responde para owner/membros ativos. A coluna `share_code` deixou de
+     * ser visível por SELECT direto na tabela (migration 0002).
+     */
+    suspend fun shareCode(accessToken: String, playlistId: String): String? {
+        val response = client.post("$baseUrl/rest/v1/rpc/playlist_share_code") {
+            auth(accessToken)
+            contentType(ContentType.Application.Json)
+            setBody(ShareCodeBody(playlistId))
+        }
+        if (!response.status.isSuccess()) fail(response)
+        val text = response.bodyAsText().trim()
+        if (text.isEmpty()) return null  // PostgREST pode devolver corpo vazio para null
+        return json.decodeFromString<String?>(text)?.takeIf { it.isNotBlank() }
+    }
 
     /** Sobe a capa para o bucket público e devolve a URL usada pelos outros aparelhos. */
     suspend fun uploadCover(
