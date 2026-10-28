@@ -685,7 +685,7 @@ class Db(file: Path) : AutoCloseable {
         }
     }
 
-    /** Eventos finalizados e ainda n?o enviados ao Supabase. */
+    /** Eventos finalizados e ainda não enviados ao Supabase. */
     @Synchronized
     fun pendingPlayEvents(limit: Int = 200): List<PendingPlayEvent> =
         conn.prepareStatement(
@@ -883,7 +883,7 @@ class Db(file: Path) : AutoCloseable {
             ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
         }
 
-    /** Eventos brutos recentes para recomenda??o, recap e no-repeat. */
+    /** Eventos brutos recentes para recomendação, recap e no-repeat. */
     @Synchronized
     fun playEventsSince(since: Long, limit: Int = 5000): List<PlayEventRow> =
         conn.prepareStatement(

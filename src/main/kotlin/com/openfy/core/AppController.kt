@@ -678,7 +678,7 @@ class AppController(
                     .take(4)
             }
             if (seeds.isEmpty()) {
-                message.value = "Curta ou ou?a algo primeiro para montar o mix."
+                message.value = "Curta ou ouça algo primeiro para montar o mix."
                 return@launch
             }
             val pages = seeds.map { seed ->
@@ -909,7 +909,7 @@ class AppController(
         if (title != null) return title to "manual"
         return when (screen.value) {
             is Screen.PlaylistView -> (openPlaylist.value?.name ?: "Playlist") to "playlist"
-            is Screen.RemoteCollection -> (remoteCollection.value?.title ?: "?lbum") to "album"
+            is Screen.RemoteCollection -> (remoteCollection.value?.title ?: "Álbum") to "album"
             is Screen.ArtistView -> (artistPage.value?.name ?: "Artista") to "artist"
             Screen.Charts -> "Em alta" to "charts"
             Screen.Liked -> "Curtidas" to "liked"
@@ -1465,7 +1465,7 @@ class AppController(
         }
     }
 
-    /** Atualiza listas e n?meros quando a faixa atual muda, sem recarregar toda a biblioteca. */
+    /** Atualiza listas e números quando a faixa atual muda, sem recarregar toda a biblioteca. */
     private fun refreshListening() {
         scope.launch {
             delay(700)

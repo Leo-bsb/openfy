@@ -1193,7 +1193,7 @@ private fun HomeScreen(c: AppController) {
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        "Top faixas, artistas, sequ?ncia e descobertas em uma aba dedicada.",
+                        "Top faixas, artistas, sequência e descobertas em uma aba dedicada.",
                         color = Tokens.textLow,
                         fontSize = 12.sp,
                     )
@@ -1241,8 +1241,8 @@ private fun HomeScreen(c: AppController) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     items(recent, key = { "r-${it.id}" }) { track ->
                         CoverCard(track.title, track.artist, track.thumbnail) {
-                            // Recentes s?o sementes: tocar uma faixa abre a r?dio dela,
-                            // n?o enfileira o hist?rico inteiro.
+                            // Recentes são sementes: tocar uma faixa abre a rádio dela,
+                            // não enfileira o histórico inteiro.
                             c.playSearchTrack(track)
                         }
                     }
@@ -2950,10 +2950,10 @@ private fun SettingsScreen(c: AppController) {
             }
         }
 
-        SettingsSection("Apar?ncia") {
+        SettingsSection("Aparência") {
             SettingsRow(
                 "Paleta de cores",
-                "Aplicada em todo o app e salva para as pr?ximas aberturas.",
+                "Aplicada em todo o app e salva para as próximas aberturas.",
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     ColorPalette.entries.forEach { preset ->
@@ -2963,7 +2963,7 @@ private fun SettingsScreen(c: AppController) {
             }
             SettingsRow(
                 "Layout do player",
-                "Central mant?m a capa no meio; Lateral coloca capa e informa??es lado a lado.",
+                "Central mantém a capa no meio; Lateral coloca capa e informações lado a lado.",
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     PlayerLayout.entries.forEach { option ->

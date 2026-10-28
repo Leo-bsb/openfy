@@ -71,6 +71,7 @@ class AccountManager(
     var onSynced: (() -> Unit)? = null
 
     private var requestJob: Job? = null
+    private var pendingSync = false
 
     init {
         restore()
@@ -138,6 +139,7 @@ class AccountManager(
             }
             if (!current.isExpired) {
                 loadProfile(current)
+                syncNow()
                 return@launch
             }
             if (current.refreshToken.isBlank()) {
@@ -150,6 +152,7 @@ class AccountManager(
             }.onSuccess { stored ->
                 _state.update { it.copy(session = stored) }
                 loadProfile(stored)
+                syncNow()
             }.onFailure {
                 clearSession()
             }
@@ -239,9 +242,13 @@ class AccountManager(
     }
 
     fun syncNow() {
-        if (_state.value.busy) return
+        if (_state.value.session == null) return
+        if (_state.value.busy) {
+            pendingSync = true
+            return
+        }
+        _state.update { it.copy(busy = true, error = null, status = "Sincronizando…") }
         scope.launch {
-            _state.update { it.copy(busy = true, error = null, status = "Sincronizando…") }
             val session = ensureSession()
             if (session == null) {
                 _state.update {
@@ -251,23 +258,28 @@ class AccountManager(
                         error = "Sessão expirada. Entre novamente.",
                     )
                 }
+                maybeRunPendingSync()
                 return@launch
             }
             runCatching {
                 SyncEngine(db, api).sync(session)
             }.onSuccess { result ->
-                val last = LocalDateTime.now().format(formatter)
-                db.put("account.lastSync", last)
-                _state.update {
-                    it.copy(
-                        busy = false,
-                        session = session,
-                        lastSync = last,
-                        status = result.summary(),
-                        error = null,
-                    )
+                if (_state.value.session?.userId != session.userId) {
+                    _state.update { it.copy(busy = false, status = null) }
+                } else {
+                    val last = LocalDateTime.now().format(formatter)
+                    db.put("account.lastSync", last)
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            session = session,
+                            lastSync = last,
+                            status = result.summary(),
+                            error = null,
+                        )
+                    }
+                    onSynced?.invoke()
                 }
-                onSynced?.invoke()
             }.onFailure { error ->
                 if (error is SupabaseException && error.status == 401) {
                     clearSession()
@@ -280,7 +292,14 @@ class AccountManager(
                     )
                 }
             }
+            maybeRunPendingSync()
         }
+    }
+
+    private fun maybeRunPendingSync() {
+        if (!pendingSync) return
+        pendingSync = false
+        syncNow()
     }
 
     fun signOut() {

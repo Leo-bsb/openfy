@@ -132,7 +132,7 @@ fun main(): Unit = runBlocking {
         player.queue.value.map { it.id } == shuffleTracks.map { it.id }
     println("shuffle=$shuffledOk restaurado=$restoredOk")
 
-    // Uma resposta atrasada da r?dio n?o pode sequestrar a fila escolhida depois.
+    // Uma resposta atrasada da rádio não pode sequestrar a fila escolhida depois.
     player.radioStarter = { _ ->
         kotlinx.coroutines.delay(1_200)
         com.openfy.core.RadioPage(

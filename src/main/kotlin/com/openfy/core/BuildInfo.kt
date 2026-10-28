@@ -1,5 +1,5 @@
 package com.openfy.core
 
 object BuildInfo {
-    const val VERSION = "0.2.5"
+    const val VERSION = "0.2.6"
 }
