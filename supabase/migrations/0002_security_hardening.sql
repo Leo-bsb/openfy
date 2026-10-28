@@ -71,15 +71,22 @@ begin
         raise exception 'not_authenticated';
     end if;
 
-    -- Dono (mesmo se o trigger de membros falhou) ou membro ativo.
-    -- Playlist soft-deleted não devolve código.
+    -- Dono (mesmo se o trigger de membros falhou) ou membro com permissão de
+    -- edição. Viewers não recebem o código. Playlist soft-deleted não devolve código.
     select p.share_code into code
     from public.playlists p
     where p.id = p_playlist_id
       and p.deleted = false
       and (
           p.owner_id = auth.uid()
-          or public.is_playlist_member(p.id)
+          or exists (
+              select 1
+              from public.playlist_members pm
+              where pm.playlist_id = p.id
+                and pm.user_id = auth.uid()
+                and pm.deleted = false
+                and pm.role in ('owner', 'editor')
+          )
       );
 
     return code;  -- null quando a playlist não existe ou o chamador não é do círculo
