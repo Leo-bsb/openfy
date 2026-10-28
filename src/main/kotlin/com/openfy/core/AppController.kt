@@ -4,6 +4,8 @@ import com.openfy.data.Db
 import com.openfy.data.Downloader
 import com.openfy.data.LyricLine
 import com.openfy.data.LyricsClient
+import com.openfy.data.UpdateChecker
+import com.openfy.data.UpdateStatus
 import com.openfy.data.YouTubeEngine
 import com.openfy.player.Player
 import kotlinx.coroutines.CoroutineScope
@@ -111,6 +113,10 @@ class AppController(
     val playerLayout = MutableStateFlow(PlayerLayout.CENTER)
     val coverGradient = MutableStateFlow(true)
 
+    // ------------------------------------------------------------------ updates
+    val updateAutoCheck = MutableStateFlow(true)
+    val updateStatus = MutableStateFlow<UpdateStatus?>(null)
+
     // ------------------------------------------------------------------ import / lyrics / stats
     val importDialogOpen = MutableStateFlow(false)
     val importBusy = MutableStateFlow(false)
@@ -187,6 +193,10 @@ class AppController(
         coverGradient.value = runCatching {
             db.get("ui.player.coverGradient")?.toBooleanStrict()
         }.getOrNull() ?: true
+        updateAutoCheck.value = runCatching {
+            db.get("update.autoCheck")?.toBooleanStrict()
+        }.getOrNull() ?: true
+        scope.launch { autoUpdateCheck() }
         scope.launch { autoDownloadLoop() }
         scope.launch { refreshLibrary() }
         scope.launch {
@@ -1595,6 +1605,61 @@ class AppController(
     fun setCoverGradient(enabled: Boolean) {
         coverGradient.value = enabled
         scope.launch(Dispatchers.IO) { db.put("ui.player.coverGradient", enabled.toString()) }
+    }
+
+    // ------------------------------------------------------------------ updates
+    /** Botao "Verificar agora" dos Ajustes; erro aparece no card. */
+    fun checkForUpdate() = runUpdateCheck(manual = true)
+
+    fun setUpdateAutoCheck(enabled: Boolean) {
+        updateAutoCheck.value = enabled
+        scope.launch(Dispatchers.IO) { db.put("update.autoCheck", enabled.toString()) }
+    }
+
+    fun openReleasePage() {
+        val release = (updateStatus.value as? UpdateStatus.Available)?.release ?: return
+        browseUrl(release.releaseUrl)
+    }
+
+    fun openInstaller() {
+        val url = (updateStatus.value as? UpdateStatus.Available)?.release?.installerUrl ?: return
+        browseUrl(url)
+    }
+
+    /** Verificação ao abrir: respeita o toggle e no máximo 1x/dia; silenciosa offline. */
+    private suspend fun autoUpdateCheck() {
+        if (!updateAutoCheck.value) return
+        val lastCheck = withContext(Dispatchers.IO) { db.get("update.lastCheck")?.toLongOrNull() }
+        if (!UpdateChecker.shouldAutoCheck(lastCheck)) return
+        runUpdateCheck(manual = false)
+    }
+
+    private fun runUpdateCheck(manual: Boolean) {
+        if (updateStatus.value is UpdateStatus.Checking) return
+        if (manual) updateStatus.value = UpdateStatus.Checking
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                db.put("update.lastCheck", System.currentTimeMillis().toString())
+            }
+            val status = UpdateChecker.check(BuildInfo.VERSION)
+            // Automatica nao mostra erro: quem esta offline nao ve notificacao falsa.
+            updateStatus.value = if (!manual && status is UpdateStatus.Error) null else status
+        }
+    }
+
+    private fun browseUrl(url: String) {
+        runCatching {
+            if (java.awt.Desktop.isDesktopSupported() &&
+                java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.BROWSE)
+            ) {
+                java.awt.Desktop.getDesktop().browse(java.net.URI.create(url))
+            } else {
+                message.value = "Nao foi possivel abrir o navegador."
+            }
+        }.onFailure {
+            Log.write("updates: falha ao abrir $url: ${it.message}")
+            message.value = "Nao foi possivel abrir o navegador."
+        }
     }
 
     fun openDataFolder() {
