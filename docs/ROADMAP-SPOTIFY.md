@@ -1,6 +1,6 @@
 # Roadmap Spotify para o Openfy
 
-Data: 2026-10-28. Base: desktop 0.2.7 e Android 0.3.0.
+Data: 2026-10-28. Base: desktop 0.2.7 e Android 0.3.1.
 
 ## Princípio
 

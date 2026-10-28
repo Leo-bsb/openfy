@@ -264,3 +264,36 @@ própria de playlist pelo celular.
    recentes, o serviço para. Um `MediaSessionService` com o player dentro do
    serviço é a evolução.
 7. Vídeo/clipe no player ainda não implementado.
+
+---
+
+## Atualização 0.3.1 (2026-10-28)
+
+- **Perfil do artista** no Android: a busca agora mostra artistas acima das
+  músicas e abre a página com foto, ouvintes mensais, descrição, populares,
+  álbuns/singles e rádio do artista. O nome do artista no player e nas linhas de
+  faixa também abre o perfil.
+- **Álbuns e playlists remotas** abertos a partir do perfil do artista, com
+  capa, lista de faixas e play-all.
+- **Importar do Spotify por link**: playlists públicas do Spotify são lidas
+  pela página de embed, casadas com o catálogo do YouTube Music e salvas na
+  conta. O diálogo de importar aceita YouTube Music ou Spotify.
+- O importador mostra o progresso do casamento e avisa quantas faixas foram
+  encontradas.
+- APK 0.3.1 (versionCode 11) assinado em 28/10/2026.
+  SHA-256: `0E8A31D77BBF707D259ED60CD6659AE80FCB66CF2CFA7B0AB4A82DA398D6FEF5`.
+
+### Testado no Galaxy A15
+
+- Busca "Billie Eilish": seção de artistas, perfil completo, populares, álbuns
+  e rádio.
+- Clique no nome do artista no player abre o perfil.
+- Importação da playlist pública "Today's Top Hits" do Spotify: 49 de 50
+  faixas casadas e playlist criada com as faixas no Supabase.
+
+### Limites
+
+- Importação do Spotify funciona com playlists **públicas** por link. Playlists
+  privadas exigem OAuth/Exportify; o CSV ainda não está no Android.
+- A página de embed do Spotify pode mudar; se isso acontecer, a importação falha
+  com aviso e não cria playlist vazia.
