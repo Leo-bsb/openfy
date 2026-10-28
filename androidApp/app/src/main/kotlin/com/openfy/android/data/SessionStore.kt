@@ -83,6 +83,7 @@ class SessionStore(context: Context) {
         val gradient = coverGradient()
         val eqEnabled = eqEnabled()
         val eqGains = eqGains()
+        val downloadLimit = downloadLimitMb()
         prefs.edit().clear()
             .putInt("crossfade_seconds", crossfade)
             .putString("ui_palette", palette.id)
@@ -90,6 +91,7 @@ class SessionStore(context: Context) {
             .putBoolean("ui_cover_gradient", gradient)
             .putBoolean("eq_enabled", eqEnabled)
             .putString("eq_gains", eqGains.joinToString(","))
+            .putInt("download_limit_mb", downloadLimit)
             .apply()
     }
 
@@ -143,6 +145,16 @@ class SessionStore(context: Context) {
         json.decodeFromString<List<Track>>(prefs.getString("playback_queue", null) ?: "[]")
     }.getOrDefault(emptyList())
 
+    /** Limite de uso do armazenamento de downloads. Padrão 2 GB. */
+    fun downloadLimitMb(): Int =
+        prefs.getInt("download_limit_mb", DEFAULT_DOWNLOAD_LIMIT_MB).coerceIn(128, 20_480)
+
+    fun setDownloadLimitMb(mb: Int) {
+        prefs.edit()
+            .putInt("download_limit_mb", mb.coerceIn(128, 20_480))
+            .apply()
+    }
+
     fun playbackIndex(): Int = prefs.getInt("playback_index", -1)
 
     fun playbackPosition(): Long = prefs.getLong("playback_position", 0L)
@@ -176,5 +188,9 @@ class SessionStore(context: Context) {
     fun deviceName(): String {
         val name = "${Build.MANUFACTURER} ${Build.MODEL}".trim()
         return name.ifBlank { "Android" }
+    }
+
+    companion object {
+        const val DEFAULT_DOWNLOAD_LIMIT_MB = 2048
     }
 }

@@ -33,7 +33,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Home
@@ -64,6 +68,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -131,7 +136,10 @@ import com.openfy.android.ui.theme.OpenfyPanelHigh
 import com.openfy.android.ui.theme.OpenfyTextHigh
 import com.openfy.android.ui.theme.OpenfyTextLow
 import com.openfy.android.ui.theme.OpenfyTheme
+import java.time.Instant
 import java.time.YearMonth
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -350,6 +358,39 @@ private fun HomeScreen(state: AuthUiState, viewModel: AuthViewModel, modifier: M
                 }
                 TextButton(onClick = { viewModel.signOut() }) {
                     Text("Sair", color = OpenfyTextLow)
+                }
+            }
+        }
+
+        if (state.offline) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = OpenfyPanel),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.CloudOff,
+                            null,
+                            tint = OpenfyTextLow,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Modo offline" +
+                                if (state.offlineSavedAtMs > 0) {
+                                    " · dados salvos em ${formatSavedAt(state.offlineSavedAtMs)}"
+                                } else {
+                                    ""
+                                },
+                            color = OpenfyTextLow,
+                            fontSize = 11.sp,
+                        )
+                    }
                 }
             }
         }
@@ -714,6 +755,10 @@ private fun SearchScreen(
                     onAddQueue = { viewModel.addToQueue(track) },
                     onAddPlaylist = { onAddToPlaylist(track) },
                     onArtist = { viewModel.openArtistFromName(track.artist) },
+                    downloaded = track.id in state.downloadedIds,
+                    downloadProgress = state.downloadProgress[track.id],
+                    onDownload = { viewModel.toggleDownload(track) },
+                    onCancelDownload = { viewModel.cancelDownload(track.id) },
                 )
             }
             item { Spacer(Modifier.height(20.dp)) }
@@ -777,6 +822,10 @@ private fun LikedScreen(
                     onAddQueue = { viewModel.addToQueue(track) },
                     onAddPlaylist = { onAddToPlaylist(track) },
                     onArtist = { viewModel.openArtistFromName(track.artist) },
+                    downloaded = track.id in state.downloadedIds,
+                    downloadProgress = state.downloadProgress[track.id],
+                    onDownload = { viewModel.toggleDownload(track) },
+                    onCancelDownload = { viewModel.cancelDownload(track.id) },
                 )
             }
             item { Spacer(Modifier.height(20.dp)) }
@@ -796,6 +845,10 @@ private fun TrackRow(
     onAddPlaylist: () -> Unit,
     onRemove: (() -> Unit)? = null,
     onArtist: (() -> Unit)? = null,
+    downloaded: Boolean = false,
+    downloadProgress: Float? = null,
+    onDownload: (() -> Unit)? = null,
+    onCancelDownload: (() -> Unit)? = null,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Card(
@@ -830,6 +883,28 @@ private fun TrackRow(
                         Modifier
                     },
                 )
+                if (downloaded) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(top = 2.dp),
+                    ) {
+                        Icon(
+                            Icons.Filled.DownloadDone,
+                            null,
+                            tint = OpenfyAccent,
+                            modifier = Modifier.size(12.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Baixada", color = OpenfyAccent, fontSize = 10.sp)
+                    }
+                } else if (downloadProgress != null) {
+                    LinearProgressIndicator(
+                        progress = { downloadProgress ?: 0f },
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp).height(3.dp),
+                        color = OpenfyAccent,
+                        trackColor = OpenfyLine,
+                    )
+                }
             }
             IconButton(onClick = onLike) {
                 Icon(
@@ -873,6 +948,34 @@ private fun TrackRow(
                             onAddPlaylist()
                         },
                     )
+                    if (downloaded) {
+                        DropdownMenuItem(
+                            text = { Text("Remover download") },
+                            leadingIcon = { Icon(Icons.Filled.DownloadDone, null) },
+                            onClick = {
+                                menuOpen = false
+                                onDownload?.invoke()
+                            },
+                        )
+                    } else if (downloadProgress != null) {
+                        DropdownMenuItem(
+                            text = { Text("Cancelar download") },
+                            leadingIcon = { Icon(Icons.Filled.Close, null) },
+                            onClick = {
+                                menuOpen = false
+                                onCancelDownload?.invoke()
+                            },
+                        )
+                    } else if (onDownload != null) {
+                        DropdownMenuItem(
+                            text = { Text("Baixar") },
+                            leadingIcon = { Icon(Icons.Filled.Download, null) },
+                            onClick = {
+                                menuOpen = false
+                                onDownload()
+                            },
+                        )
+                    }
                     if (onRemove != null) {
                         DropdownMenuItem(
                             text = { Text("Remover da playlist") },
@@ -956,6 +1059,17 @@ private fun PlaylistDetailScreen(
                 )
             }
             IconButton(
+                onClick = { viewModel.downloadPlaylist(state.playlistTracks) },
+                enabled = state.playlistTracks.isNotEmpty() && !state.busy,
+            ) {
+                Icon(
+                    Icons.Filled.Download,
+                    "Baixar playlist",
+                    tint = OpenfyTextLow,
+                    modifier = Modifier.size(24.dp),
+                )
+            }
+            IconButton(
                 onClick = { viewModel.playOpenedPlaylist() },
                 enabled = state.playlistTracks.isNotEmpty(),
             ) {
@@ -998,6 +1112,10 @@ private fun PlaylistDetailScreen(
                         { viewModel.removeFromPlaylist(entry) }
                     },
                     onArtist = { viewModel.openArtistFromName(track.artist) },
+                    downloaded = track.id in state.downloadedIds,
+                    downloadProgress = state.downloadProgress[track.id],
+                    onDownload = { viewModel.toggleDownload(track) },
+                    onCancelDownload = { viewModel.cancelDownload(track.id) },
                 )
             }
             item { Spacer(Modifier.height(20.dp)) }
@@ -1138,6 +1256,10 @@ private fun ArtistScreen(
                     onPlayNext = { viewModel.playNext(track) },
                     onAddQueue = { viewModel.addToQueue(track) },
                     onAddPlaylist = { onAddToPlaylist(track) },
+                    downloaded = track.id in state.downloadedIds,
+                    downloadProgress = state.downloadProgress[track.id],
+                    onDownload = { viewModel.toggleDownload(track) },
+                    onCancelDownload = { viewModel.cancelDownload(track.id) },
                 )
             }
         }
@@ -1289,6 +1411,10 @@ private fun RemoteCollectionScreen(
                     onAddQueue = { viewModel.addToQueue(track) },
                     onAddPlaylist = { onAddToPlaylist(track) },
                     onArtist = { viewModel.openArtistFromName(track.artist) },
+                    downloaded = track.id in state.downloadedIds,
+                    downloadProgress = state.downloadProgress[track.id],
+                    onDownload = { viewModel.toggleDownload(track) },
+                    onCancelDownload = { viewModel.cancelDownload(track.id) },
                 )
             }
             item { Spacer(Modifier.height(20.dp)) }
@@ -1417,6 +1543,10 @@ private fun RecapScreen(
                             onAddQueue = { viewModel.addToQueue(track) },
                             onAddPlaylist = { onAddToPlaylist(track) },
                             onArtist = { viewModel.openArtistFromName(track.artist) },
+                            downloaded = track.id in state.downloadedIds,
+                            downloadProgress = state.downloadProgress[track.id],
+                            onDownload = { viewModel.toggleDownload(track) },
+                            onCancelDownload = { viewModel.cancelDownload(track.id) },
                         )
                     }
                 }
@@ -1481,6 +1611,23 @@ private fun RecapMetric(label: String, value: String, modifier: Modifier = Modif
     }
 }
 
+private fun formatSavedAt(ms: Long): String {
+    val date = java.time.Instant.ofEpochMilli(ms)
+        .atZone(java.time.ZoneId.systemDefault())
+    return java.time.format.DateTimeFormatter.ofPattern("dd/MM HH:mm").format(date)
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 ->
+        String.format(java.util.Locale.ROOT, "%.1f GB", bytes / (1024.0 * 1024 * 1024))
+    bytes >= 1024L * 1024 ->
+        String.format(java.util.Locale.ROOT, "%.0f MB", bytes / (1024.0 * 1024))
+    else -> "${bytes / 1024} KB"
+}
+
+private fun formatLimitLabel(mb: Int): String =
+    if (mb >= 1024) String.format(java.util.Locale.ROOT, "%.1f GB", mb / 1024.0) else "$mb MB"
+
 private fun recapMonthLabel(value: String): String {
     val month = runCatching { YearMonth.parse(value.take(7)) }.getOrNull() ?: return value
     val names = listOf(
@@ -1535,6 +1682,54 @@ private fun SettingsScreen(
                     TextButton(onClick = { viewModel.signOut() }) {
                         Text("Sair", color = OpenfyTextLow)
                     }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card(
+            colors = CardDefaults.cardColors(containerColor = OpenfyPanel),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Downloads",
+                        color = OpenfyTextHigh,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "${state.downloads.size} faixas",
+                        color = OpenfyAccent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Text(
+                    "${formatBytes(state.downloadUsedBytes)} usados de ${formatLimitLabel(state.downloadLimitMb)}",
+                    color = OpenfyTextLow,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Spacer(Modifier.height(10.dp))
+                Text("Limite de armazenamento", color = OpenfyTextHigh, fontSize = 13.sp)
+                LazyRow(
+                    Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    items(listOf(512, 1_024, 2_048, 5_120, 10_240)) { option ->
+                        AppearanceChip(formatLimitLabel(option), state.downloadLimitMb == option) {
+                            viewModel.setDownloadLimitMb(option)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                TextButton(
+                    onClick = { viewModel.clearDownloads() },
+                    enabled = state.downloads.isNotEmpty(),
+                ) {
+                    Text("Limpar downloads", color = OpenfyAccent)
                 }
             }
         }
@@ -1697,13 +1892,24 @@ private fun MiniPlayer(state: AuthUiState, viewModel: AuthViewModel, onOpen: () 
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    track.artist,
-                    color = OpenfyTextLow,
-                    fontSize = 10.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (track.id in state.downloadedIds) {
+                        Icon(
+                            Icons.Filled.DownloadDone,
+                            "Baixada",
+                            tint = OpenfyAccent,
+                            modifier = Modifier.size(11.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Text(
+                        track.artist,
+                        color = OpenfyTextLow,
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             IconButton(onClick = { viewModel.togglePlay() }, enabled = !state.busy) {
                 Icon(
@@ -1743,6 +1949,8 @@ private fun PlayerOverlay(
     val total = max(1L, state.durationMs)
     val fraction = dragging ?: (state.positionMs.toFloat() / total).coerceIn(0f, 1f)
     val liked = track?.id in state.likedIds
+    val currentDownloaded = track?.let { it.id in state.downloadedIds } == true
+    val currentDownloadProgress = track?.let { state.downloadProgress[it.id] }
     val coverPalette = rememberCoverPalette(track?.thumbnail.orEmpty(), state.coverGradient)
     val ink = OpenfyInk
     val fallback = OpenfyHeroGradient
@@ -1785,6 +1993,35 @@ private fun PlayerOverlay(
                 }
                 Spacer(Modifier.weight(1f))
                 Text("${state.queueIndex + 1}/${state.queue.size}", color = OpenfyTextLow, fontSize = 11.sp)
+                IconButton(
+                    onClick = {
+                        track?.let {
+                            if (currentDownloaded) {
+                                viewModel.removeDownload(it.id)
+                            } else if (currentDownloadProgress == null) {
+                                viewModel.startDownload(it)
+                            }
+                        }
+                    },
+                    enabled = track != null && currentDownloadProgress == null,
+                ) {
+                    if (currentDownloadProgress != null) {
+                        CircularProgressIndicator(
+                            progress = { currentDownloadProgress ?: 0f },
+                            modifier = Modifier.size(22.dp),
+                            color = OpenfyAccent,
+                            strokeWidth = 2.dp,
+                            trackColor = OpenfyLine,
+                        )
+                    } else {
+                        Icon(
+                            if (currentDownloaded) Icons.Filled.DownloadDone else Icons.Filled.Download,
+                            if (currentDownloaded) "Remover download" else "Baixar",
+                            tint = if (currentDownloaded) OpenfyAccent else OpenfyTextLow,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
             }
 
             Spacer(Modifier.weight(1f))
@@ -2057,6 +2294,14 @@ private fun QueueDialog(
                                     fontSize = 10.sp,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            if (track.id in state.downloadedIds) {
+                                Icon(
+                                    Icons.Filled.DownloadDone,
+                                    "Baixada",
+                                    tint = OpenfyAccent,
+                                    modifier = Modifier.size(16.dp),
                                 )
                             }
                             IconButton(onClick = { viewModel.removeQueueIndex(index) }) {
