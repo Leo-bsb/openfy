@@ -1650,11 +1650,20 @@ class AppController(
     }
 
     private fun browseUrl(url: String) {
+        val uri = runCatching { java.net.URI.create(url) }.getOrNull()
+        val allowed = uri != null &&
+            uri.scheme.equals("https", ignoreCase = true) &&
+            uri.host?.lowercase() in setOf("github.com", "www.github.com")
+        if (!allowed) {
+            Log.write("updates: URL recusada: $url")
+            message.value = "Nao foi possivel abrir o navegador."
+            return
+        }
         runCatching {
             if (java.awt.Desktop.isDesktopSupported() &&
                 java.awt.Desktop.getDesktop().isSupported(java.awt.Desktop.Action.BROWSE)
             ) {
-                java.awt.Desktop.getDesktop().browse(java.net.URI.create(url))
+                java.awt.Desktop.getDesktop().browse(uri)
             } else {
                 message.value = "Nao foi possivel abrir o navegador."
             }

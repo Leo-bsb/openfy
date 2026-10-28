@@ -119,7 +119,7 @@ object UpdateChecker {
     }
 
     /** Semver simples: exatamente três números; qualquer outra forma é rejeitada. */
-    private fun parseVersion(value: String): IntArray? {
+    internal fun parseVersion(value: String): IntArray? {
         val parts = value.trim().split('.')
         if (parts.size != 3) return null
         return IntArray(3) { index ->
@@ -127,7 +127,7 @@ object UpdateChecker {
         }
     }
 
-    private fun compare(a: IntArray, b: IntArray): Int {
+    internal fun compare(a: IntArray, b: IntArray): Int {
         for (index in 0..2) {
             val diff = a[index].compareTo(b[index])
             if (diff != 0) return diff
