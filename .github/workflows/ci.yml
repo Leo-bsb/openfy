@@ -39,8 +39,25 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      # O setup-android@v3 instala o pacote "tools" por padrao, que nao existe
+      # mais no SDK atual. Mantemos a action so para licencas/PATH e instalamos
+      # explicitamente a plataforma e o build-tools usados pelo projeto.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Install SDK 37
+        shell: bash
+        run: |
+          # Prefere o cmdline-tools baixado pela action (16.0); o "latest"
+          # preinstalado no runner e antigo (12.0).
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f ! -path '*/latest/*' | sort -V | tail -n1)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          echo "sdkmanager: $SDKMANAGER"
+          "$SDKMANAGER" --install "platforms;android-37.0" "build-tools;37.0.0"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
