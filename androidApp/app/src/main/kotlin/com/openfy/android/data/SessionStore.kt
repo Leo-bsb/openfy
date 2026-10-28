@@ -81,11 +81,15 @@ class SessionStore(context: Context) {
         val palette = palette()
         val layout = playerLayout()
         val gradient = coverGradient()
+        val eqEnabled = eqEnabled()
+        val eqGains = eqGains()
         prefs.edit().clear()
             .putInt("crossfade_seconds", crossfade)
             .putString("ui_palette", palette.id)
             .putString("ui_player_layout", layout.id)
             .putBoolean("ui_cover_gradient", gradient)
+            .putBoolean("eq_enabled", eqEnabled)
+            .putString("eq_gains", eqGains.joinToString(","))
             .apply()
     }
 
@@ -109,6 +113,22 @@ class SessionStore(context: Context) {
         prefs.edit().putBoolean("ui_cover_gradient", enabled).apply()
     }
 
+    fun eqEnabled(): Boolean = prefs.getBoolean("eq_enabled", false)
+
+    fun setEqEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("eq_enabled", enabled).apply()
+    }
+
+    fun eqGains(): List<Int> = prefs.getString("eq_gains", null)
+        ?.split(',')
+        ?.mapNotNull { it.toIntOrNull() }
+        ?.takeIf { it.size == 5 }
+        ?: listOf(0, 0, 0, 0, 0)
+
+    fun setEqGains(gains: List<Int>) {
+        prefs.edit().putString("eq_gains", gains.joinToString(",")).apply()
+    }
+
     fun recentTracks(): List<Track> = runCatching {
         json.decodeFromString<List<Track>>(prefs.getString("recent_tracks", null) ?: "[]")
     }.getOrDefault(emptyList())
@@ -116,6 +136,31 @@ class SessionStore(context: Context) {
     fun setRecentTracks(tracks: List<Track>) {
         prefs.edit()
             .putString("recent_tracks", json.encodeToString(tracks.take(24)))
+            .apply()
+    }
+
+    fun playbackQueue(): List<Track> = runCatching {
+        json.decodeFromString<List<Track>>(prefs.getString("playback_queue", null) ?: "[]")
+    }.getOrDefault(emptyList())
+
+    fun playbackIndex(): Int = prefs.getInt("playback_index", -1)
+
+    fun playbackPosition(): Long = prefs.getLong("playback_position", 0L)
+
+    fun setPlaybackSession(queue: List<Track>, index: Int, positionMs: Long) {
+        if (queue.isEmpty() || index !in queue.indices) return
+        prefs.edit()
+            .putString("playback_queue", json.encodeToString(queue.take(400)))
+            .putInt("playback_index", index.coerceAtMost(399))
+            .putLong("playback_position", positionMs.coerceAtLeast(0L))
+            .apply()
+    }
+
+    fun clearPlaybackSession() {
+        prefs.edit()
+            .remove("playback_queue")
+            .remove("playback_index")
+            .remove("playback_position")
             .apply()
     }
 

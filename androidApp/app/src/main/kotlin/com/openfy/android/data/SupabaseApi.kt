@@ -198,6 +198,101 @@ class SupabaseApi {
         return decoded(response)
     }
 
+    suspend fun monthlyListening(accessToken: String, month: String): MonthlyListeningRow? {
+        val response = client.get("$baseUrl/rest/v1/monthly_listening") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "month,played_ms,plays,unique_tracks,completed_plays,skipped_plays")
+            parameter("month", "eq.$month")
+            parameter("limit", "1")
+        }
+        return decoded<List<MonthlyListeningRow>>(response).firstOrNull()
+    }
+
+    suspend fun monthlyTopArtists(
+        accessToken: String,
+        month: String,
+        limit: Int = 10,
+    ): List<MonthlyArtistRow> {
+        val response = client.get("$baseUrl/rest/v1/monthly_top_artists") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "artist,plays,played_ms")
+            parameter("month", "eq.$month")
+            parameter("order", "plays.desc,played_ms.desc")
+            parameter("limit", limit.toString())
+        }
+        return decoded(response)
+    }
+
+    suspend fun monthlyMonths(accessToken: String, limit: Int = 12): List<String> {
+        val response = client.get("$baseUrl/rest/v1/monthly_listening") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "month")
+            parameter("order", "month.desc")
+            parameter("limit", limit.toString())
+        }
+        return decoded<List<MonthRow>>(response).map { it.month.take(10) }
+    }
+
+    suspend fun uploadCover(
+        accessToken: String,
+        userId: String,
+        playlistId: String,
+        bytes: ByteArray,
+        mime: String,
+        extension: String,
+    ): String {
+        val ext = extension.lowercase().ifBlank { "jpg" }
+        val path = "$userId/$playlistId.$ext"
+        val response = client.post("$baseUrl/storage/v1/object/covers/$path") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("x-upsert", "true")
+            contentType(ContentType.parse(mime))
+            setBody(bytes)
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+        return "$baseUrl/storage/v1/object/public/covers/$path?v=${System.currentTimeMillis()}"
+    }
+
+    suspend fun setPlaylistCover(accessToken: String, playlistId: String, url: String) {
+        val response = client.patch("$baseUrl/rest/v1/playlists") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=minimal")
+            parameter("id", "eq.$playlistId")
+            contentType(ContentType.Application.Json)
+            setBody(CoverPatch(url))
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
+    suspend fun shareCode(accessToken: String, playlistId: String): String? {
+        val response = client.get("$baseUrl/rest/v1/playlists") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "share_code")
+            parameter("id", "eq.$playlistId")
+            parameter("limit", "1")
+        }
+        return decoded<List<ShareCodeRow>>(response).firstOrNull()
+            ?.shareCode
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    suspend fun joinPlaylist(accessToken: String, code: String): String {
+        val response = client.post("$baseUrl/rest/v1/rpc/join_playlist") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            contentType(ContentType.Application.Json)
+            setBody(JoinBody(code.trim()))
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+        return decoded<String>(response)
+    }
+
     suspend fun playlistItems(accessToken: String, playlistId: String): List<RemotePlaylistItem> {
         val response = client.get("$baseUrl/rest/v1/playlist_items") {
             header("apikey", anonKey)
@@ -224,24 +319,33 @@ class SupabaseApi {
     }
 
     suspend fun pushTrack(accessToken: String, track: com.openfy.core.Track) {
-        val response = client.post("$baseUrl/rest/v1/tracks") {
-            header("apikey", anonKey)
-            header(HttpHeaders.Authorization, "Bearer $accessToken")
-            header("Prefer", "resolution=ignore-duplicates,return=minimal")
-            parameter("on_conflict", "id")
-            contentType(ContentType.Application.Json)
-            setBody(
-                PushTrack(
-                    id = track.id,
-                    title = track.title,
-                    artist = track.artist,
-                    album = track.album,
-                    duration = track.durationSec,
-                    thumbnail = track.thumbnail,
-                ),
-            )
+        pushTracks(accessToken, listOf(track))
+    }
+
+    suspend fun pushTracks(accessToken: String, tracks: List<com.openfy.core.Track>) {
+        if (tracks.isEmpty()) return
+        tracks.chunked(100).forEach { batch ->
+            val response = client.post("$baseUrl/rest/v1/tracks") {
+                header("apikey", anonKey)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                header("Prefer", "resolution=ignore-duplicates,return=minimal")
+                parameter("on_conflict", "id")
+                contentType(ContentType.Application.Json)
+                setBody(
+                    batch.map { track ->
+                        PushTrack(
+                            id = track.id,
+                            title = track.title,
+                            artist = track.artist,
+                            album = track.album,
+                            duration = track.durationSec,
+                            thumbnail = track.thumbnail,
+                        )
+                    },
+                )
+            }
+            if (!response.status.isSuccess()) decodeError(response)
         }
-        if (!response.status.isSuccess()) decodeError(response)
     }
 
     suspend fun pushPlayEvent(accessToken: String, event: PushPlayEvent) {
@@ -312,6 +416,42 @@ class SupabaseApi {
         }
         if (!response.status.isSuccess()) decodeError(response)
         return itemId
+    }
+
+    suspend fun addPlaylistItems(
+        accessToken: String,
+        playlistId: String,
+        tracks: List<com.openfy.core.Track>,
+    ): Int {
+        if (tracks.isEmpty()) return 0
+        pushTracks(accessToken, tracks)
+        var added = 0
+        val stamp = System.currentTimeMillis()
+        tracks.chunked(200).forEachIndexed { batchIndex, batch ->
+            val items = batch.mapIndexed { index, track ->
+                val position = batchIndex * 200 + index
+                PushPlaylistItem(
+                    id = java.util.UUID.nameUUIDFromBytes(
+                        "openfy:$playlistId:${track.id}".toByteArray(Charsets.UTF_8),
+                    ).toString(),
+                    playlistId = playlistId,
+                    trackId = track.id,
+                    rank = "z${String.format(java.util.Locale.ROOT, "%013d%03d", stamp, position)}",
+                    deleted = false,
+                )
+            }
+            val response = client.post("$baseUrl/rest/v1/playlist_items") {
+                header("apikey", anonKey)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                header("Prefer", "resolution=merge-duplicates,return=minimal")
+                parameter("on_conflict", "id")
+                contentType(ContentType.Application.Json)
+                setBody(items)
+            }
+            if (!response.status.isSuccess()) decodeError(response)
+            added += items.size
+        }
+        return added
     }
 
     suspend fun removePlaylistItem(accessToken: String, itemId: String) {

@@ -16,6 +16,10 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import com.openfy.android.data.AuthSession
+import com.openfy.android.data.LyricLine
+import com.openfy.android.data.LyricsClient
+import com.openfy.android.data.MonthlyArtistRow
+import com.openfy.android.data.MonthlyListeningRow
 import com.openfy.android.data.PlaylistDto
 import com.openfy.android.data.Profile
 import com.openfy.android.data.PushPlayEvent
@@ -25,7 +29,11 @@ import com.openfy.android.data.SessionStore
 import com.openfy.android.data.StoredSession
 import com.openfy.android.data.SupabaseApi
 import com.openfy.android.data.SupabaseException
+import com.openfy.android.playback.EqualizerController
+import com.openfy.android.playback.PlaybackBridge
+import com.openfy.android.playback.PlaybackService
 import com.openfy.core.ColorPalette
+import com.openfy.core.Importer
 import com.openfy.core.PlayerLayout
 import com.openfy.core.Track
 import com.openfy.data.Media
@@ -46,6 +54,13 @@ import java.time.Instant
 import java.time.YearMonth
 import kotlin.math.cos
 import kotlin.math.sin
+
+data class RecapData(
+    val month: String,
+    val listening: MonthlyListeningRow?,
+    val topTracks: List<Track>,
+    val artists: List<MonthlyArtistRow>,
+)
 
 data class AuthUiState(
     val loading: Boolean = true,
@@ -78,6 +93,18 @@ data class AuthUiState(
     val coverGradient: Boolean = true,
     val recentTracks: List<Track> = emptyList(),
     val topTracks: List<Track> = emptyList(),
+    val lyrics: List<LyricLine> = emptyList(),
+    val lyricsLoading: Boolean = false,
+    val lyricsError: String? = null,
+    val sleepUntil: Long? = null,
+    val eqEnabled: Boolean = false,
+    val eqGains: List<Int> = listOf(0, 0, 0, 0, 0),
+    val recapMonth: String = YearMonth.now().atDay(1).toString(),
+    val recapMonths: List<String> = emptyList(),
+    val recap: RecapData? = null,
+    val recapLoading: Boolean = false,
+    val recapError: String? = null,
+    val shareCode: String? = null,
 ) {
     val hasPrevious: Boolean get() = queueIndex > 0
     val hasNext: Boolean get() = queueIndex >= 0 && queueIndex < queue.lastIndex
@@ -98,6 +125,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             playerLayout = store.playerLayout(),
             coverGradient = store.coverGradient(),
             recentTracks = store.recentTracks(),
+            eqEnabled = store.eqEnabled(),
+            eqGains = store.eqGains(),
         ),
     )
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
@@ -107,6 +136,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
         .build()
 
+    private val equalizer = EqualizerController()
     private val playerA = createPlayer()
     private val playerB = createPlayer()
     private lateinit var activePlayer: ExoPlayer
@@ -114,10 +144,16 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val standbyPlayer: ExoPlayer get() = if (activePlayer === playerA) playerB else playerA
 
     private fun createPlayer(): ExoPlayer {
-        val p = ExoPlayer.Builder(getApplication()).build()
+        val p = ExoPlayer.Builder(getApplication())
+            .setWakeMode(C.WAKE_MODE_NETWORK)
+            .build()
         p.setAudioAttributes(audioAttributes, false)
         p.setHandleAudioBecomingNoisy(true)
         p.addListener(object : Player.Listener {
+            override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                equalizer.attach(p, audioSessionId)
+            }
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (p === activePlayer) {
                     _state.update { it.copy(playing = isPlaying) }
@@ -180,9 +216,57 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var lastHomeLoad = 0L
     private var playJob: Job? = null
     private var radioAdvancePending = false
+    private var lyricsJob: Job? = null
+    private var sleepJob: Job? = null
+    private var recapJob: Job? = null
+    private val lyricsCache = mutableMapOf<String, List<LyricLine>>()
+    private var lastSessionSave = 0L
+    private var lastSavedTrack = ""
 
     init {
         activePlayer = playerA
+        equalizer.applySaved(_state.value.eqEnabled, _state.value.eqGains)
+        PlaybackBridge.onToggle = { togglePlay() }
+        PlaybackBridge.onPlay = {
+            PlaybackService.ensureStarted(getApplication())
+            if (!player.isPlaying) player.play()
+        }
+        PlaybackBridge.onPause = {
+            if (player.isPlaying) player.pause()
+        }
+        PlaybackBridge.onNext = { next() }
+        PlaybackBridge.onPrevious = { previous() }
+        PlaybackBridge.onStop = {
+            runCatching {
+                cancelCrossfade()
+                player.pause()
+            }
+            _state.update { it.copy(playing = false) }
+        }
+        viewModelScope.launch {
+            state.collect { current ->
+                PlaybackBridge.update(
+                    current.track,
+                    current.playing,
+                    current.durationMs,
+                    current.hasPrevious,
+                    current.hasNext,
+                )
+                val track = current.track
+                if (track != null && current.queue.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    if (track.id != lastSavedTrack || now - lastSessionSave > 5_000) {
+                        lastSavedTrack = track.id
+                        lastSessionSave = now
+                        store.setPlaybackSession(
+                            current.queue,
+                            current.queueIndex,
+                            current.positionMs,
+                        )
+                    }
+                }
+            }
+        }
         restore()
         viewModelScope.launch {
             while (isActive) {
@@ -229,6 +313,48 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }
             _state.update { it.copy(session = session, loading = true) }
             loadHome(session)
+            restorePlaybackSession()
+        }
+    }
+
+    private fun restorePlaybackSession() {
+        if (_state.value.track != null) return
+        val queue = store.playbackQueue()
+        val index = store.playbackIndex()
+        val track = queue.getOrNull(index) ?: return
+        val position = store.playbackPosition().coerceAtLeast(0L)
+        _state.update {
+            it.copy(
+                track = track,
+                queue = queue,
+                queueIndex = index,
+                positionMs = position,
+                durationMs = track.durationSec * 1000L,
+                playing = false,
+                busy = true,
+            )
+        }
+        viewModelScope.launch {
+            val media = withContext(Dispatchers.IO) { youtube.media(track.id) } as? Media.Remote
+            if (_state.value.track?.id != track.id || _state.value.session == null) return@launch
+            if (media == null) {
+                _state.update { it.copy(busy = false, track = null) }
+                return@launch
+            }
+            activePlayer.stop()
+            activePlayer.clearMediaItems()
+            activePlayer.setAudioAttributes(audioAttributes, false)
+            activePlayer.setMediaSource(mediaSource(track, media))
+            activePlayer.prepare()
+            activePlayer.seekTo(position)
+            activePlayer.playWhenReady = false
+            _state.update {
+                it.copy(
+                    busy = false,
+                    playing = false,
+                    durationMs = activePlayer.duration.coerceAtLeast(0L),
+                )
+            }
         }
     }
 
@@ -730,6 +856,63 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setPlaylistCover(playlistId: String, uri: Uri) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null, message = null) }
+            runCatching {
+                withSession { session ->
+                    val resolver = getApplication<Application>().contentResolver
+                    val mime = resolver.getType(uri) ?: "image/jpeg"
+                    val declaredSize = resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+                    if (declaredSize > 8 * 1024 * 1024) {
+                        throw SupabaseException("A imagem precisa ter no máximo 8 MB.")
+                    }
+                    val extension = when {
+                        mime.contains("png", ignoreCase = true) -> "png"
+                        mime.contains("webp", ignoreCase = true) -> "webp"
+                        mime.contains("gif", ignoreCase = true) -> "gif"
+                        else -> "jpg"
+                    }
+                    val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw SupabaseException("Não foi possível ler a imagem.")
+                    if (bytes.size > 8 * 1024 * 1024) {
+                        throw SupabaseException("A imagem precisa ter no máximo 8 MB.")
+                    }
+                    val url = api.uploadCover(
+                        session.accessToken,
+                        session.userId,
+                        playlistId,
+                        bytes,
+                        mime,
+                        extension,
+                    )
+                    api.setPlaylistCover(session.accessToken, playlistId, url)
+                    url
+                }
+            }.onSuccess { url ->
+                _state.update { current ->
+                    current.copy(
+                        busy = false,
+                        playlists = current.playlists.map {
+                            if (it.id == playlistId) it.copy(coverUrl = url) else it
+                        },
+                        openPlaylist = current.openPlaylist?.let {
+                            if (it.id == playlistId) it.copy(coverUrl = url) else it
+                        },
+                        message = "Capa atualizada.",
+                    )
+                }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        error = error.message ?: "Falha ao atualizar a capa.",
+                    )
+                }
+            }
+        }
+    }
+
     fun removeFromPlaylist(item: RemotePlaylistItem) {
         val playlist = _state.value.openPlaylist ?: return
         viewModelScope.launch {
@@ -770,6 +953,251 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     fun setCoverGradient(enabled: Boolean) {
         store.setCoverGradient(enabled)
         _state.update { it.copy(coverGradient = enabled) }
+    }
+
+    fun loadLyrics(track: Track?) {
+        lyricsJob?.cancel()
+        if (track == null) {
+            _state.update { it.copy(lyrics = emptyList(), lyricsLoading = false, lyricsError = null) }
+            return
+        }
+        val cached = lyricsCache[track.id]
+        if (cached != null) {
+            _state.update { it.copy(lyrics = cached, lyricsLoading = false, lyricsError = null) }
+            return
+        }
+        _state.update { it.copy(lyrics = emptyList(), lyricsLoading = true, lyricsError = null) }
+        lyricsJob = viewModelScope.launch {
+            val lines = LyricsClient.fetch(track)
+            if (_state.value.track?.id != track.id) return@launch
+            if (lines.isNotEmpty()) lyricsCache[track.id] = lines
+            _state.update {
+                it.copy(
+                    lyrics = lines,
+                    lyricsLoading = false,
+                    lyricsError = if (lines.isEmpty()) "Letra não encontrada." else null,
+                )
+            }
+        }
+    }
+
+    fun setSleepTimer(minutes: Int?) {
+        sleepJob?.cancel()
+        if (minutes == null) {
+            _state.update { it.copy(sleepUntil = null) }
+            return
+        }
+        val until = System.currentTimeMillis() + minutes * 60_000L
+        _state.update { it.copy(sleepUntil = until) }
+        sleepJob = viewModelScope.launch {
+            delay(minutes * 60_000L)
+            if (_state.value.sleepUntil != until) return@launch
+            runCatching {
+                cancelCrossfade()
+                player.pause()
+            }
+            _state.update {
+                it.copy(sleepUntil = null, playing = false, message = "Timer encerrado.")
+            }
+        }
+    }
+
+    fun setEqEnabled(enabled: Boolean) {
+        store.setEqEnabled(enabled)
+        equalizer.setEnabled(enabled)
+        _state.update { it.copy(eqEnabled = enabled) }
+    }
+
+    fun setEqGain(index: Int, gainDb: Int) {
+        val value = gainDb.coerceIn(-12, 12)
+        equalizer.setGain(index, value)
+        val gains = _state.value.eqGains.toMutableList()
+        if (index !in gains.indices) return
+        gains[index] = value
+        store.setEqEnabled(true)
+        store.setEqGains(gains)
+        _state.update { it.copy(eqEnabled = true, eqGains = gains) }
+    }
+
+    fun applyEqPreset(name: String) {
+        val preset = EqualizerController.PRESETS[name] ?: return
+        equalizer.applyPreset(name)
+        store.setEqEnabled(true)
+        store.setEqGains(preset)
+        _state.update { it.copy(eqEnabled = true, eqGains = preset) }
+    }
+
+    fun selectRecapMonth(month: String) {
+        loadRecap(month, force = true)
+    }
+
+    fun loadRecap(month: String? = null, force: Boolean = false) {
+        val session = _state.value.session ?: return
+        val target = month ?: _state.value.recapMonth
+        if (!force && _state.value.recap?.month == target && !_state.value.recapLoading) return
+        recapJob?.cancel()
+        _state.update { it.copy(recapMonth = target, recapLoading = true, recapError = null) }
+        recapJob = viewModelScope.launch {
+            runCatching {
+                withSession { current ->
+                    val months = api.monthlyMonths(current.accessToken)
+                    val listening = api.monthlyListening(current.accessToken, target)
+                    val rows = api.monthlyTopTracks(current.accessToken, target, 10)
+                    val byId = if (rows.isEmpty()) {
+                        emptyMap()
+                    } else {
+                        api.tracks(current.accessToken, rows.map { it.trackId })
+                            .associateBy { it.id }
+                    }
+                    val tracks = rows.mapNotNull { byId[it.trackId]?.toTrack() }
+                    val artists = api.monthlyTopArtists(current.accessToken, target, 8)
+                    RecapData(
+                        month = target,
+                        listening = listening,
+                        topTracks = tracks,
+                        artists = artists,
+                    ) to months
+                }
+            }.onSuccess { (data, months) ->
+                if (_state.value.session?.userId != session.userId) return@onSuccess
+                _state.update {
+                    it.copy(
+                        recap = data,
+                        recapMonths = months.ifEmpty { listOf(target) },
+                        recapLoading = false,
+                        recapError = null,
+                    )
+                }
+            }.onFailure { error ->
+                if (_state.value.session?.userId != session.userId) return@onFailure
+                _state.update {
+                    it.copy(
+                        recapLoading = false,
+                        recapError = error.message ?: "Falha ao carregar o recap.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun playRecapTrack(track: Track) {
+        val tracks = _state.value.recap?.topTracks ?: emptyList()
+        play(track, tracks.ifEmpty { listOf(track) }, "recap")
+    }
+
+    fun requestShareCode(playlistId: String) {
+        viewModelScope.launch {
+            _state.update { it.copy(shareCode = null, busy = true, error = null) }
+            runCatching {
+                withSession { session -> api.shareCode(session.accessToken, playlistId) }
+            }.onSuccess { code ->
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        shareCode = code,
+                        error = if (code == null) "Não foi possível gerar o código." else null,
+                    )
+                }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(busy = false, error = error.message ?: "Falha ao compartilhar.")
+                }
+            }
+        }
+    }
+
+    fun clearShareCode() {
+        _state.update { it.copy(shareCode = null) }
+    }
+
+    fun importPlaylist(url: String) {
+        val browse = Importer.parseYtmBrowseId(url)
+        if (browse == null) {
+            _state.update {
+                it.copy(error = "Link inválido. Cole a URL de uma playlist ou álbum do YouTube Music.")
+            }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null, message = "Importando playlist…") }
+            var partial: PlaylistDto? = null
+            runCatching {
+                withSession { session ->
+                    val first = withContext(Dispatchers.IO) { youtube.collection(browse) }
+                    val tracks = first.tracks.toMutableList()
+                    var token = first.continuation
+                    var pages = 0
+                    while (token != null && tracks.size < 500 && pages < 8) {
+                        val page = withContext(Dispatchers.IO) { youtube.collectionNext(token) }
+                        tracks += page.tracks.filterNot { candidate ->
+                            tracks.any { it.id == candidate.id }
+                        }
+                        token = page.continuation
+                        pages++
+                    }
+                    if (tracks.isEmpty()) throw SupabaseException("A playlist está vazia.")
+                    val name = first.title.ifBlank { "Importada do YouTube Music" }
+                    val playlist = api.createPlaylist(session.accessToken, name)
+                        ?: throw SupabaseException("O servidor não devolveu a playlist criada.")
+                    partial = playlist
+                    val added = api.addPlaylistItems(session.accessToken, playlist.id, tracks)
+                    playlist to added
+                }
+            }.onSuccess { (playlist, added) ->
+                _state.value.session?.let { loadHome(it) }
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        message = "\"${playlist.name}\" importada com $added faixas.",
+                    )
+                }
+            }.onFailure { error ->
+                val created = partial
+                if (created != null) {
+                    _state.value.session?.let { loadHome(it) }
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = "\"${created.name}\" foi criada, mas as faixas não entraram: ${error.message}",
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(busy = false, error = error.message ?: "Falha ao importar a playlist.")
+                    }
+                }
+            }
+        }
+    }
+
+    fun joinPlaylist(code: String) {
+        val clean = code.trim().substringAfterLast("/").substringAfter("code=").trim()
+        if (clean.isBlank()) return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null, message = null) }
+            runCatching {
+                withSession { session -> api.joinPlaylist(session.accessToken, clean) }
+            }.onSuccess {
+                _state.value.session?.let { loadHome(it) }
+                _state.update {
+                    it.copy(busy = false, message = "Playlist adicionada à sua biblioteca.")
+                }
+            }.onFailure { error ->
+                val message = error.message ?: "Código inválido."
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        error = if (message.contains("invalid_code", ignoreCase = true) ||
+                            message.contains("not found", ignoreCase = true)
+                        ) {
+                            "Código inválido ou expirado."
+                        } else {
+                            message
+                        },
+                    )
+                }
+            }
+        }
     }
 
     private fun rememberRecent(track: Track) {
@@ -868,6 +1296,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
         cancelCrossfade()
         playJob?.cancel()
+        PlaybackService.ensureStarted(getApplication())
         if (!keepRadio) resetRadio()
         val current = _state.value
         finishEvent(completed = false, skipped = true)
@@ -1059,6 +1488,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     fun togglePlay() {
         if (_state.value.track == null) return
+        PlaybackService.ensureStarted(getApplication())
         if (crossfading) cancelCrossfade()
         if (player.isPlaying) player.pause() else player.play()
     }
@@ -1162,6 +1592,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             playerA.clearMediaItems()
             playerB.clearMediaItems()
             session?.let { api.logout(it.accessToken) }
+            lyricsJob?.cancel()
+            sleepJob?.cancel()
+            recapJob?.cancel()
+            lyricsCache.clear()
+            PlaybackService.stop(getApplication())
             store.clear()
             lastHomeLoad = 0L
             _state.value = AuthUiState(
@@ -1171,6 +1606,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 palette = store.palette(),
                 playerLayout = store.playerLayout(),
                 coverGradient = store.coverGradient(),
+                eqEnabled = store.eqEnabled(),
+                eqGains = store.eqGains(),
             )
         }
     }
@@ -1183,6 +1620,16 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         runCatching { finishEvent(completed = false, skipped = true) }
         runCatching { resetRadio() }
         runCatching { cancelCrossfade() }
+        val current = _state.value
+        current.track?.let { track ->
+            store.setPlaybackSession(current.queue, current.queueIndex, current.positionMs)
+        }
+        lyricsJob?.cancel()
+        sleepJob?.cancel()
+        recapJob?.cancel()
+        PlaybackService.stop(getApplication())
+        PlaybackBridge.clear()
+        equalizer.releaseAll()
         playerA.release()
         playerB.release()
         youtube.close()

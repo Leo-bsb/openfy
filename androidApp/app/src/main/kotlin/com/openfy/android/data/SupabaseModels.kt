@@ -119,6 +119,35 @@ data class MonthlyTrackRow(
 )
 
 @Serializable
+data class MonthlyListeningRow(
+    val month: String = "",
+    @SerialName("played_ms") val playedMs: Long = 0,
+    val plays: Long = 0,
+    @SerialName("unique_tracks") val uniqueTracks: Long = 0,
+    @SerialName("completed_plays") val completedPlays: Long = 0,
+    @SerialName("skipped_plays") val skippedPlays: Long = 0,
+)
+
+@Serializable
+data class MonthlyArtistRow(
+    val artist: String = "",
+    val plays: Long = 0,
+    @SerialName("played_ms") val playedMs: Long = 0,
+)
+
+@Serializable
+data class MonthRow(val month: String = "")
+
+@Serializable
+data class CoverPatch(@SerialName("cover_url") val coverUrl: String)
+
+@Serializable
+data class ShareCodeRow(@SerialName("share_code") val shareCode: String? = null)
+
+@Serializable
+data class JoinBody(@SerialName("p_code") val code: String)
+
+@Serializable
 data class PushPlayEvent(
     @SerialName("user_id") val userId: String,
     @SerialName("device_id") val deviceId: String?,
