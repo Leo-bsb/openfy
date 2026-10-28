@@ -92,7 +92,6 @@ fun main(): Unit = runBlocking {
     // Crossfade real: dois mpv, o proximo entra sobreposto antes do fim.
     player.setVolume(0)
     player.setCrossfade(4)
-    player.setTransitionStyle(Player.TRANSITION_BLEND)
     player.shuffle.value = true
     val fadeA = Track("lYBUbBu4W08", "Never Gonna Give You Up", "Rick Astley")
     val fadeB = Track("rA8xvaObO3c", "COPYCAT", "Billie Eilish")
@@ -110,7 +109,6 @@ fun main(): Unit = runBlocking {
             "pos=${player.position.value} mpvB=${mpvB.processId()} fim=${fadeDone}"
     )
     player.setCrossfade(0)
-    player.setTransitionStyle(Player.TRANSITION_CROSSFADE)
     player.shuffle.value = false
 
     // Shuffle deve reordenar a fila visivel e restaurar a ordem ao desligar.
@@ -134,6 +132,22 @@ fun main(): Unit = runBlocking {
         player.queue.value.map { it.id } == shuffleTracks.map { it.id }
     println("shuffle=$shuffledOk restaurado=$restoredOk")
 
+    // Uma resposta atrasada da r?dio n?o pode sequestrar a fila escolhida depois.
+    player.radioStarter = { _ ->
+        kotlinx.coroutines.delay(1_200)
+        com.openfy.core.RadioPage(
+            tracks = listOf(Track("radio-atrasada", "Atrasada", "teste")),
+            continuation = null,
+        )
+    }
+    player.playThenRadio(Track("rA8xvaObO3c", "COPYCAT", "Billie Eilish"))
+    kotlinx.coroutines.delay(200)
+    player.playNow(listOf(Track("lYBUbBu4W08", "Never Gonna Give You Up", "Rick Astley")))
+    kotlinx.coroutines.delay(1_800)
+    val radioRaceOk = player.current.value?.id == "lYBUbBu4W08" &&
+        player.queue.value.none { it.id == "radio-atrasada" }
+    println("radio_race=$radioRaceOk fila=${player.queue.value.size}")
+
     player.playSingle(Track("aaaaaaaaaaa", "Faixa invalida", "teste"))
     val failure = withTimeoutOrNull(15_000) { player.error.first { it != null } }
     println("erro=$failure busy=${player.busy.value} playing=${player.playing.value}")
@@ -141,8 +155,8 @@ fun main(): Unit = runBlocking {
     val autoplayOk = (radioAfterTrack?.size ?: 0) > 1 && (radioAtEnd?.size ?: 0) > 1
     val downloadOk = dlSize > 1_000_000
     val ok = position > 2.0 && seeked != null && second > 1.5 && failure != null &&
-        autoplayOk && downloadOk && crossfadeOk && shuffledOk && restoredOk
-    println("autoplay=$autoplayOk download=$downloadOk crossfade=$crossfadeOk")
+        autoplayOk && downloadOk && crossfadeOk && shuffledOk && restoredOk && radioRaceOk
+    println("autoplay=$autoplayOk download=$downloadOk crossfade=$crossfadeOk radio_race=$radioRaceOk")
     runCatching { dlDir.toFile().deleteRecursively() }
     player.shutdown()
     stream.stop()

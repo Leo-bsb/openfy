@@ -40,6 +40,12 @@ data class AccountState(
     val lastSync: String? = null,
 )
 
+data class AccountRecap(
+    val summary: RecapSummary,
+    val topTracks: List<RecapTrack>,
+    val topArtists: List<RecapArtist>,
+)
+
 /**
  * Conta + sync. O banco local continua sendo a fonte da UI; a nuvem é usada
  * para trocar playlists, itens e curtidas entre PC e Android.
@@ -310,6 +316,47 @@ class AccountManager(
         val session = ensureSession() ?: return null
         return runCatching {
             api.uploadCover(session.accessToken, session.userId, playlistId, file)
+        }.getOrNull()
+    }
+
+    suspend fun fetchRecap(month: java.time.YearMonth): AccountRecap? {
+        val session = ensureSession() ?: return null
+        return runCatching {
+            val listening = api.monthlyListening(session.accessToken, month).firstOrNull()
+            val summary = RecapSummary(
+                plays = listening?.plays?.toInt() ?: 0,
+                playedMs = listening?.playedMs ?: 0,
+                uniqueTracks = listening?.uniqueTracks?.toInt() ?: 0,
+                uniqueArtists = api.monthlyTopArtists(session.accessToken, month, 50).size,
+                completedPlays = listening?.completedPlays?.toInt() ?: 0,
+                skippedPlays = listening?.skippedPlays?.toInt() ?: 0,
+            )
+            val remoteTracks = api.monthlyTopTracks(session.accessToken, month, 20)
+            val byId = api.tracks(session.accessToken, remoteTracks.map { it.trackId }).associateBy { it.id }
+            val topTracks = remoteTracks.mapNotNull { item ->
+                byId[item.trackId]?.let { track ->
+                    RecapTrack(
+                        Track(
+                            id = track.id,
+                            title = track.title,
+                            artist = track.artist,
+                            album = track.album,
+                            durationSec = track.duration,
+                            thumbnail = track.thumbnail,
+                        ),
+                        plays = item.plays.toInt(),
+                        playedMs = item.playedMs,
+                    )
+                }
+            }
+            val topArtists = api.monthlyTopArtists(session.accessToken, month, 8).map {
+                RecapArtist(
+                    name = it.artist,
+                    plays = it.plays.toInt(),
+                    playedMs = it.playedMs,
+                )
+            }
+            AccountRecap(summary, topTracks, topArtists)
         }.getOrNull()
     }
 

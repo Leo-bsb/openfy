@@ -55,7 +55,6 @@ Decisão de arquitetura recomendada:
 - Curtidas e playlists usam soft delete, o que preserva tombstones para sync.
 - Sessão de reprodução já é serializada (fila, índice, posição, volume, shuffle, repeat).
 - Backup JSON e arquivo `.openfyplaylist` já existem.
-- Crossfade real com dois players e modo DJ blend já validado no desktop.
 
 ### Lacunas que impedem sync confiável
 
@@ -522,7 +521,6 @@ Cuidados:
 
 - **Crossfade no Android**: dois ExoPlayers simultâneos exigem áudio foco e sessão bem gerenciados; o segundo player deve ser pré-carregado e mudo. Validar em Bluetooth, fones e alto-falante.
 - **EQ**: as bandas do `Equalizer` variam por aparelho (normalmente 5 bandas, mas frequências diferentes). Mapear 60/230/910/3600/14000 Hz para as bandas disponíveis; se não houver, usar `DynamicsProcessing` (API 28+) ou desabilitar.
-- **DJ blend**: highpass de 120 Hz no Android não é tão cirúrgico; usar `DynamicsProcessing`/EQ e aceitar aproximação.
 - **Background**: Android 14+ exige `foregroundServiceType="mediaPlayback"`, permissão `FOREGROUND_SERVICE_MEDIA_PLAYBACK` e notificação; Android 13+ pede `POST_NOTIFICATIONS`. Sem isso, a música para ao minimizar.
 - **Android Auto / lockscreen**: MediaSession + MediaBrowserService; pode ficar para fase 2.
 - **Bateria**: evitar polling agressivo; WorkManager para sync e downloads; Realtime só em foreground ou com conexão controlada.
@@ -541,7 +539,6 @@ Cuidados:
 
 - Navegação inferior: Início, Buscar, Biblioteca.
 - Mini player persistente + tela “Tocando agora” com swipe.
-- Fila, letras, timer, EQ, DJ, downloads.
 - Compartilhar via share sheet (YouTube Music/Openfy).
 - Importar `.openfyplaylist`/CSV via SAF (Storage Access Framework), não `JFileChooser`.
 - Deep links:

@@ -1,7 +1,12 @@
 package com.openfy.data
 
 import com.openfy.core.PendingPlayEvent
+import com.openfy.core.PlayEventRow
 import com.openfy.core.Playlist
+import com.openfy.core.RecapArtist
+import com.openfy.core.RecapDay
+import com.openfy.core.RecapSummary
+import com.openfy.core.RecapTrack
 import com.openfy.core.SyncLike
 import com.openfy.core.SyncPlaylist
 import com.openfy.core.SyncPlaylistItem
@@ -113,10 +118,6 @@ class Db(file: Path) : AutoCloseable {
                 if (!hasColumn("playlist_item", "deleted")) {
                     st.execute("alter table playlist_item add column deleted integer not null default 0")
                 }
-                st.execute(
-                    "create table if not exists track_bpm(" +
-                        "id text primary key, bpm real not null, at integer not null)"
-                )
                 st.execute("update playlist set updated_at=created_at where updated_at=0")
                 st.execute("update liked set updated_at=at where updated_at=0")
                 st.execute(
@@ -177,6 +178,49 @@ class Db(file: Path) : AutoCloseable {
                 )
                 st.execute("update play_event set completed=1 where completed=0 and skipped=0")
                 st.execute("pragma user_version=6")
+            }
+            if (version < 7) {
+                // v7: telemetria real de escuta (inicio/fim/skip/origem) e limpeza do DJ.
+                if (!hasColumn("play_event", "duration_ms")) {
+                    st.execute("alter table play_event add column duration_ms integer not null default 0")
+                }
+                if (!hasColumn("play_event", "event_id")) {
+                    st.execute("alter table play_event add column event_id text not null default ''")
+                }
+                if (!hasColumn("play_event", "finished")) {
+                    st.execute("alter table play_event add column finished integer not null default 0")
+                }
+                if (!hasColumn("play_event", "origin")) {
+                    st.execute("alter table play_event add column origin text not null default 'desktop'")
+                }
+                if (!hasColumn("play_event", "context_id")) {
+                    st.execute("alter table play_event add column context_id text")
+                }
+                if (!hasColumn("play_event", "context_title")) {
+                    st.execute("alter table play_event add column context_title text not null default ''")
+                }
+                st.execute("update play_event set duration_ms=coalesce((select duration * 1000 from track t where t.id=play_event.id), 0) where duration_ms=0")
+                st.execute("update play_event set finished=1 where finished=0")
+                st.execute("update play_event set origin=source where origin='' or origin is null")
+                st.execute("create index if not exists play_event_at_idx on play_event(at desc)")
+                st.execute("create index if not exists play_event_track_at_idx on play_event(id, at desc)")
+                st.execute("create index if not exists play_event_synced_idx on play_event(synced, seq)")
+                st.execute("drop table if exists track_bpm")
+                st.execute("delete from setting where k in ('playback.dj','playback.transition')")
+                st.execute("pragma user_version=7")
+            }
+            if (version < 8) {
+                // v8: idempotencia dos eventos e correcao do duration_ms dos eventos antigos.
+                if (!hasColumn("play_event", "event_id")) {
+                    st.execute("alter table play_event add column event_id text not null default ''")
+                }
+                st.execute("create index if not exists play_event_event_id_idx on play_event(event_id)")
+                st.execute(
+                    "update play_event set duration_ms=coalesce(" +
+                        "(select duration * 1000 from track t where t.id=play_event.id), duration_ms) " +
+                        "where duration_ms=0 or duration_ms=played_ms"
+                )
+                st.execute("pragma user_version=8")
             }
         }
     }
@@ -258,6 +302,15 @@ class Db(file: Path) : AutoCloseable {
                 buildList { while (rs.next()) add(rs.getString(1)) }
             }
         }
+
+    @Synchronized
+    fun tracksByIds(ids: Collection<String>): List<Track> {
+        if (ids.isEmpty()) return emptyList()
+        val list = ids.joinToString(",") { "'${it.replace("'", "''")}'" }
+        return conn.createStatement().use { st ->
+            st.executeQuery("select * from track where id in ($list)").use { rs -> readTracks(rs) }
+        }
+    }
 
     // ------------------------------------------------------------------ playlists
     @Synchronized
@@ -560,22 +613,85 @@ class Db(file: Path) : AutoCloseable {
     }
 
     // ------------------------------------------------------------------ history
+    /** Registro de compatibilidade: uma escuta completa (usado por imports e smokes). */
     @Synchronized
     fun recordPlay(id: String) {
         val now = System.currentTimeMillis()
         conn.prepareStatement(
-            "insert into play_event(id, at, played_ms, completed, skipped, source, synced) " +
-                "values(?, ?, coalesce((select duration from track where id=?), 0) * 1000, 1, 0, 'desktop', 0)"
+            "insert into play_event(event_id, id, at, played_ms, duration_ms, completed, skipped, source, " +
+                "origin, context_id, context_title, finished, synced) " +
+                "values(?, ?, ?, coalesce((select duration from track where id=?), 0) * 1000, " +
+                "coalesce((select duration from track where id=?), 0) * 1000, 1, 0, 'desktop', " +
+                "'desktop', null, '', 1, 0)"
         ).use { ps ->
-            ps.setString(1, id); ps.setLong(2, now); ps.setString(3, id); ps.executeUpdate()
+            ps.setString(1, UUID.randomUUID().toString())
+            ps.setString(2, id); ps.setLong(3, now)
+            ps.setString(4, id); ps.setString(5, id)
+            ps.executeUpdate()
         }
     }
 
-    /** Eventos ainda não enviados ao Supabase, em ordem cronológica. */
+    /** Abre um evento de escuta; deve ser fechado por finishPlay ao trocar/parar. */
+    @Synchronized
+    fun beginPlay(
+        track: Track,
+        origin: String,
+        contextId: String?,
+        contextTitle: String,
+        at: Long = System.currentTimeMillis(),
+    ): Long {
+        remember(track)
+        conn.prepareStatement(
+            "insert into play_event(event_id, id, at, played_ms, duration_ms, completed, skipped, source, " +
+                "origin, context_id, context_title, finished, synced) " +
+                "values(?, ?, ?, 0, ?, 0, 0, ?, ?, ?, ?, 0, 0)"
+        ).use { ps ->
+            ps.setString(1, UUID.randomUUID().toString())
+            ps.setString(2, track.id)
+            ps.setLong(3, at)
+            ps.setInt(4, track.durationSec.coerceAtLeast(0) * 1000)
+            ps.setString(5, origin)
+            ps.setString(6, origin)
+            ps.setString(7, contextId)
+            ps.setString(8, contextTitle)
+            ps.executeUpdate()
+        }
+        return conn.createStatement().use { st ->
+            st.executeQuery("select last_insert_rowid()").use { rs ->
+                if (rs.next()) rs.getLong(1) else -1L
+            }
+        }
+    }
+
+    @Synchronized
+    fun finishPlay(
+        seq: Long,
+        playedMs: Int,
+        completed: Boolean,
+        skipped: Boolean,
+        durationMs: Int? = null,
+    ) {
+        if (seq < 0) return
+        conn.prepareStatement(
+            "update play_event set played_ms=?, duration_ms=coalesce(?, duration_ms), " +
+                "completed=?, skipped=?, finished=1 where seq=?"
+        ).use { ps ->
+            ps.setInt(1, playedMs.coerceAtLeast(0))
+            if (durationMs != null && durationMs > 0) ps.setInt(2, durationMs) else ps.setNull(2, java.sql.Types.INTEGER)
+            ps.setInt(3, if (completed) 1 else 0)
+            ps.setInt(4, if (skipped) 1 else 0)
+            ps.setLong(5, seq)
+            ps.executeUpdate()
+        }
+    }
+
+    /** Eventos finalizados e ainda n?o enviados ao Supabase. */
     @Synchronized
     fun pendingPlayEvents(limit: Int = 200): List<PendingPlayEvent> =
         conn.prepareStatement(
-            "select seq, id, at, played_ms from play_event where synced=0 order by seq asc limit ?"
+            "select seq, event_id, id, at, played_ms, duration_ms, completed, skipped, origin, " +
+                "context_id, context_title from play_event " +
+                "where synced=0 and finished=1 order by seq asc limit ?"
         ).use { ps ->
             ps.setInt(1, limit)
             ps.executeQuery().use { rs ->
@@ -584,9 +700,213 @@ class Db(file: Path) : AutoCloseable {
                         add(
                             PendingPlayEvent(
                                 seq = rs.getInt("seq"),
+                                eventId = rs.getString("event_id") ?: "",
                                 trackId = rs.getString("id"),
                                 startedAt = rs.getLong("at"),
                                 playedMs = rs.getInt("played_ms"),
+                                durationMs = rs.getInt("duration_ms"),
+                                completed = rs.getInt("completed") != 0,
+                                skipped = rs.getInt("skipped") != 0,
+                                origin = rs.getString("origin") ?: "desktop",
+                                contextId = rs.getString("context_id"),
+                                contextTitle = rs.getString("context_title") ?: "",
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+    // ------------------------------------------------------------------ recap
+    @Synchronized
+    fun recapMonthKeys(): List<String> =
+        conn.createStatement().use { st ->
+            st.executeQuery(
+                "select strftime('%Y-%m', at / 1000, 'unixepoch', 'localtime') as month " +
+                    "from play_event where finished=1 group by month order by month desc"
+            ).use { rs ->
+                buildList { while (rs.next()) add(rs.getString("month")) }
+            }
+        }
+
+    @Synchronized
+    fun recapSummary(startMs: Long, endMs: Long): RecapSummary =
+        conn.prepareStatement(
+            "select count(*) as plays, " +
+                "coalesce(sum(coalesce(nullif(e.played_ms,0), coalesce(t.duration,0) * 1000)),0) as played_ms, " +
+                "count(distinct e.id) as unique_tracks, " +
+                "count(distinct nullif(t.artist,'')) as unique_artists, " +
+                "coalesce(sum(case when e.completed=1 then 1 else 0 end),0) as completed_plays, " +
+                "coalesce(sum(case when e.skipped=1 then 1 else 0 end),0) as skipped_plays, " +
+                "min(e.at) as first_at, max(e.at) as last_at " +
+                "from play_event e left join track t on t.id=e.id " +
+                "where e.finished=1 and e.at >= ? and e.at < ?"
+        ).use { ps ->
+            ps.setLong(1, startMs); ps.setLong(2, endMs)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) return RecapSummary()
+                RecapSummary(
+                    plays = rs.getInt("plays"),
+                    playedMs = rs.getLong("played_ms"),
+                    uniqueTracks = rs.getInt("unique_tracks"),
+                    uniqueArtists = rs.getInt("unique_artists"),
+                    completedPlays = rs.getInt("completed_plays"),
+                    skippedPlays = rs.getInt("skipped_plays"),
+                    firstAt = rs.getLong("first_at").takeIf { !rs.wasNull() },
+                    lastAt = rs.getLong("last_at").takeIf { !rs.wasNull() },
+                )
+            }
+        }
+
+    @Synchronized
+    fun recapTopTracks(startMs: Long, endMs: Long, limit: Int = 10): List<RecapTrack> =
+        conn.prepareStatement(
+            "select t.id, t.title, t.artist, t.album, t.duration, t.thumbnail, count(*) as plays, " +
+                "coalesce(sum(coalesce(nullif(e.played_ms,0), coalesce(t.duration,0) * 1000)),0) as played_ms " +
+                "from play_event e join track t on t.id=e.id " +
+                "where e.finished=1 and e.at >= ? and e.at < ? " +
+                "group by t.id order by plays desc, played_ms desc, t.title asc limit ?"
+        ).use { ps ->
+            ps.setLong(1, startMs); ps.setLong(2, endMs); ps.setInt(3, limit)
+            ps.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            RecapTrack(
+                                Track(
+                                    id = rs.getString("id"),
+                                    title = rs.getString("title"),
+                                    artist = rs.getString("artist"),
+                                    album = rs.getString("album") ?: "",
+                                    durationSec = rs.getInt("duration"),
+                                    thumbnail = rs.getString("thumbnail") ?: "",
+                                ),
+                                plays = rs.getInt("plays"),
+                                playedMs = rs.getLong("played_ms"),
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+    @Synchronized
+    fun recapTopArtists(startMs: Long, endMs: Long, limit: Int = 8): List<RecapArtist> =
+        conn.prepareStatement(
+            "select coalesce(nullif(t.artist,''),'Artista desconhecido') as artist, count(*) as plays, " +
+                "coalesce(sum(coalesce(nullif(e.played_ms,0), coalesce(t.duration,0) * 1000)),0) as played_ms, " +
+                "min(t.thumbnail) as thumbnail " +
+                "from play_event e join track t on t.id=e.id " +
+                "where e.finished=1 and e.at >= ? and e.at < ? " +
+                "group by artist order by plays desc, played_ms desc limit ?"
+        ).use { ps ->
+            ps.setLong(1, startMs); ps.setLong(2, endMs); ps.setInt(3, limit)
+            ps.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            RecapArtist(
+                                name = rs.getString("artist"),
+                                plays = rs.getInt("plays"),
+                                playedMs = rs.getLong("played_ms"),
+                                thumbnail = rs.getString("thumbnail") ?: "",
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+    @Synchronized
+    fun recapDays(startMs: Long, endMs: Long): List<RecapDay> =
+        conn.prepareStatement(
+            "select date(e.at / 1000, 'unixepoch', 'localtime') as day, count(*) as plays, " +
+                "coalesce(sum(coalesce(nullif(e.played_ms,0), coalesce(t.duration,0) * 1000)),0) as played_ms " +
+                "from play_event e left join track t on t.id=e.id " +
+                "where e.finished=1 and e.at >= ? and e.at < ? group by day order by day asc"
+        ).use { ps ->
+            ps.setLong(1, startMs); ps.setLong(2, endMs)
+            ps.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            RecapDay(
+                                day = rs.getString("day"),
+                                plays = rs.getInt("plays"),
+                                playedMs = rs.getLong("played_ms"),
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+    @Synchronized
+    fun recapFirstTimeTracks(startMs: Long, endMs: Long, limit: Int = 8): List<RecapTrack> =
+        conn.prepareStatement(
+            "select t.id, t.title, t.artist, t.album, t.duration, t.thumbnail, count(*) as plays, " +
+                "coalesce(sum(e.played_ms),0) as played_ms " +
+                "from play_event e join track t on t.id=e.id " +
+                "where e.finished=1 and e.at >= ? and e.at < ? and not exists (" +
+                "  select 1 from play_event p where p.id=e.id and p.finished=1 and p.at < ?" +
+                ") group by t.id order by plays desc limit ?"
+        ).use { ps ->
+            ps.setLong(1, startMs); ps.setLong(2, endMs); ps.setLong(3, startMs); ps.setInt(4, limit)
+            ps.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            RecapTrack(
+                                Track(
+                                    id = rs.getString("id"),
+                                    title = rs.getString("title"),
+                                    artist = rs.getString("artist"),
+                                    album = rs.getString("album") ?: "",
+                                    durationSec = rs.getInt("duration"),
+                                    thumbnail = rs.getString("thumbnail") ?: "",
+                                ),
+                                plays = rs.getInt("plays"),
+                                playedMs = rs.getLong("played_ms"),
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+    @Synchronized
+    fun recapLiked(startMs: Long, endMs: Long): Int =
+        conn.prepareStatement(
+            "select count(*) from liked where deleted=0 and at >= ? and at < ?"
+        ).use { ps ->
+            ps.setLong(1, startMs); ps.setLong(2, endMs)
+            ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+        }
+
+    /** Eventos brutos recentes para recomenda??o, recap e no-repeat. */
+    @Synchronized
+    fun playEventsSince(since: Long, limit: Int = 5000): List<PlayEventRow> =
+        conn.prepareStatement(
+            "select id, at, played_ms, duration_ms, completed, skipped, origin, context_id, " +
+                "context_title from play_event where finished=1 and at >= ? " +
+                "order by at desc limit ?"
+        ).use { ps ->
+            ps.setLong(1, since)
+            ps.setInt(2, limit)
+            ps.executeQuery().use { rs ->
+                buildList {
+                    while (rs.next()) {
+                        add(
+                            PlayEventRow(
+                                trackId = rs.getString("id"),
+                                at = rs.getLong("at"),
+                                playedMs = rs.getInt("played_ms"),
+                                durationMs = rs.getInt("duration_ms"),
+                                completed = rs.getInt("completed") != 0,
+                                skipped = rs.getInt("skipped") != 0,
+                                origin = rs.getString("origin") ?: "desktop",
+                                contextId = rs.getString("context_id"),
+                                contextTitle = rs.getString("context_title") ?: "",
                             )
                         )
                     }
@@ -653,22 +973,6 @@ class Db(file: Path) : AutoCloseable {
                 "on conflict(id) do update set deleted=0, updated_at=excluded.updated_at"
         ).use { ps ->
             ps.setString(1, id); ps.setLong(2, now); ps.setLong(3, now); ps.executeUpdate()
-        }
-    }
-
-    // ------------------------------------------------------------------ bpm (modo DJ)
-    @Synchronized
-    fun bpm(id: String): Double? =
-        conn.prepareStatement("select bpm from track_bpm where id=?").use { ps ->
-            ps.setString(1, id)
-            ps.executeQuery().use { rs -> if (rs.next()) rs.getDouble(1) else null }
-        }
-
-    @Synchronized
-    fun setBpm(id: String, bpm: Double) {
-        conn.prepareStatement("insert or replace into track_bpm(id, bpm, at) values(?,?,?)").use { ps ->
-            ps.setString(1, id); ps.setDouble(2, bpm); ps.setLong(3, System.currentTimeMillis())
-            ps.executeUpdate()
         }
     }
 

@@ -29,9 +29,29 @@ data class SyncLike(
 /** Evento de escuta local aguardando envio ao recap da conta. */
 data class PendingPlayEvent(
     val seq: Int,
+    val eventId: String,
     val trackId: String,
     val startedAt: Long,
     val playedMs: Int,
+    val durationMs: Int,
+    val completed: Boolean,
+    val skipped: Boolean,
+    val origin: String,
+    val contextId: String?,
+    val contextTitle: String,
+)
+
+/** Linha bruta usada pelo recomendador e pelo recap. */
+data class PlayEventRow(
+    val trackId: String,
+    val at: Long,
+    val playedMs: Int,
+    val durationMs: Int,
+    val completed: Boolean,
+    val skipped: Boolean,
+    val origin: String,
+    val contextId: String?,
+    val contextTitle: String,
 )
 
 data class SyncResult(

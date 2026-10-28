@@ -18,7 +18,7 @@ App Android do Openfy: **conta, sync, busca e player**.
 - Tema escuro e logo do Openfy.
 
 Ainda faltam: reprodução em background com `MediaSessionService`, notificação de mídia,
-crossfade configurável/EQ/DJ, downloads/offline e biblioteca local.
+crossfade configurável/EQ, downloads/offline e biblioteca local.
 
 ## Requisitos
 

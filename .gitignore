@@ -20,3 +20,4 @@ captures/
 .cxx/
 androidApp/keystore.properties
 .gradle.zip
+.tmp/

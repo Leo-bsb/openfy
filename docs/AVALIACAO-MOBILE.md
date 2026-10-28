@@ -30,7 +30,6 @@ background.
 | Player | mpv A/B | ExoPlayer A/B | MediaSessionService |
 | Crossfade | 0–12 s configurável | 6 s fixo | Configuração |
 | EQ | 5 bandas | Não | `Equalizer`/`DynamicsProcessing` |
-| Modo DJ/BPM | Sim | Não | Reusar Deezer/BPM |
 | Letras | LRCLIB | Não | Painel de letras |
 | Sleep timer | Sim | Não | Timer + alarme |
 | Fila | Editar/limpar/desfazer | Só visual | Tela de fila |
@@ -125,7 +124,6 @@ pausado, como no desktop.
 5. **Banco local + downloads/offline**.
 6. **Importar/compartilhar/colaborar no Android**.
 7. **Recap e social**.
-8. **EQ/DJ/letras/sleep/Android Auto**.
 
 ## Como testar o 0.2.2
 
@@ -174,9 +172,24 @@ transição e o comportamento de pausa/seek.
    Bluetooth). ? a lacuna mais importante para paridade com o desktop.
 2. Persistir fila/posi??o entre aberturas.
 3. Banco local/offline e downloads.
-4. EQ, DJ/BPM, letras e sleep timer.
 5. Recap mensal na UI (dados j? chegam ao Supabase).
 6. Importar/compartilhar/colaborar no Android (backend e desktop prontos).
 7. Capa pr?pria de playlist pelo celular.
 8. Mover sess?o para Keystore/EncryptedSharedPreferences.
 9. M?dulo KMP `:shared` para engine, modelos e sync.
+
+
+---
+
+## Atualiza??o 0.2.6 (2026-10-28)
+
+- Clique num resultado de busca toca **somente** a faixa clicada e emenda a r?dio
+  dela; os resultados da busca n?o viram mais a fila.
+- A r?dio do Android busca a pr?xima p?gina perto do fim, deduplica por faixa e
+  evita repetir artista na janela recente.
+- A fila ? mantida ao avan?ar/voltar faixas e a resposta atrasada de uma r?dio
+  antiga ? descartada por gera??o.
+- APK 0.2.6 (versionCode 8) assinado.
+
+Ainda falta o bloco de background playback/MediaSessionService, banco local,
+downloads e recap nativo no Android.

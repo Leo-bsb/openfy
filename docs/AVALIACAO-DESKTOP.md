@@ -7,7 +7,7 @@ Android 0.2.5 + paridade de biblioteca desta rodada.
 
 O desktop está em nível de uso diário para **tocar música local/YouTube Music**.
 A base é madura: mpv A/B, servidor de stream próprio, fila editável, sessão
-persistida, downloads, letras, EQ, DJ, bandeja e atalhos. O que ainda separa o
+persistida, downloads, letras, EQ, bandeja e atalhos. O que ainda separa o
 Openfy de um produto “acabado” não é o player em si, e sim a camada de conta:
 sync incremental, recap na nuvem, capas colaborativas e continuidade entre PC e
 celular.
@@ -16,7 +16,7 @@ Nota prática por área:
 
 | Área | Estado | Nota |
 |---|---|---|
-| Reprodução/fila | Maduro, dois mpv, crossfade e DJ | 9/10 |
+| Reprodução/fila | Maduro, dois mpv, crossfade | 9/10 |
 | Biblioteca local | SQLite, playlists, curtidas, histórico | 9/10 |
 | Busca/exploração | YouTube Music, artista, álbum, rádio | 8,5/10 |
 | Conta/sync | Funciona por LWW, sem outbox/server_rev | 6,5/10 |
@@ -32,10 +32,9 @@ Nota prática por área:
 - **IPC estável**: duas conexões com o named pipe (leitura e escrita), fila de
   comandos e drenagem de respostas. Isso eliminou o travamento clássico do mpv.
 - **Crossfade real**: dois processos mpv, pré-carga muda no standby, rampa
-  equal-power e handoff de graves no modo blend.
-- **Fila coerente**: shuffle e DJ reordenam a fila visível, restaurando a ordem
-  original ao desligar. Shuffle e DJ são mutuamente exclusivos.
-- **Sessão**: fila, faixa, posição, volume, shuffle, repeat, crossfade, DJ e
+  equal-power.
+- **Fila coerente**: shuffle reordena a fila vis?vel e restaura a ordem original ao desligar.
+- **Sessão**: fila, faixa, posição, volume, shuffle, repeat, crossfade e
   última tela sobrevivem ao restart.
 - **Downloads/offline**: faixa baixada é tocada do disco pelo mesmo servidor
   local, sem depender do YouTube.
@@ -46,14 +45,13 @@ Nota prática por área:
 
 ## Bugs e lacunas corrigidos nesta rodada
 
-### 1. Snapshot de shuffle/DJ se perdia no restart
+### 1. Snapshot de shuffle se perdia no restart
 
 Antes, a fila embaralhada era salva, mas a ordem original ficava apenas na
 memória. Ao reabrir o app com shuffle ligado, desligar o shuffle não tinha o que
-restaurar. O mesmo valia para o DJ.
 
-Correção: `SessionState` agora guarda `shuffleQueue`, `shuffleIndex` e `djQueue`.
-`restore()` recupera os snapshots e `persistSession()` os salva. Além disso,
+Correção: `SessionState` agora guarda `shuffleQueue` e `shuffleIndex`.
+`restore()` recupera o snapshot e `persistSession()` o salva. Além disso,
 `playNow()` renova o snapshot quando uma fila nova é carregada, evitando que
 “desligar shuffle” volte para a fila de outro contexto.
 
@@ -96,7 +94,7 @@ igualmente preciso.
 
 - `setPlaylistCover()` não engole mais a exceção de cópia sem explicar: mostra
   erro quando a imagem não pôde ser usada.
-- O snapshot antigo de shuffle/DJ é invalidado ao carregar uma fila nova.
+- O snapshot antigo de shuffle é invalidado ao carregar uma fila nova.
 - O push de tracks do sync inclui o histórico, evitando falha de FK em eventos.
 
 ## Lacunas que ainda existem
@@ -131,8 +129,6 @@ igualmente preciso.
 ### Player
 
 8. **Eventos de escuta aproximados no desktop** (ver acima).
-9. **DJ depende de BPM externo (Deezer).** Faixas sem BPM caem na ordem original;
-   a UI informa, mas não há edição manual de BPM.
 10. **Fim de fila emenda rádio automaticamente.** É útil, mas deveria ser uma
     preferência explícita para quem usa playlists como “álbum”.
 11. **Sem teste auditivo automatizado de crossfade.** O smoke valida troca,
@@ -201,3 +197,40 @@ sólida que já existe:
 O player, a fila e a biblioteca local já estão em nível de uso diário. O maior
 retorno agora vem de fazer o PC e o celular contarem a mesma história — capa,
 curtida, fila e recap — sem depender de um sync completo a cada dois minutos.
+
+
+---
+
+## Atualiza??o 0.2.4 (2026-10-28)
+
+Esta rodada fechou o n?cleo que faltava para o desktop parecer um produto:
+
+- **Modo DJ removido por completo** (BPM, blend, tabela `track_bpm`, botões, atalhos e
+  prefer?ncias antigas). Ficou apenas o crossfade equal-power de 0?12 s.
+- **Recap em aba dedicada**, com seletor de meses, minutos, execu??es, conclus?o,
+  skip, top faixas, top artistas, atividade di?ria, sequ?ncia e descobertas.
+  Quando h? conta, o resumo/tops v?m do Supabase e incluem PC + celular; sem conta
+  ou offline, a tela mostra os dados deste PC.
+- **Mais ouvidas** com ranking ponderado por curtida, rec?ncia, conclus?o, skip e
+  frequ?ncia, al?m de no-repeat de faixa e diversidade de artista/?lbum.
+- **R?dio reescrita**: gera??o/cancelamento de jobs, limite de 20 faixas por lote,
+  deduplica??o can?nica, no-repeat por artista, ranking local e prote??o contra
+  resposta atrasada que sequestrava a fila.
+- **Clique na busca**: toca apenas a faixa clicada e emenda a r?dio dela. Os
+  resultados s? entram na fila pelo bot?o expl?cito "Tocar resultados".
+- **Autoplay configur?vel**: r?dio autom?tica ao fim de playlist/?lbum pode ser
+  desligada nos Ajustes e "Encerrar r?dio" n?o ? mais revertido no fim da fila.
+- **Contexto vis?vel**: a fila e o player mostram de onde vem a reprodu??o
+  (playlist, ?lbum, busca, r?dio, mix, mais ouvidas).
+- **Telemetria real**: cada escuta tem in?cio/fim, dura??o tocada, conclus?o, skip,
+  origem e contexto; o recap e o recomendador deixam de tratar todo play como
+  completo.
+- **Atalhos**: `Ctrl+R` abre o Recap e os atalhos n?o roubam letras/setas de campos
+  de texto em Ajustes, importa??o ou di?logos.
+- **Biblioteca viva**: Home, Hist?rico e Mais ouvidas atualizam quando a faixa muda.
+
+Testes desta rodada: `playerSmoke` (incluindo corrida de r?dio), `recommendationSmoke`,
+`recapSmoke`, `featureSmoke`, `librarySmoke` e `syncSmoke` passaram.
+
+Ainda no backlog estrutural: outbox/`server_rev`, Realtime, SMTC nativo do Windows,
+assinatura Authenticode, atualiza??o autom?tica e event idempotency no Supabase.

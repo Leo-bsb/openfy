@@ -128,6 +128,7 @@ data class PushLike(
 
 @Serializable
 data class PushPlayEvent(
+    val id: String? = null,
     @SerialName("user_id") val userId: String,
     @SerialName("device_id") val deviceId: String? = null,
     @SerialName("track_id") val trackId: String,
@@ -138,6 +139,30 @@ data class PushPlayEvent(
     val skipped: Boolean = false,
     val source: String = "desktop",
     @SerialName("context_id") val contextId: String? = null,
+)
+
+@Serializable
+data class RemoteMonthlyListening(
+    val month: String = "",
+    @SerialName("played_ms") val playedMs: Long = 0,
+    val plays: Long = 0,
+    @SerialName("unique_tracks") val uniqueTracks: Long = 0,
+    @SerialName("completed_plays") val completedPlays: Long = 0,
+    @SerialName("skipped_plays") val skippedPlays: Long = 0,
+)
+
+@Serializable
+data class RemoteMonthlyTrack(
+    @SerialName("track_id") val trackId: String = "",
+    val plays: Long = 0,
+    @SerialName("played_ms") val playedMs: Long = 0,
+)
+
+@Serializable
+data class RemoteMonthlyArtist(
+    val artist: String = "",
+    val plays: Long = 0,
+    @SerialName("played_ms") val playedMs: Long = 0,
 )
 
 @Serializable
@@ -433,7 +458,8 @@ class SupabaseApi {
             ensure(
                 client.post("$baseUrl/rest/v1/play_events") {
                     auth(accessToken)
-                    header("Prefer", "return=minimal")
+                    header("Prefer", "resolution=ignore-duplicates,return=minimal")
+                    parameter("on_conflict", "id")
                     contentType(ContentType.Application.Json)
                     setBody(batch)
                 },
@@ -445,6 +471,46 @@ class SupabaseApi {
         header("apikey", key)
         header(HttpHeaders.Authorization, "Bearer $accessToken")
     }
+
+    suspend fun monthlyListening(accessToken: String, month: java.time.YearMonth): List<RemoteMonthlyListening> =
+        decode(
+            client.get("$baseUrl/rest/v1/monthly_listening") {
+                auth(accessToken)
+                parameter("select", "month,played_ms,plays,unique_tracks,completed_plays,skipped_plays")
+                parameter("month", "eq.${month.atDay(1)}")
+                parameter("limit", "1")
+            },
+        )
+
+    suspend fun monthlyTopTracks(
+        accessToken: String,
+        month: java.time.YearMonth,
+        limit: Int = 20,
+    ): List<RemoteMonthlyTrack> =
+        decode(
+            client.get("$baseUrl/rest/v1/monthly_top_tracks") {
+                auth(accessToken)
+                parameter("select", "track_id,plays,played_ms")
+                parameter("month", "eq.${month.atDay(1)}")
+                parameter("order", "plays.desc")
+                parameter("limit", limit.toString())
+            },
+        )
+
+    suspend fun monthlyTopArtists(
+        accessToken: String,
+        month: java.time.YearMonth,
+        limit: Int = 10,
+    ): List<RemoteMonthlyArtist> =
+        decode(
+            client.get("$baseUrl/rest/v1/monthly_top_artists") {
+                auth(accessToken)
+                parameter("select", "artist,plays,played_ms")
+                parameter("month", "eq.${month.atDay(1)}")
+                parameter("order", "plays.desc")
+                parameter("limit", limit.toString())
+            },
+        )
 
     fun close() {
         client.close()

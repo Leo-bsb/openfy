@@ -20,8 +20,10 @@ import com.openfy.core.AppController
  *  S               aleatório
  *  R               repetir (off → all → one)
  *  Q               abrir/fechar fila
+ *  Ctrl+P          abrir/fechar player
+ *  Ctrl+R          abrir recap
  *  Ctrl+F          focar busca
- *  Esc             fechar fila (ou voltar)
+ *  Esc             fechar dialogo/player/fila (ou voltar)
  */
 fun openfyKeyHandler(c: AppController): (KeyEvent) -> Boolean = handler@{ event ->
     if (event.type != KeyEventType.KeyDown) return@handler false
@@ -30,8 +32,17 @@ fun openfyKeyHandler(c: AppController): (KeyEvent) -> Boolean = handler@{ event 
 
     when {
         c.playlistPrompt.value != null -> false
+        InputFocus.active.value -> {
+            if (key == Key.Escape && c.importDialogOpen.value) {
+                c.importDialogOpen.value = false
+                true
+            } else {
+                false
+            }
+        }
         key == Key.Escape -> {
             when {
+                c.importDialogOpen.value -> c.importDialogOpen.value = false
                 c.nowPlayingOpen.value -> c.closeNowPlaying()
                 c.queueOpen.value -> c.closeQueue()
                 else -> c.back()
@@ -46,7 +57,10 @@ fun openfyKeyHandler(c: AppController): (KeyEvent) -> Boolean = handler@{ event 
             if (c.nowPlayingOpen.value) c.closeNowPlaying() else c.openNowPlaying()
             true
         }
-        c.searchFieldFocused.value -> false
+        ctrl && key == Key.R -> {
+            c.openRecap()
+            true
+        }
         key == Key.Spacebar -> {
             c.player.togglePlay()
             true

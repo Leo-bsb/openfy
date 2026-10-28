@@ -171,19 +171,6 @@ fun main(): Unit = runBlocking<Unit> {
     check(lyricLines.size >= 3, "linhas=${lyricLines.size} (titulo com sufixo)")
     lyricLines.take(3).forEach { println("   [${it.timeMs}] ${it.text}") }
 
-    println("\n== BPM (modo DJ) ==")
-    val bpm = runCatching {
-        com.openfy.data.BpmClient.fetch(
-            com.openfy.core.Track(
-                "DyDfgMOUjCI",
-                "bad guy",
-                "Billie Eilish",
-                durationSec = 194,
-            )
-        )
-    }.getOrNull()
-    check(bpm != null && bpm > 60.0, "bpm=$bpm")
-
     println("\n== radio da faixa ==")
     val seed = songs.tracks.firstOrNull()
     if (seed != null) {

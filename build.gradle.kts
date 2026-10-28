@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.openfy"
-version = "0.2.3"
+version = "0.2.4"
 
 kotlin {
     jvmToolchain(21)
@@ -73,6 +73,20 @@ tasks.register<JavaExec>("syncSmoke") {
     mainClass.set("com.openfy.dev.SyncSmokeKt")
 }
 
+tasks.register<JavaExec>("recommendationSmoke") {
+    group = "verification"
+    description = "Valida ranking ponderado, no-repeat e diversidade da rádio"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.openfy.dev.RecommendationSmokeKt")
+}
+
+tasks.register<JavaExec>("recapSmoke") {
+    group = "verification"
+    description = "Valida o recap mensal local"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.openfy.dev.RecapSmokeKt")
+}
+
 tasks.register<JavaExec>("extract") {
     group = "verification"
     description = "Mede a extracao de um videoId: gradle extract -Pid=..."
@@ -92,7 +106,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Openfy"
-            packageVersion = "0.2.3"
+            packageVersion = "0.2.4"
             description = "Tocador pessoal de musica"
             vendor = "openfy"
             modules("java.sql", "java.naming", "jdk.unsupported", "java.net.http", "java.management", "jdk.httpserver")

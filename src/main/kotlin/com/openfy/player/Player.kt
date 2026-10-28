@@ -1,10 +1,10 @@
 package com.openfy.player
 
 import com.openfy.core.RadioPage
+import com.openfy.core.Recommender
 import com.openfy.core.RepeatMode
 import com.openfy.core.SessionCodec
 import com.openfy.core.Track
-import com.openfy.data.BpmClient
 import com.openfy.data.Db
 import com.openfy.data.StreamServer
 import kotlinx.coroutines.CoroutineScope
@@ -45,15 +45,13 @@ class Player(
     val likedIds = MutableStateFlow<Set<String>>(emptySet())
     val radioActive = MutableStateFlow(false)
     val radioLoading = MutableStateFlow(false)
+    val queueTitle = MutableStateFlow("")
+    val radioSeedTrack = MutableStateFlow<Track?>(null)
+    val autoplayRadio = MutableStateFlow(true)
     val eqEnabled = MutableStateFlow(false)
     val eqGains = MutableStateFlow(List(EQ_FREQS.size) { 0 })
     val crossfadeSeconds = MutableStateFlow(0)
-    /** CROSSFADE = sobreposicao equal-power; BLEND = tambem faz handoff de graves. */
-    val transitionStyle = MutableStateFlow(TRANSITION_CROSSFADE)
-    val djMode = MutableStateFlow(false)
     val crossfading = MutableStateFlow(false)
-    /** Mensagem curta do modo DJ (reordenado, BPM insuficiente, etc.). */
-    val djStatus = MutableStateFlow<String?>(null)
 
     /** Fornecido pelo AppController: busca mais faixas da radio a partir do token. */
     var radioSource: (suspend (String) -> RadioPage?)? = null
@@ -68,11 +66,22 @@ class Player(
     /** Restauracao de sessao: carrega pausado na posicao salva. */
     private var pendingPause = false
     private var lastPositionSave = 0L
-    private val shuffleRecent = ArrayDeque<String>()
     private var shuffleSnapshotQueue: List<Track>? = null
     private var shuffleSnapshotIndex = -1
-    private var djSnapshotQueue: List<Track>? = null
-    private var djJob: Job? = null
+
+    // evento de escuta ativo (telemetria/recap)
+    private var activeEventSeq = -1L
+    private var activeEventTrack: Track? = null
+    private var queueOrigin = "desktop"
+    private var queueContextId: String? = null
+    private var queueContextTitle = ""
+    private var radioStartIndex = -1
+    private var radioEpoch = 0L
+    private var radioJob: Job? = null
+    private var pendingRadioAdvance = false
+    private var radioEmptyPages = 0
+    private var autoplaySuppressed = false
+    private val recommender = Recommender(db)
 
     // crossfade
     private var crossfadeJob: Job? = null
@@ -88,9 +97,9 @@ class Player(
         scope.launch { observeMpv() }
         restoreEq()
         crossfadeSeconds.value = db.get("playback.crossfade")?.toIntOrNull()?.coerceIn(0, 12) ?: 0
-        transitionStyle.value = db.get("playback.transition")
-            ?.takeIf { it == TRANSITION_BLEND } ?: TRANSITION_CROSSFADE
-        djMode.value = runCatching { db.get("playback.dj")?.toBooleanStrict() }.getOrNull() ?: false
+        autoplayRadio.value = runCatching {
+            db.get("playback.autoplayRadio")?.toBooleanStrict()
+        }.getOrNull() ?: true
     }
 
     fun start() {
@@ -153,10 +162,12 @@ class Player(
             }
             is Mpv.Event.Ended -> {
                 busy.value = false
+                finishActive(completed = true, skipped = false)
                 onEnded()
             }
             is Mpv.Event.Failed -> {
                 cancelCrossfade()
+                finishActive(completed = false, skipped = true)
                 busy.value = false
                 playing.value = false
                 val title = current.value?.title ?: "faixa"
@@ -165,6 +176,7 @@ class Player(
             }
             Mpv.Event.Closed -> {
                 cancelCrossfade()
+                finishActive(completed = false, skipped = true)
                 playing.value = false
                 busy.value = false
             }
@@ -180,137 +192,60 @@ class Player(
         next(auto = true)
     }
 
-    fun playNow(tracks: List<Track>, startIndex: Int = 0) {
-        if (tracks.isEmpty()) return
-        cancelCrossfade()
-        stopRadio()
-        queue.value = tracks
-        index.value = startIndex.coerceIn(0, tracks.lastIndex)
-        // Uma nova fila invalida snapshots antigos; o desligar do shuffle
-        // restaura esta mesma ordem em vez da fila de outro contexto.
-        if (shuffle.value) {
-            shuffleSnapshotQueue = tracks
-            shuffleSnapshotIndex = index.value
+    private fun startActiveEvent(track: Track) {
+        val isRadio = radioStartIndex >= 0 && index.value >= radioStartIndex
+        val origin = if (isRadio) "radio" else queueOrigin
+        val title = if (isRadio) {
+            val seed = radioSeedTrack.value?.title
+            if (seed.isNullOrBlank()) "Rádio" else "Rádio: $seed"
+        } else {
+            queueContextTitle
         }
-        if (djMode.value) djSnapshotQueue = tracks
-        load(queue.value[index.value])
-        save()
+        activeEventTrack = track
+        activeEventSeq = runCatching {
+            db.beginPlay(track, origin, queueContextId, title)
+        }.getOrDefault(-1L)
     }
 
-    /** Inicia uma radio ja com a primeira pagina de faixas e o token de continuacao. */
-    fun startRadio(tracks: List<Track>, continuation: String?) {
-        if (tracks.isEmpty()) return
-        cancelCrossfade()
-        radioActive.value = true
-        radioLoading.value = false
-        radioContinuation = continuation
-        queue.value = tracks
-        index.value = 0
-        if (shuffle.value) {
-            shuffleSnapshotQueue = tracks
-            shuffleSnapshotIndex = 0
-        }
-        if (djMode.value) djSnapshotQueue = tracks
-        com.openfy.core.Log.write("player: radio iniciada com ${tracks.size} faixas")
-        load(tracks[0])
+    private fun finishActive(
+        completed: Boolean,
+        skipped: Boolean,
+        playedOverrideMs: Long? = null,
+    ) {
+        val seq = activeEventSeq
+        val track = activeEventTrack
+        if (seq < 0 || track == null) return
+        val totalMs = maxOf(track.durationSec * 1000, (duration.value * 1000).toInt())
+        val played = playedOverrideMs
+            ?: if (completed) totalMs.toLong() else (position.value * 1000).toLong()
+        activeEventSeq = -1
+        activeEventTrack = null
+        val safePlayed = played.coerceIn(0L, totalMs.toLong()).toInt()
+        runCatching { db.finishPlay(seq, safePlayed, completed, skipped, totalMs) }
     }
 
-    fun stopRadio() {
-        if (!radioActive.value && radioContinuation == null) return
-        radioActive.value = false
-        radioLoading.value = false
-        radioContinuation = null
-        com.openfy.core.Log.write("player: radio encerrada")
+    /** Define o contexto da fila para a UI e para os eventos de escuta. */
+    fun setQueueContext(title: String, origin: String = "desktop", contextId: String? = null) {
+        queueContextTitle = title
+        queueOrigin = origin
+        queueContextId = contextId
+        queueTitle.value = title
     }
 
-    /** Toca a faixa agora e emenda a radio dela em seguida (clique na busca). */
-    fun playThenRadio(track: Track) {
-        playNow(listOf(track), 0)
-        radioLoading.value = true
-        scope.launch {
-            val page = runCatching { radioStarter?.invoke(track.id) }.getOrNull()
-            radioLoading.value = false
-            if (page == null || page.tracks.isEmpty()) return@launch
-            if (current.value?.id != track.id) return@launch
-            val known = queue.value.mapTo(HashSet()) { it.id }
-            val extra = page.tracks.filter { it.id !in known }
-            if (extra.isEmpty()) return@launch
-            radioActive.value = true
-            radioContinuation = page.continuation
-            queue.value = queue.value + extra
-            com.openfy.core.Log.write("player: radio emendada +${extra.size} (fila=${queue.value.size})")
-            maybeLoadMoreRadio()
-            save()
-        }
-    }
-
-    /** No fim de uma fila comum, continua com a radio da ultima faixa. */
-    private fun startRadioFromCurrent() {
-        val seed = current.value ?: return
-        if (radioLoading.value) return
-        radioLoading.value = true
-        scope.launch {
-            val page = runCatching { radioStarter?.invoke(seed.id) }.getOrNull()
-            radioLoading.value = false
-            if (page == null || page.tracks.isEmpty()) {
-                radioActive.value = false
-                playing.value = false
-                active.stop()
-                return@launch
-            }
-            val known = queue.value.mapTo(HashSet()) { it.id }
-            val extra = page.tracks.filter { it.id !in known }
-            radioActive.value = true
-            radioContinuation = page.continuation
-            if (extra.isEmpty()) {
-                if (page.continuation != null) requestRadioAdvance()
-                return@launch
-            }
-            val start = queue.value.size
-            queue.value = queue.value + extra
-            index.value = start
-            trimQueue()
-            com.openfy.core.Log.write("player: fim da fila -> radio +${extra.size}")
-            load(queue.value[index.value])
-        }
-    }
-
-    fun playSingle(track: Track) = playNow(listOf(track), 0)
-
-    /** Toca uma lista embaralhada e guarda a ordem original para o modo shuffle. */
-    fun playShuffled(tracks: List<Track>) {
-        if (tracks.isEmpty()) return
-        if (djMode.value) setDjMode(false)
-        shuffle.value = true
-        playNow(tracks.shuffled(), 0)
-        shuffleSnapshotQueue = tracks
-        shuffleSnapshotIndex = 0
-        save()
-    }
-
-    fun addNext(track: Track) {
-        cancelPrep()
-        val q = queue.value.toMutableList()
-        val at = (index.value + 1).coerceIn(0, q.size)
-        q.add(at, track)
-        queue.value = q
-        save()
-    }
-
-    fun addToQueue(track: Track) {
-        cancelPrep()
-        queue.value = queue.value + track
-        if (index.value < 0) {
-            index.value = 0
-            load(queue.value[0])
-        }
-        save()
+    fun setAutoplayRadio(enabled: Boolean) {
+        autoplayRadio.value = enabled
+        if (enabled) autoplaySuppressed = false
+        scope.launch(Dispatchers.IO) { db.put("playback.autoplayRadio", enabled.toString()) }
     }
 
     fun next(auto: Boolean = false) {
         cancelCrossfade()
         val q = queue.value
         if (q.isEmpty()) return
+        finishActive(
+            completed = duration.value > 0 && position.value >= duration.value * 0.9,
+            skipped = duration.value <= 0 || position.value < duration.value * 0.9,
+        )
         val nextIndex = index.value + 1
         if (nextIndex > q.lastIndex) {
             if (radioActive.value && repeat.value == RepeatMode.OFF) {
@@ -323,8 +258,7 @@ class Player(
                 save()
                 return
             }
-            // Fim de playlist/album/mix: emenda uma radio na ultima faixa.
-            startRadioFromCurrent()
+            if (autoplayRadio.value && !autoplaySuppressed) startRadioFromCurrent()
             return
         }
         index.value = nextIndex
@@ -340,7 +274,12 @@ class Player(
             active.seekSeconds(0.0)
             return
         }
-        val prev = (index.value - 1).let { if (it < 0) q.lastIndex else it }
+        if (index.value <= 0) {
+            active.seekSeconds(0.0)
+            return
+        }
+        finishActive(completed = false, skipped = true)
+        val prev = index.value - 1
         index.value = prev
         load(q[prev])
         save()
@@ -349,45 +288,93 @@ class Player(
     fun togglePlay() {
         val track = current.value ?: return
         if (!active.ready.value) {
-            // mpv caiu ou ainda esta conectando: recarrega em vez de mandar pause ao vazio.
             load(track)
             return
         }
         val nowPlaying = playing.value
         if (nowPlaying) cancelCrossfade()
+        if (!nowPlaying && activeEventSeq < 0) startActiveEvent(track)
         active.pause(nowPlaying)
         playing.value = !nowPlaying
     }
 
-    fun seekToFraction(fraction: Double) {
+    fun playNow(tracks: List<Track>, startIndex: Int = 0) {
+        if (tracks.isEmpty()) return
         cancelCrossfade()
-        val total = duration.value
-        if (total <= 0) return
-        val target = (fraction.coerceIn(0.0, 1.0)) * total
-        position.value = target
-        active.seekSeconds(target)
+        stopRadio()
+        autoplaySuppressed = false
+        queue.value = tracks
+        index.value = startIndex.coerceIn(0, tracks.lastIndex)
+        // Uma nova fila invalida snapshots antigos; o desligar do shuffle
+        // restaura esta mesma ordem em vez da fila de outro contexto.
+        if (shuffle.value) {
+            shuffleSnapshotQueue = tracks
+            shuffleSnapshotIndex = index.value
+        }
+        load(queue.value[index.value])
+        save()
     }
 
-    /** Avanca/recua N segundos; usado pelos atalhos de teclado. */
-    fun seekBy(deltaSeconds: Double) {
+    /** Inicia uma radio ja com a primeira pagina de faixas e o token de continuacao. */
+    fun startRadio(tracks: List<Track>, continuation: String?) {
+        if (tracks.isEmpty()) return
+        stopRadio()
+        autoplaySuppressed = false
         cancelCrossfade()
-        val total = duration.value
-        if (total <= 0) return
-        val target = (position.value + deltaSeconds).coerceIn(0.0, total)
-        position.value = target
-        active.seekSeconds(target)
+        radioActive.value = true
+        radioLoading.value = false
+        radioContinuation = continuation
+        radioStartIndex = 0
+        radioSeedTrack.value = tracks.firstOrNull()
+        if (queueContextTitle.isBlank()) setQueueContext("Rádio", "radio", tracks.firstOrNull()?.id)
+        queue.value = tracks
+        index.value = 0
+        if (shuffle.value) {
+            shuffleSnapshotQueue = tracks
+            shuffleSnapshotIndex = 0
+        }
+        com.openfy.core.Log.write("player: radio iniciada com ${tracks.size} faixas")
+        load(tracks[0])
     }
 
-    fun setVolume(value: Int) {
-        volume.value = value.coerceIn(0, 130)
-        cancelCrossfade()
-        active.volume(volume.value)
+    fun playSingle(track: Track) = playNow(listOf(track), 0)
+
+    /** Toca uma lista embaralhada e guarda a ordem original para o modo shuffle. */
+    fun playShuffled(tracks: List<Track>) {
+        if (tracks.isEmpty()) return
+        shuffle.value = true
+        playNow(tracks.shuffled(), 0)
+        shuffleSnapshotQueue = tracks
+        shuffleSnapshotIndex = 0
+        save()
+    }
+
+    fun addNext(track: Track) {
+        cancelPrep()
+        val q = queue.value.toMutableList()
+        val at = (index.value + 1).coerceIn(0, q.size)
+        q.add(at, track)
+        if (radioStartIndex >= at) radioStartIndex++
+        queue.value = q
+        if (index.value < 0) {
+            index.value = 0
+            load(q[0])
+        }
+        save()
+    }
+
+    fun addToQueue(track: Track) {
+        cancelPrep()
+        queue.value = queue.value + track
+        if (index.value < 0) {
+            index.value = 0
+            load(queue.value[0])
+        }
         save()
     }
 
     fun toggleShuffle() {
         val enable = !shuffle.value
-        if (enable && djMode.value) setDjMode(false)
         if (enable) {
             shuffleSnapshotQueue = queue.value
             shuffleSnapshotIndex = index.value
@@ -404,6 +391,7 @@ class Player(
             restoreShuffleSnapshot()
         }
         cancelCrossfade()
+        if (enable) radioStartIndex = -1
         save()
     }
 
@@ -433,11 +421,129 @@ class Player(
         save()
     }
 
+    fun seekToFraction(fraction: Double) {
+        cancelCrossfade()
+        val total = duration.value
+        if (total <= 0) return
+        val target = (fraction.coerceIn(0.0, 1.0)) * total
+        position.value = target
+        active.seekSeconds(target)
+    }
+
+    /** Avanca/recua N segundos; usado pelos atalhos de teclado. */
+    fun seekBy(deltaSeconds: Double) {
+        cancelCrossfade()
+        val total = duration.value
+        if (total <= 0) return
+        val target = (position.value + deltaSeconds).coerceIn(0.0, total)
+        position.value = target
+        active.seekSeconds(target)
+    }
+
+    fun setVolume(value: Int) {
+        volume.value = value.coerceIn(0, 130)
+        cancelCrossfade()
+        active.volume(volume.value)
+        save()
+    }
+
+    fun stopRadio(clearTail: Boolean = false) {
+        if (!radioActive.value && radioContinuation == null && radioJob == null && radioStartIndex < 0) return
+        radioEpoch++
+        radioJob?.cancel()
+        radioJob = null
+        pendingRadioAdvance = false
+        radioActive.value = false
+        radioLoading.value = false
+        radioContinuation = null
+        radioSeedTrack.value = null
+        radioEmptyPages = 0
+        if (clearTail && radioStartIndex > 0) {
+            val start = radioStartIndex
+            queue.value = queue.value.take(start)
+            if (index.value >= start) index.value = start - 1
+            save()
+        }
+        radioStartIndex = -1
+        com.openfy.core.Log.write("player: radio encerrada")
+    }
+
+    /** Toca a faixa agora e emenda a radio dela em seguida (clique na busca). */
+    fun playThenRadio(track: Track) {
+        setQueueContext("Rádio: ${track.title}", "radio", track.id)
+        playNow(listOf(track), 0)
+        radioSeedTrack.value = track
+        radioEpoch++
+        val epoch = radioEpoch
+        radioLoading.value = true
+        radioJob?.cancel()
+        radioJob = scope.launch {
+            val page = runCatching { radioStarter?.invoke(track.id) }.getOrNull()
+            if (epoch != radioEpoch) return@launch
+            radioLoading.value = false
+            if (page == null || page.tracks.isEmpty() || current.value?.id != track.id) {
+                radioActive.value = false
+                return@launch
+            }
+            val start = queue.value.size
+            val extra = recommender.rankRadio(page.tracks, track, queue.value, limit = RADIO_INITIAL)
+            radioContinuation = page.continuation
+            radioActive.value = extra.isNotEmpty() || page.continuation != null
+            if (extra.isEmpty()) return@launch
+            queue.value = queue.value + extra
+            if (radioStartIndex < 0) radioStartIndex = start
+            com.openfy.core.Log.write("player: radio emendada +${extra.size} (fila=${queue.value.size})")
+            maybeLoadMoreRadio()
+            save()
+        }
+    }
+
+    /** No fim de uma fila comum, continua com a radio da ultima faixa. */
+    private fun startRadioFromCurrent() {
+        if (!autoplayRadio.value || autoplaySuppressed) return
+        val seed = current.value ?: return
+        setQueueContext("Rádio: ${seed.title}", "radio", seed.id)
+        radioEpoch++
+        val epoch = radioEpoch
+        radioLoading.value = true
+        radioJob?.cancel()
+        radioJob = scope.launch {
+            val page = runCatching { radioStarter?.invoke(seed.id) }.getOrNull()
+            if (epoch != radioEpoch) return@launch
+            radioLoading.value = false
+            if (page == null || page.tracks.isEmpty() || current.value?.id != seed.id) {
+                radioActive.value = false
+                playing.value = false
+                active.stop()
+                return@launch
+            }
+            val expectedSize = queue.value.size
+            val takeOver = expectedSize <= index.value + 1
+            val extra = recommender.rankRadio(page.tracks, seed, queue.value, limit = RADIO_INITIAL)
+            radioSeedTrack.value = seed
+            radioContinuation = page.continuation
+            radioActive.value = extra.isNotEmpty() || page.continuation != null
+            if (extra.isEmpty()) {
+                requestRadioAdvance()
+                return@launch
+            }
+            queue.value = queue.value + extra
+            if (radioStartIndex < 0) radioStartIndex = expectedSize
+            trimQueue()
+            com.openfy.core.Log.write("player: fim da fila -> radio +${extra.size}")
+            if (takeOver) {
+                index.value = expectedSize
+                load(queue.value[index.value])
+            }
+        }
+    }
+
     private fun load(track: Track, resetPlay: Boolean = true) {
         com.openfy.core.Log.write(
             "player: tocando ${track.id} \"${track.title}\" (mpvReady=${active.ready.value})"
         )
         cancelCrossfade()
+        finishActive(completed = false, skipped = true)
         current.value = track
         pendingPause = false
         error.value = null
@@ -450,9 +556,51 @@ class Player(
         active.start()
         active.volume(volume.value)
         active.load(stream.urlFor(track.id))
-        scope.launch(Dispatchers.IO) { db.recordPlay(track.id) }
+        startActiveEvent(track)
         maybeLoadMoreRadio()
-        applyDjLater()
+        save()
+    }
+
+    private fun appendRadio(
+        page: RadioPage,
+        seed: Track,
+        epoch: Long,
+        token: String,
+        autoAdvance: Boolean,
+    ) {
+        if (epoch != radioEpoch) return
+        radioLoading.value = false
+        radioContinuation = if (page.continuation == token) null else page.continuation
+        val extra = recommender.rankRadio(page.tracks, seed, queue.value, limit = RADIO_PAGE)
+        val shouldAdvance = autoAdvance || pendingRadioAdvance
+        if (extra.isEmpty()) {
+            radioEmptyPages++
+            radioActive.value = radioContinuation != null
+            if (shouldAdvance && radioContinuation != null && radioEmptyPages <= 3) {
+                requestRadioAdvance()
+                return
+            }
+            if (shouldAdvance) {
+                pendingRadioAdvance = false
+                playing.value = false
+                active.stop()
+            }
+            return
+        }
+        radioEmptyPages = 0
+        pendingRadioAdvance = false
+        val expectedSize = queue.value.size
+        val takeOver = expectedSize <= index.value + 1
+        val start = expectedSize
+        queue.value = queue.value + extra
+        if (radioStartIndex < 0) radioStartIndex = start
+        radioActive.value = true
+        trimQueue()
+        if (shouldAdvance && takeOver) {
+            index.value = start
+            load(queue.value[index.value])
+        }
+        com.openfy.core.Log.write("player: radio +${extra.size} faixas (fila=${queue.value.size})")
         save()
     }
 
@@ -461,27 +609,20 @@ class Player(
      * pagina ao controlador sem interromper a reproducao atual.
      */
     private fun maybeLoadMoreRadio() {
-        if (!radioActive.value || radioLoading.value) return
+        if (!radioActive.value || radioLoading.value || radioJob?.isActive == true) return
         val token = radioContinuation ?: return
         if (queue.value.size - index.value > RADIO_PREFETCH) return
+        val seed = radioSeedTrack.value ?: current.value ?: return
+        val epoch = radioEpoch
         radioLoading.value = true
-        scope.launch {
+        radioJob = scope.launch {
             val page = runCatching { radioSource?.invoke(token) }.getOrNull()
-            radioLoading.value = false
+            if (epoch != radioEpoch) return@launch
             if (page == null) {
-                radioContinuation = null
+                radioLoading.value = false
                 return@launch
             }
-            if (page.continuation == token) {
-                radioContinuation = null
-                return@launch
-            }
-            radioContinuation = page.continuation
-            val known = queue.value.mapTo(HashSet()) { it.id }
-            val extra = page.tracks.filter { it.id !in known }
-            queue.value = queue.value + extra
-            trimQueue()
-            com.openfy.core.Log.write("player: radio +${extra.size} faixas (fila=${queue.value.size})")
+            appendRadio(page, seed, epoch, token, autoAdvance = false)
         }
     }
 
@@ -489,51 +630,44 @@ class Player(
     private fun trimQueue() {
         val q = queue.value
         val cur = index.value
-        if (q.size <= 600 || cur < 150) return
+        if (q.size <= RADIO_MAX_QUEUE || cur < 150) return
         cancelPrep()
-        val drop = cur - 100
+        val drop = (cur - 100).coerceAtMost(radioStartIndex.coerceAtLeast(0))
+        if (drop <= 0) return
         queue.value = q.drop(drop)
         index.value = cur - drop
+        if (radioStartIndex >= 0) radioStartIndex = (radioStartIndex - drop).coerceAtLeast(0)
         com.openfy.core.Log.write("player: fila aparada em $drop faixas (agora ${queue.value.size})")
     }
 
     /** Fim da fila da radio: busca a proxima pagina e continua em vez de parar. */
     private fun requestRadioAdvance() {
         cancelCrossfade()
+        if (radioLoading.value) {
+            pendingRadioAdvance = true
+            return
+        }
         val token = radioContinuation
-        if (token == null || radioLoading.value) {
+        if (token == null) {
             radioActive.value = false
             playing.value = false
             active.stop()
             return
         }
+        val seed = radioSeedTrack.value ?: current.value ?: return
+        val epoch = radioEpoch
         radioLoading.value = true
-        scope.launch {
+        radioJob = scope.launch {
             val page = runCatching { radioSource?.invoke(token) }.getOrNull()
-            radioLoading.value = false
-            val tracks = page?.tracks.orEmpty()
-            if (tracks.isEmpty()) {
-                radioActive.value = false
-                radioContinuation = null
+            if (epoch != radioEpoch) return@launch
+            if (page == null) {
+                radioLoading.value = false
+                pendingRadioAdvance = false
                 playing.value = false
                 active.stop()
                 return@launch
             }
-            radioContinuation = page?.continuation
-            val known = queue.value.mapTo(HashSet()) { it.id }
-            val extra = tracks.filter { it.id !in known }
-            if (extra.isEmpty()) {
-                radioActive.value = false
-                radioContinuation = null
-                playing.value = false
-                active.stop()
-                return@launch
-            }
-            val start = queue.value.size
-            queue.value = queue.value + extra
-            index.value = start
-            trimQueue()
-            load(queue.value[index.value])
+            appendRadio(page, seed, epoch, token, autoAdvance = true)
         }
     }
 
@@ -561,7 +695,10 @@ class Player(
     }
 
     suspend fun toggleLike(track: Track): Boolean {
-        val nowLiked = withContext(Dispatchers.IO) { db.toggleLike(track.id) }
+        val nowLiked = withContext(Dispatchers.IO) {
+            db.remember(track)
+            db.toggleLike(track.id)
+        }
         refreshLikes()
         return nowLiked
     }
@@ -573,7 +710,10 @@ class Player(
         shuffle.value = session.shuffle
         shuffleSnapshotQueue = session.shuffleQueue.takeIf { it.isNotEmpty() }
         shuffleSnapshotIndex = session.shuffleIndex
-        djSnapshotQueue = session.djQueue.takeIf { it.isNotEmpty() }
+        queueContextTitle = session.queueTitle
+        queueOrigin = session.queueOrigin
+        queueContextId = session.queueContextId
+        queueTitle.value = queueContextTitle
         repeat.value = runCatching { RepeatMode.valueOf(session.repeat) }.getOrDefault(RepeatMode.OFF)
         volume.value = session.volume.coerceIn(0, 130)
         radioActive.value = false
@@ -619,7 +759,9 @@ class Player(
                     repeat = repeat.value.name,
                     shuffleQueue = shuffleSnapshotQueue.orEmpty(),
                     shuffleIndex = shuffleSnapshotIndex,
-                    djQueue = djSnapshotQueue.orEmpty(),
+                    queueTitle = queueContextTitle,
+                    queueOrigin = queueOrigin,
+                    queueContextId = queueContextId,
                 ),
             )
         }
@@ -636,6 +778,7 @@ class Player(
         if (at !in q.indices) return
         val new = q.toMutableList().apply { removeAt(at) }
         val cur = index.value
+        if (at <= radioStartIndex) radioStartIndex = -1
         queue.value = new
         when {
             at < cur -> index.value = cur - 1
@@ -661,11 +804,15 @@ class Player(
         val cur = index.value
         if (cur < 0 || cur >= q.lastIndex) return
         queue.value = q.subList(0, cur + 1)
+        radioStartIndex = -1
+        radioActive.value = false
+        radioContinuation = null
         save()
     }
 
     fun move(from: Int, to: Int) {
         cancelCrossfade()
+        radioStartIndex = -1
         val q = queue.value.toMutableList()
         if (from !in q.indices || to !in q.indices || from == to) return
         val item = q.removeAt(from)
@@ -747,16 +894,13 @@ class Player(
         applyEqTo(mpvB)
     }
 
-    private fun applyEqTo(target: Mpv, cutLows: Boolean = false) {
+    private fun applyEqTo(target: Mpv) {
         val filters = mutableListOf<String>()
         if (eqEnabled.value) {
             filters += EQ_FREQS.zip(eqGains.value).map { (freq, gain) ->
                 "equalizer=f=$freq:t=q:w=1:g=$gain"
             }
         }
-        // Handoff de graves do modo DJ blend: a faixa que sai perde o low-end,
-        // deixando o corpo/graves da proxima aparecer. Nao separa vocais.
-        if (cutLows) filters += "highpass=f=120"
         target.setAudioFilters(filters)
     }
 
@@ -782,11 +926,6 @@ class Player(
         scope.launch(Dispatchers.IO) { db.put("playback.crossfade", value.toString()) }
     }
 
-    fun setTransitionStyle(style: String) {
-        val value = if (style == TRANSITION_BLEND) TRANSITION_BLEND else TRANSITION_CROSSFADE
-        transitionStyle.value = value
-        scope.launch(Dispatchers.IO) { db.put("playback.transition", value) }
-    }
 
     private fun checkCrossfade(position: Double) {
         val fade = crossfadeSeconds.value
@@ -795,7 +934,7 @@ class Player(
         val total = duration.value
         if (total <= 0) return
         val remaining = total - position
-        // Fixa a proxima escolhida no preparo. Sem isso, shuffle/DJ poderiam
+        // Fixa a proxima escolhida no preparo. Sem isso, shuffle poderia
         // trocar o candidato a cada evento de tempo e reiniciar o crossfade.
         val prepared = crossfadePreparedTrack
         val next = if (prepared != null) {
@@ -864,6 +1003,13 @@ class Player(
         crossfadeReady = false
         crossfadePreparedIndex = -1
         crossfadePreparedTrack = null
+        val oldDuration = duration.value
+        val oldPlayedMs = ((oldDuration - remaining).coerceAtLeast(0.0) * 1000).toLong()
+        finishActive(
+            completed = oldDuration > 0 && oldPlayedMs >= oldDuration * 900,
+            skipped = false,
+            playedOverrideMs = oldPlayedMs,
+        )
         index.value = nextIndex
         current.value = nextTrack
         position.value = 0.0
@@ -872,21 +1018,14 @@ class Player(
         busy.value = false
         pendingPause = false
         if (crossfadeDuration > 1) persistDuration(crossfadeDuration)
-        if (shuffle.value) {
-            shuffleRecent.addLast(nextTrack.id)
-            while (shuffleRecent.size > minOf(queue.value.size - 1, 40)) shuffleRecent.removeFirst()
-        }
         new.pause(false)
         val target = volume.value
-        scope.launch(Dispatchers.IO) { db.recordPlay(nextTrack.id) }
+        startActiveEvent(nextTrack)
         save()
         maybeLoadMoreRadio()
-        applyDjLater()
         crossfadeJob?.cancel()
-        val blend = transitionStyle.value == TRANSITION_BLEND
         crossfadeJob = scope.launch {
             val steps = (fade * 10).toInt().coerceAtLeast(5)
-            var lowsCut = false
             for (i in 0..steps) {
                 if (!crossfadeActive) return@launch
                 val fraction = i.toDouble() / steps
@@ -895,11 +1034,6 @@ class Player(
                 val angle = fraction * Math.PI / 2.0
                 old.volume((target * cos(angle)).roundToInt())
                 new.volume((target * sin(angle)).roundToInt())
-                if (blend && !lowsCut && fraction >= 0.5) {
-                    lowsCut = true
-                    applyEqTo(old, cutLows = true)
-                    com.openfy.core.Log.write("player: blend - graves liberados para a proxima")
-                }
                 delay(100)
             }
             if (!crossfadeActive) return@launch
@@ -912,8 +1046,7 @@ class Player(
         }
         com.openfy.core.Log.write(
             "player: crossfade ${nextTrack.id} (${fade.roundToInt()}s, " +
-                "${if (blend) "dj blend" else "equal-power"}, " +
-                "${if (shuffle.value) "shuffle" else "sequencial"})"
+                "equal-power, ${if (shuffle.value) "shuffle" else "sequencial"})"
         )
     }
 
@@ -939,124 +1072,9 @@ class Player(
         standby().stop()
     }
 
-    // ------------------------------------------------------------------ DJ por BPM
-    fun toggleDj() = setDjMode(!djMode.value)
-
-    fun setDjMode(enabled: Boolean) {
-        if (enabled && shuffle.value) {
-            // DJ precisa da ordem real para reordenar; sair do shuffle primeiro.
-            toggleShuffle()
-        }
-        djMode.value = enabled
-        scope.launch(Dispatchers.IO) { db.put("playback.dj", enabled.toString()) }
-        if (enabled) {
-            djSnapshotQueue = queue.value
-            djStatus.value = "Modo DJ: analisando BPM das próximas faixas…"
-            applyDjLater()
-        } else {
-            djJob?.cancel()
-            restoreDjSnapshot()
-            djStatus.value = "Modo DJ desligado."
-        }
-        save()
-    }
-
-    private fun restoreDjSnapshot() {
-        val snapshot = djSnapshotQueue ?: return
-        val currentTrack = current.value
-        val extras = queue.value.filter { track -> snapshot.none { it.id == track.id } }
-        val restored = snapshot + extras
-        if (restored.isNotEmpty()) {
-            val at = currentTrack?.let { track ->
-                restored.indexOfFirst { it.id == track.id }
-            } ?: -1
-            queue.value = restored
-            index.value = if (at >= 0) at else index.value.coerceIn(0, restored.lastIndex)
-        }
-        djSnapshotQueue = null
-    }
-
-    private fun applyDjLater() {
-        if (!djMode.value || shuffle.value) return
-        djJob?.cancel()
-        djJob = scope.launch {
-            delay(1500)
-            if (!djMode.value || shuffle.value) return@launch
-            val snapshot = queue.value
-            val currentIndex = index.value
-            if (currentIndex < 0 || currentIndex >= snapshot.lastIndex) {
-                djStatus.value = "Modo DJ: sem faixas suficientes depois da atual."
-                return@launch
-            }
-            val window = snapshot.subList(
-                currentIndex + 1,
-                minOf(snapshot.size, currentIndex + 12),
-            )
-            if (window.size < 3) {
-                djStatus.value = "Modo DJ: são necessárias pelo menos 3 faixas na frente."
-                return@launch
-            }
-            val referenceBpm = withContext(Dispatchers.IO) { bpmFor(snapshot[currentIndex]) }
-                ?: run {
-                    djStatus.value = "Modo DJ: BPM da faixa atual indisponível."
-                    return@launch
-                }
-            val scored = withContext(Dispatchers.IO) {
-                window.map { track ->
-                    val bpm = bpmFor(track)
-                    track to if (bpm == null) Double.MAX_VALUE else kotlin.math.abs(bpm - referenceBpm)
-                }
-            }
-            val known = scored.count { it.second != Double.MAX_VALUE }
-            if (known < 3) {
-                com.openfy.core.Log.write("dj: BPM insuficiente (${known}/${scored.size})")
-                djStatus.value = "Modo DJ: BPM insuficiente; ordem mantida."
-                return@launch
-            }
-            if (!djMode.value || index.value != currentIndex || queue.value.size != snapshot.size) {
-                return@launch
-            }
-            cancelPrep()
-            val sorted = scored.sortedBy { it.second }.map { it.first }
-            val newQueue = snapshot.toMutableList()
-            sorted.forEachIndexed { offset, track -> newQueue[currentIndex + 1 + offset] = track }
-            queue.value = newQueue
-            save()
-            djStatus.value = "Modo DJ: próximas ${sorted.size} faixas reordenadas por BPM."
-            com.openfy.core.Log.write(
-                "dj: fila reordenada por BPM (ref=${referenceBpm.roundToInt()}, conhecidos=$known)"
-            )
-        }
-    }
-
-    private suspend fun bpmFor(track: Track): Double? {
-        db.bpm(track.id)?.let { return it }
-        val bpm = BpmClient.fetch(track) ?: return null
-        delay(100)
-        db.setBpm(track.id, bpm)
-        return bpm
-    }
-
-    private fun pickShuffleIndex(q: List<Track>, current: Int): Int {
-        val recent = shuffleRecent.toHashSet()
-        var candidates = q.indices.filter { it != current && q[it].id !in recent }
-        if (candidates.isEmpty()) {
-            shuffleRecent.clear()
-            candidates = q.indices.filter { it != current }
-        }
-        if (candidates.isEmpty()) return current
-        val weights = candidates.map { if (q[it].id in likedIds.value) 3 else 1 }
-        var roll = (1..weights.sum()).random()
-        for (i in candidates.indices) {
-            roll -= weights[i]
-            if (roll <= 0) return candidates[i]
-        }
-        return candidates.last()
-    }
-
     fun shutdown() {
+        finishActive(completed = false, skipped = true)
         crossfadeJob?.cancel()
-        djJob?.cancel()
         saveNow()
         mpvA.shutdown()
         mpvB.shutdown()
@@ -1074,7 +1092,8 @@ class Player(
         )
 
         private const val RADIO_PREFETCH = 5
-        const val TRANSITION_CROSSFADE = "CROSSFADE"
-        const val TRANSITION_BLEND = "BLEND"
+        private const val RADIO_INITIAL = 20
+        private const val RADIO_PAGE = 20
+        private const val RADIO_MAX_QUEUE = 400
     }
 }

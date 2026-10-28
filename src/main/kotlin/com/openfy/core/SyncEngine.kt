@@ -101,12 +101,16 @@ class SyncEngine(
                 token,
                 pendingEvents.map { event ->
                     PushPlayEvent(
+                        id = event.eventId.takeIf { it.isNotBlank() },
                         userId = session.userId,
                         trackId = event.trackId,
                         startedAt = Instant.ofEpochMilli(event.startedAt).toString(),
                         playedMs = event.playedMs,
-                        durationMs = event.playedMs,
-                        source = "desktop",
+                        durationMs = event.durationMs,
+                        completed = event.completed,
+                        skipped = event.skipped,
+                        source = event.origin,
+                        contextId = event.contextId,
                     )
                 },
             )

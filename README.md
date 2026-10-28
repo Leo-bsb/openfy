@@ -57,10 +57,9 @@ parava de ler e a UI travava depois de alguns minutos de uso.
 - [x] Adicionar à playlist na barra inferior e na tela do player (com criar playlist já adicionando a faixa)
 - [x] Equalizador de 5 bandas com presets (Flat/Pop/Rock/Graves/Vocal), persistido
 - [x] Instância única, log rotativo (`openfy.log.1`) e crash handler
-- [x] Tela de Ajustes (qualidade, crossfade, DJ, downloads, janela e dados)
+- [x] Tela de Ajustes (qualidade, crossfade, downloads, janela e dados)
 - [x] Capa personalizada nas playlists (ou a capa da primeira faixa)
-- [x] Transição entre faixas configurável (fade-out/fade-in, 0–12 s)
-- [x] Modo DJ por BPM (metadata do Deezer) com fallback para a ordem da rádio
+- [x] Transição entre faixas configurável (crossfade equal-power, 0–12 s)
 - [x] Qualidade de áudio Alta/Econômica
 - [x] Schema pronto para sync (`updated_at` + tombstones)
 - [x] "Seu mix" multi-semente (até 3 sementes de curtidas/recentes, faixas intercaladas)
@@ -69,7 +68,7 @@ parava de ler e a UI travava depois de alguns minutos de uso.
 - [x] Importar CSV do Exportify (Spotify) casando faixas no catálogo
 - [x] Backup JSON de playlists e curtidas (exportar/importar)
 - [x] Letras sincronizadas (LRCLIB) na tela do player
-- [x] Timer para dormir (15/30/45/60 min) e shuffle inteligente
+- [x] Timer para dormir (15/30/45/60 min)
 - [x] Estatísticas no Início (execuções, horas ouvidas, artista top)
 - [x] Logo própria no app, na bandeja, na janela e no ícone do .exe/atalho
 - [x] Estabilidade do IPC do mpv: fila de comandos + drenagem das respostas (evita travar a UI)
@@ -90,7 +89,7 @@ sertanejo, rock, rap, funk, MPB) com lançamentos e playlists da comunidade.
 As sementes fixas evitam que a tela mude de ordem a cada abertura.
 
 A **rádio** usa `next` com `RDAMVM<videoId>` (faixa) ou `RDEM...` (artista).
-A fila já nasce com ~50 faixas e busca a próxima página quando chega perto do
+A fila já nasce com ~20 faixas e busca a próxima página quando chega perto do
 fim. Playlists longas repetem a primeira página em algumas continuações; o
 controlador ignora o token quando nenhuma faixa nova é acrescentada.
 
@@ -110,6 +109,7 @@ digita na busca ou num diálogo):
 | `Q` | abrir/fechar a fila |
 | `Ctrl+P` | abrir/fechar a tela do player |
 | `Ctrl+F` | focar a busca |
+| `Ctrl+R` | abrir o Recap |
 | `Esc` | fechar o player/fila (ou voltar de tela) |
 
 A **fila** é editável: clicar numa faixa toca na hora; os botões ao lado
@@ -165,18 +165,24 @@ laços com cabeça de cobra, usada na sidebar, na bandeja e como ícone da janel
   faixa atual).
 - **Equalizador**: 5 bandas (60 Hz a 14 kHz) aplicadas ao mpv via filtros do
   FFmpeg, com presets e estado salvo. Abra pelo ícone de sliders (barra e player).
-- **Rótulos**: os ícones mostram o nome/atalho ao passar o mouse (DJ, aleatório,
+- **Rótulos**: os ícones mostram o nome/atalho ao passar o mouse (aleatório,
   repetir, equalizador, letras, timer, fila, download, ajustes e navegação).
 - **Estados visíveis**: botões ativos usam preenchimento sólido (não só cor) e os
   filtros de busca mostram um check; assim o estado ligado/desligado continua
   claro para quem tem daltonismo. A troca de tela na busca rola junto com os
   resultados: o perfil do artista e o destaque não ficam mais fixos cobrindo a lista.
-- **Seu mix**: card no Início que usa até 3 sementes (curtidas + recentes) e
+- **Seu mix**: usa as faixas mais ouvidas, curtidas e recentes como sementes e intercala as rádios sem deixar um artista dominar.
   intercala as faixas das rádios de cada uma, sem repetir. Mais dados locais =
   melhor; sem servidor.
-- **Autoplay**: clicar num resultado de busca toca a faixa e já emenda a rádio
+- **Autoplay**: clicar num resultado de busca toca a faixa e emenda a r?dio dela. Ao terminar uma playlist/?lbum, a r?dio autom?tica pode ser ligada ou desligada nos Ajustes.
   dela. Ao tocar um álbum, playlist ou mix, o app respeita a lista até o fim e
   só então entra na rádio da última faixa.
+- **Rádio e sucessão**: clicar numa faixa da busca toca apenas aquela faixa e emenda a rádio dela; os resultados da busca não viram fila. O botão "Tocar resultados (contexto)" é o contexto explícito.
+- **Recap**: aba dedicada com seletor de mês, minutos, execuções, conclusão, skip, top faixas/artistas, atividade diária e descobertas. Com conta, o resumo e os tops incluem PC + celular.
+- **Mais ouvidas**: ranking ponderado por curtidas, recência, conclusão e skip, com no-repeat de faixa e diversidade de artista. Toca em contexto ou aleatório.
+- **Seu mix**: usa as faixas mais ouvidas, curtidas e recentes como sementes e intercala as rádios sem deixar um artista dominar.
+- **R?dio autom?tica**: ao terminar playlist/?lbum, continua a r?dio da ?ltima faixa; pode ser desligada nos Ajustes.
+
 
 ## Importar, letras e estatísticas
 
@@ -193,29 +199,19 @@ laços com cabeça de cobra, usada na sidebar, na bandeja e como ícone da janel
 - **Letras**: botão de letras na tela do player; busca no LRCLIB, prioriza LRC
   sincronizado e destaca a linha atual. Sufixos como "(Official Video)" são limpos.
 - **Timer**: 15/30/45/60 min na tela do player; pausa ao terminar.
-- **Estatísticas**: execuções, horas ouvidas e artista top no Início.
-- **Shuffle inteligente**: evita repetir as últimas tocadas e dá peso a curtidas.
 
 A conta própria e o sync via Supabase já estão ativos. OAuth Spotify/Google
 para importar a conta ainda não; use o CSV do Exportify.
 
-## Ajustes, transição e DJ
+## Ajustes e transi??o
 
 - **Ajustes** (engrenagem no topo): qualidade Alta/Econômica, transição entre
-  faixas, modo DJ, equalizador, download automático, fechar para a bandeja,
+  faixas, equalizador, download automático, fechar para a bandeja,
   backup, cache e pasta de dados.
 - **Capas de playlist**: no cabeçalho da playlist, "Capa" > escolher imagem. A imagem é copiada para `%LOCALAPPDATA%\OpenfyData\covers\`, sobe para o Storage da conta e aparece no celular; sem capa própria, usa a arte da primeira faixa.
 - **Transição**: crossfade real de 0–12 s com dois players mpv e curva
   equal-power: no meio da transição as duas faixas ficam audíveis, sem o "buraco"
-  do fade linear. O estilo **DJ blend** vai além e corta os graves da faixa que
-  sai na metade da sobreposição, deixando os graves/corpo da próxima aparecerem
-  — uma aproximação de mashup de DJ. Separação real de vocal/instrumental
-  exigiria um modelo de stems (Demucs/Spleeter), pesado para o player; não vale
-  a pena agora. Qualquer interação (pausar, seek, trocar de faixa) cancela o fade.
-- **Modo DJ**: o rótulo "Modo DJ — próximas faixas por BPM" aparece ao passar o
-  mouse no ícone de brilho ao lado do aleatório → reordena as próximas faixas por
-  proximidade de BPM (metadata pública do Deezer, com cache local).
-  Se o BPM não estiver disponível, mantém a ordem da rádio/playlist.
+  do fade linear. Qualquer intera??o (pausar, seek, trocar de faixa) cancela o fade.
 - **Aleatório**: os botões "Aleatório" dos cabeçalhos já iniciam a reprodução na
   hora; a seta de aleatório da barra liga o modo e, se nada estiver tocando,
   começa o contexto aberto (playlist, álbum, artista, curtidas ou busca).
@@ -248,14 +244,14 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.2.3.exe
-dist\Openfy-0.2.3.msi
-dist\Openfy-Android-0.2.5.apk
+dist\Openfy-0.2.4.exe
+dist\Openfy-0.2.4.msi
+dist\Openfy-Android-0.2.6.apk
 ```
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.2.3: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.3  
-Android 0.2.5: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.5-android
+Desktop 0.2.4: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.4  
+Android 0.2.6: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.6-android
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -275,8 +271,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.2.3.exe`
-- `build\compose\binaries\main\msi\Openfy-0.2.3.msi`
+- `build\compose\binaries\main\exe\Openfy-0.2.4.exe`
+- `build\compose\binaries\main\msi\Openfy-0.2.4.msi`
 
 Rodar em desenvolvimento:
 
@@ -300,7 +296,6 @@ O `playerSmoke` prova o caminho real: carrega, pausa, retoma, faz seek, troca de
 faixa e confirma que uma faixa inválida gera erro (em vez de ficar travado).
 O `featureSmoke` cobre a busca com filtros e continuação, o perfil de artista,
 álbum/playlist públicos, o Explorar, as rádios, as sugestões, as letras (LRCLIB)
-e o BPM do modo DJ; ele termina com `TUDO OK`. O `librarySmoke` cobre o
 importador (URL/CSV/match), o backup JSON, a playlist compartilhada
 (`.openfyplaylist`) e o backup consistente do banco (`VACUUM INTO`). O `probe` é
 só uma ferramenta de diagnóstico: grava JSONs brutos para inspecionar tokens e

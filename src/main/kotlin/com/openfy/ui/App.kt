@@ -55,7 +55,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
@@ -69,6 +68,8 @@ import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Insights
+import androidx.compose.material.icons.filled.Leaderboard
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
@@ -150,6 +151,10 @@ import com.openfy.core.MediaCard
 import com.openfy.core.MediaKind
 import com.openfy.core.Playlist
 import com.openfy.core.PlaylistPrompt
+import com.openfy.core.RecapArtist
+import com.openfy.core.RecapDay
+import com.openfy.core.RecapSnapshot
+import com.openfy.core.RecapTrack
 import com.openfy.core.RepeatMode
 import com.openfy.core.Screen
 import com.openfy.core.SearchMode
@@ -164,6 +169,10 @@ import kotlin.math.roundToInt
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 // ------------------------------------------------------------------ artwork
 @Composable
@@ -239,7 +248,7 @@ private fun openfySliderColors() = SliderDefaults.colors(
     inactiveTickColor = Color.Transparent,
 )
 
-/** Rotulo ao passar o mouse; usado para explicar icones (ex.: DJ/BPM). */
+/** Rotulo ao passar o mouse; usado para explicar icones e atalhos. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Tip(text: String, content: @Composable () -> Unit) {
@@ -490,7 +499,7 @@ private fun PlaylistPromptDialog(c: AppController, prompt: PlaylistPrompt) {
                     singleLine = true,
                     label = { Text("Nome") },
                     shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.width(320.dp),
+                    modifier = Modifier.width(320.dp).trackInputFocus(),
                 )
             }
         },
@@ -597,7 +606,7 @@ private fun ImportDialog(c: AppController) {
                             Text("Cole o link aqui", color = Tokens.textLow, fontSize = 12.sp)
                         },
                         shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).trackInputFocus(),
                     )
                     Spacer(Modifier.width(8.dp))
                     Button(
@@ -630,7 +639,7 @@ private fun ImportDialog(c: AppController) {
                             Text("Código ou link do convite", color = Tokens.textLow, fontSize = 12.sp)
                         },
                         shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).trackInputFocus(),
                     )
                     Spacer(Modifier.width(8.dp))
                     Button(
@@ -786,6 +795,8 @@ private fun Sidebar(c: AppController, screen: Screen, playlists: List<Playlist>)
         NavItem("Curtidas", Icons.Filled.Favorite, screen is Screen.Liked) { c.go(Screen.Liked) }
         NavItem("Downloads", Icons.Filled.Download, screen is Screen.Downloads) { c.go(Screen.Downloads) }
         NavItem("Histórico", Icons.Filled.History, screen is Screen.History) { c.go(Screen.History) }
+        NavItem("Mais ouvidas", Icons.Filled.Leaderboard, screen is Screen.TopPlayed) { c.go(Screen.TopPlayed) }
+        NavItem("Recap", Icons.Filled.Insights, screen is Screen.Recap) { c.openRecap() }
 
         Spacer(Modifier.height(10.dp))
         HorizontalDivider(color = Tokens.line, modifier = Modifier.padding(horizontal = 14.dp))
@@ -951,7 +962,7 @@ private fun TopBar(c: AppController, queueOpen: Boolean, onExit: () -> Unit, onQ
         delay(220)
         if (c.searchQuery.value.trim() != q) return@LaunchedEffect
         c.go(Screen.Search)
-        c.search(q)
+        c.search(q, record = false)
     }
 
     LaunchedEffect(c.searchFocusRequest.value) {
@@ -1003,6 +1014,7 @@ private fun TopBar(c: AppController, queueOpen: Boolean, onExit: () -> Unit, onQ
                 }),
                 modifier = Modifier.width(360.dp)
                     .focusRequester(focusRequester)
+                    .trackInputFocus()
                     .onFocusChanged { c.searchFieldFocused.value = it.isFocused },
             )
             DropdownMenu(
@@ -1084,6 +1096,8 @@ private fun Content(c: AppController, target: Screen) {
             val tracks by c.history.collectAsState()
             TrackCollection(c, "Histórico", tracks, emptyList())
         }
+        Screen.TopPlayed -> TopPlayedScreen(c)
+        Screen.Recap -> RecapScreen(c)
         is Screen.PlaylistView -> PlaylistScreen(c, target.id)
         is Screen.ArtistView -> ArtistScreen(c, target.id)
         is Screen.RemoteCollection -> RemoteCollectionScreen(c, target.id)
@@ -1095,7 +1109,7 @@ private fun HomeScreen(c: AppController) {
     val recent by c.recent.collectAsState()
     val liked by c.liked.collectAsState()
     val playlists by c.playlists.collectAsState()
-    val stats by c.stats.collectAsState()
+    val topPlayed by c.topPlayed.collectAsState()
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
         item {
@@ -1148,20 +1162,38 @@ private fun HomeScreen(c: AppController) {
                 }
             }
         }
-        stats?.takeIf { it.totalPlays > 0 }?.let { s ->
-            item {
-                Row(
-                    Modifier.fillMaxWidth().padding(bottom = 22.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    StatTile("Execuções", "${s.totalPlays}", Modifier.weight(1f))
-                    StatTile("Horas ouvidas", formatHours(s.totalSeconds), Modifier.weight(1f))
-                    StatTile(
-                        "Artista top",
-                        s.topArtists.firstOrNull()?.first ?: "—",
-                        Modifier.weight(1f),
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 22.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Tokens.panel)
+                    .clickable { c.openRecap() }
+                    .padding(18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Insights, null, tint = Tokens.accent, modifier = Modifier.size(28.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "SEU RECAP",
+                        color = Tokens.accent,
+                        fontSize = 11.sp,
+                        letterSpacing = 1.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        "Suas estatísticas mês a mês",
+                        color = Tokens.textHigh,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "Top faixas, artistas, sequ?ncia e descobertas em uma aba dedicada.",
+                        color = Tokens.textLow,
+                        fontSize = 12.sp,
                     )
                 }
+                Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = Tokens.textLow, modifier = Modifier.size(20.dp))
             }
         }
         if (recent.isEmpty() && liked.isEmpty() && playlists.isEmpty()) {
@@ -1206,6 +1238,30 @@ private fun HomeScreen(c: AppController) {
                         val index = recent.indexOf(track)
                         CoverCard(track.title, track.artist, track.thumbnail) {
                             c.playTracks(recent, index)
+                        }
+                    }
+                }
+            }
+            item { Spacer(Modifier.height(24.dp)) }
+        }
+        if (topPlayed.isNotEmpty()) {
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SectionTitle("Mais ouvidas")
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { c.go(Screen.TopPlayed) }) {
+                        Text("Ver tudo", color = Tokens.textLow, fontSize = 12.sp)
+                    }
+                }
+            }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    items(topPlayed.take(10), key = { "tp-${it.id}" }) { track ->
+                        CoverCard(track.title, track.artist, track.thumbnail) {
+                            c.playTracks(topPlayed, topPlayed.indexOf(track), "Mais ouvidas")
                         }
                     }
                 }
@@ -1384,6 +1440,16 @@ private fun SearchScreen(c: AppController) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (results.isNotEmpty()) {
+                TextButton(
+                    onClick = { c.playTracks(results, 0, "Busca: $query") },
+                ) {
+                    Icon(Icons.Filled.PlayArrow, null, tint = Tokens.textHigh, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("Tocar resultados (contexto)", color = Tokens.textHigh, fontSize = 12.sp)
+                }
+                Spacer(Modifier.width(4.dp))
+            }
             if (searching) {
                 CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Tokens.accent)
                 Spacer(Modifier.width(8.dp))
@@ -2389,6 +2455,338 @@ private fun TrackCollection(c: AppController, title: String, tracks: List<Track>
 }
 
 @Composable
+private fun TopPlayedScreen(c: AppController) {
+    val tracks by c.topPlayed.collectAsState()
+    val likedIds by c.player.likedIds.collectAsState()
+    val playlists by c.playlists.collectAsState()
+    LaunchedEffect(Unit) {
+        if (tracks.isEmpty()) c.loadTopPlayed()
+    }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Mais ouvidas",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Tokens.textHigh,
+                )
+                Text(
+                    "Ranking ponderado por recência, conclusão e curtidas — sem repetir artista na sequência.",
+                    color = Tokens.textLow,
+                    fontSize = 12.sp,
+                )
+            }
+            Button(
+                onClick = { c.playTracks(tracks, 0, "Mais ouvidas") },
+                enabled = tracks.isNotEmpty(),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Icon(Icons.Filled.PlayArrow, null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Tocar", fontSize = 13.sp)
+            }
+            Spacer(Modifier.width(8.dp))
+            TextButton(
+                onClick = { c.playShuffled(tracks, "Mais ouvidas") },
+                enabled = tracks.isNotEmpty(),
+            ) {
+                Icon(Icons.Filled.Shuffle, null, tint = Tokens.textHigh, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Aleatório", color = Tokens.textHigh, fontSize = 13.sp)
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        if (tracks.isEmpty()) {
+            EmptyLibraryCard(
+                title = "Ainda não há histórico suficiente",
+                description = "Ouça algumas músicas para o Openfy montar seu ranking pessoal.",
+                action = "Buscar música",
+            ) { c.go(Screen.Search) }
+        } else {
+            LazyColumn(Modifier.weight(1f)) {
+                itemsIndexed(tracks, key = { _, t -> t.id }) { index, track ->
+                    TrackRow(
+                        c = c,
+                        track = track,
+                        index = index,
+                        liked = track.id in likedIds,
+                        onPlay = { c.playTracks(tracks, index, "Mais ouvidas") },
+                        onLike = { c.toggleLike(track) },
+                        onPlayNext = { c.playNext(track) },
+                        onQueue = { c.playLater(track) },
+                        onRadio = { c.startTrackRadio(track) },
+                        playlists = playlists,
+                        onAddTo = { playlistId -> c.addToPlaylist(playlistId, track) },
+                    )
+                }
+                item { Spacer(Modifier.height(24.dp)) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecapScreen(c: AppController) {
+    val month by c.recapMonth.collectAsState()
+    val months by c.recapMonths.collectAsState()
+    val snapshot by c.recap.collectAsState()
+    val loading by c.recapLoading.collectAsState()
+    val error by c.recapError.collectAsState()
+    val fromAccount by c.recapFromAccount.collectAsState()
+    val likedIds by c.player.likedIds.collectAsState()
+    val playlists by c.playlists.collectAsState()
+    LaunchedEffect(Unit) {
+        if (snapshot == null) c.loadRecap()
+    }
+
+    val label = monthLabel(month)
+    val summary = snapshot?.summary
+    val previous = snapshot?.previous
+
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.Insights, null, tint = Tokens.accent, modifier = Modifier.size(28.dp))
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Seu recap", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Tokens.textHigh)
+                    Text(
+                        if (fromAccount) "Conta · PC + celular" else "Dados deste PC",
+                        color = Tokens.textLow,
+                        fontSize = 12.sp,
+                    )
+                }
+                if (loading) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Tokens.accent)
+                    Spacer(Modifier.width(8.dp))
+                }
+                TextButton(onClick = { c.loadRecap(month, force = true) }) {
+                    Text("Atualizar", color = Tokens.textLow)
+                }
+            }
+        }
+
+        item {
+            LazyRow(
+                Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val options = (months + month).distinct().sortedDescending()
+                items(options) { option ->
+                    SearchChip(monthLabel(option), option == month) { c.selectRecapMonth(option) }
+                }
+            }
+        }
+
+        if (error != null) {
+            item {
+                Text(error ?: "", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                Spacer(Modifier.height(12.dp))
+            }
+        }
+
+        if (loading && snapshot == null) {
+            item {
+                Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = Tokens.accent)
+                }
+            }
+            return@LazyColumn
+        }
+
+        if (summary == null || summary.plays == 0) {
+            item {
+                EmptyLibraryCard(
+                    title = "Nenhuma escuta em $label",
+                    description = "Toque uma música para começar a preencher este mês.",
+                    action = "Buscar música",
+                ) { c.go(Screen.Search) }
+            }
+            item { Spacer(Modifier.height(24.dp)) }
+            return@LazyColumn
+        }
+
+        item {
+            Column(
+                Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Tokens.heroGradient)
+                    .padding(22.dp),
+            ) {
+                Text(
+                    label.uppercase(),
+                    color = Tokens.accent,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.6.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    formatHours(summary?.playedMs?.div(1000) ?: 0),
+                    color = Tokens.textHigh,
+                    fontSize = 38.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "${summary?.plays ?: 0} execuções · ${summary?.uniqueTracks ?: 0} faixas únicas",
+                    color = Tokens.textLow,
+                    fontSize = 13.sp,
+                )
+                val delta = comparison(previous, summary)
+                if (delta != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        delta,
+                        color = if (delta.startsWith("+")) Tokens.accent else Tokens.textLow,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+        }
+
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                StatTile("Artistas", "${summary?.uniqueArtists ?: 0}", Modifier.weight(1f))
+                StatTile("Conclusão", "${((summary?.completionRate ?: 0.0) * 100).roundToInt()}%", Modifier.weight(1f))
+                StatTile("Puladas", "${((summary?.skipRate ?: 0.0) * 100).roundToInt()}%", Modifier.weight(1f))
+                StatTile("Curtidas", "${snapshot?.liked ?: 0}", Modifier.weight(1f))
+            }
+        }
+
+        item { SectionTitle("Top faixas") }
+        item {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                val tracks = snapshot?.topTracks.orEmpty()
+                items(tracks, key = { "recap-t-${it.track.id}" }) { entry ->
+                    CoverCard(
+                        entry.track.title,
+                        "${entry.plays} plays · ${formatHours(entry.playedMs / 1000)}",
+                        entry.track.thumbnail,
+                    ) {
+                        c.playTracks(tracks.map { it.track }, tracks.indexOf(entry), "Recap · $label")
+                    }
+                }
+            }
+        }
+
+        item { Spacer(Modifier.height(20.dp)); SectionTitle("Top artistas") }
+        item {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                val artists = snapshot?.topArtists.orEmpty()
+                items(artists, key = { "recap-a-${it.name}" }) { artist ->
+                    CoverCard(
+                        artist.name,
+                        "${artist.plays} plays · ${formatHours(artist.playedMs / 1000)}",
+                        artist.thumbnail,
+                    ) {}
+                }
+            }
+        }
+
+        item { Spacer(Modifier.height(20.dp)); SectionTitle("Atividade diária") }
+        item {
+            val days = snapshot?.days.orEmpty()
+            val max = days.maxOfOrNull { it.plays }?.coerceAtLeast(1) ?: 1
+            if (days.isEmpty()) {
+                Text("Sem atividade neste mês.", color = Tokens.textLow, fontSize = 12.sp)
+            } else {
+                Row(
+                    Modifier.fillMaxWidth().height(74.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    days.forEach { day ->
+                        val height = (8 + (day.plays.toFloat() / max) * 60).dp
+                        Box(
+                            Modifier.weight(1f).height(height)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(if (day.plays > 0) Tokens.accent else Tokens.line),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "${days.size} dias com música · pico de $max execuções",
+                    color = Tokens.textLow,
+                    fontSize = 11.sp,
+                )
+            }
+        }
+
+        val firstTime = snapshot?.firstTimeTracks.orEmpty()
+        if (firstTime.isNotEmpty()) {
+            item { Spacer(Modifier.height(20.dp)); SectionTitle("Descobertas do mês") }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    items(firstTime, key = { "recap-n-${it.track.id}" }) { entry ->
+                        CoverCard(
+                            entry.track.title,
+                            entry.track.artist,
+                            entry.track.thumbnail,
+                        ) {
+                            c.playTracks(firstTime.map { it.track }, firstTime.indexOf(entry), "Descobertas")
+                        }
+                    }
+                }
+            }
+        }
+
+        item { Spacer(Modifier.height(24.dp)) }
+    }
+}
+
+@Composable
+private fun EmptyLibraryCard(
+    title: String,
+    description: String,
+    action: String,
+    onClick: () -> Unit,
+) {
+    Column(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Tokens.panel)
+            .padding(24.dp),
+    ) {
+        Text(title, color = Tokens.textHigh, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(6.dp))
+        Text(description, color = Tokens.textLow, fontSize = 13.sp)
+        Spacer(Modifier.height(14.dp))
+        Button(onClick = onClick, shape = RoundedCornerShape(8.dp)) {
+            Text(action, fontSize = 13.sp)
+        }
+    }
+}
+
+private fun monthLabel(month: YearMonth): String {
+    val formatted = month.atDay(1).format(
+        DateTimeFormatter.ofPattern("MMMM 'de' yyyy", Locale("pt", "BR")),
+    )
+    return formatted.replaceFirstChar { it.uppercase() }
+}
+
+private fun comparison(previous: com.openfy.core.RecapSummary?, current: com.openfy.core.RecapSummary?): String? {
+    if (previous == null || current == null || previous.plays == 0) return null
+    val diff = current.plays - previous.plays
+    if (diff == 0) return "Mesmo volume de execuções do mês passado."
+    val percent = (diff.toDouble() / previous.plays * 100).roundToInt()
+    val sign = if (percent > 0) "+" else ""
+    return "$sign$percent% em execuções vs. mês passado"
+}
+
+@Composable
 private fun DownloadsScreen(c: AppController) {
     val tracks by c.downloadedTracks.collectAsState()
     val likedIds by c.player.likedIds.collectAsState()
@@ -2476,8 +2874,7 @@ private fun DownloadsScreen(c: AppController) {
 private fun SettingsScreen(c: AppController) {
     val quality by c.audioQuality.collectAsState()
     val crossfade by c.player.crossfadeSeconds.collectAsState()
-    val transition by c.player.transitionStyle.collectAsState()
-    val dj by c.player.djMode.collectAsState()
+    val autoplayRadio by c.player.autoplayRadio.collectAsState()
     val account by c.account.state.collectAsState()
     var accountEmail by remember { mutableStateOf("") }
     var accountPassword by remember { mutableStateOf("") }
@@ -2528,29 +2925,12 @@ private fun SettingsScreen(c: AppController) {
                 )
             }
             SettingsRow(
-                "Estilo da transição",
-                if (transition == Player.TRANSITION_BLEND) {
-                    "DJ blend: corta os graves da faixa que sai e deixa os graves/vocal da próxima aparecerem. É uma aproximação de mashup, não separa vocais."
-                } else {
-                    "Crossfade equal-power: as duas faixas ficam audíveis no meio, sem buraco de volume."
-                },
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    SearchChip("Crossfade", transition == Player.TRANSITION_CROSSFADE) {
-                        c.player.setTransitionStyle(Player.TRANSITION_CROSSFADE)
-                    }
-                    SearchChip("DJ blend", transition == Player.TRANSITION_BLEND) {
-                        c.player.setTransitionStyle(Player.TRANSITION_BLEND)
-                    }
-                }
-            }
-            SettingsRow(
-                "Modo DJ (BPM)",
-                "Reordena as próximas faixas por andamento (metadata do Deezer).",
+                "Rádio automática",
+                "Ao terminar uma playlist ou álbum, continua com uma rádio da última faixa.",
             ) {
                 Switch(
-                    checked = dj,
-                    onCheckedChange = { c.player.setDjMode(it) },
+                    checked = autoplayRadio,
+                    onCheckedChange = { c.player.setAutoplayRadio(it) },
                     colors = openfySwitchColors(),
                 )
             }
@@ -2576,7 +2956,7 @@ private fun SettingsScreen(c: AppController) {
                         label = { Text("E-mail") },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().trackInputFocus(),
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
@@ -2586,7 +2966,7 @@ private fun SettingsScreen(c: AppController) {
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().trackInputFocus(),
                     )
                     Spacer(Modifier.height(10.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2908,6 +3288,7 @@ private fun TrackRow(
 @Composable
 private fun QueuePanel(c: AppController, queue: List<Track>, onClose: () -> Unit) {
     val radio by c.player.radioActive.collectAsState()
+    val queueTitle by c.player.queueTitle.collectAsState()
     val idx by c.player.index.collectAsState()
     val upcoming = if (idx >= 0) queue.size - idx - 1 else 0
 
@@ -2931,6 +3312,26 @@ private fun QueuePanel(c: AppController, queue: List<Track>, onClose: () -> Unit
             Spacer(Modifier.weight(1f))
             IconButton(onClick = onClose, modifier = Modifier.size(28.dp)) {
                 Icon(Icons.Filled.Close, "Fechar", tint = Tokens.textLow, modifier = Modifier.size(16.dp))
+            }
+        }
+        if (queueTitle.isNotBlank()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    queueTitle,
+                    color = Tokens.textLow,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (radio) {
+                    TextButton(onClick = { c.stopRadio() }) {
+                        Text("Encerrar rádio", fontSize = 10.sp, color = Tokens.textLow)
+                    }
+                }
             }
         }
         HorizontalDivider(color = Tokens.line)
@@ -3106,7 +3507,6 @@ private fun NowPlayingBar(c: AppController, queueOpen: Boolean, onQueue: () -> U
     val likedIds by c.player.likedIds.collectAsState()
     val radioActive by c.player.radioActive.collectAsState()
     val radioLoading by c.player.radioLoading.collectAsState()
-    val dj by c.player.djMode.collectAsState()
     val eqOn by c.player.eqEnabled.collectAsState()
 
     var drag by remember { mutableStateOf<Float?>(null) }
@@ -3174,13 +3574,6 @@ private fun NowPlayingBar(c: AppController, queueOpen: Boolean, onQueue: () -> U
                     "Aleatório",
                     active = shuffle,
                     onClick = { c.toggleShuffle() },
-                )
-                ToggleIconButton(
-                    Icons.Filled.AutoAwesome,
-                    "Modo DJ (BPM)",
-                    active = dj,
-                    onClick = { c.player.toggleDj() },
-                    tooltip = "Modo DJ — próximas faixas por BPM",
                 )
                 Spacer(Modifier.width(4.dp))
                 IconButton(onClick = { c.player.previous() }, modifier = Modifier.size(32.dp)) {
@@ -3394,10 +3787,10 @@ private fun NowPlayingScreen(c: AppController) {
     val likedIds by c.player.likedIds.collectAsState()
     val radioActive by c.player.radioActive.collectAsState()
     val queued by c.queueOpen.collectAsState()
+    val queueTitle by c.player.queueTitle.collectAsState()
     val lyrics by c.lyrics.collectAsState()
     val lyricsLoading by c.lyricsLoading.collectAsState()
     val sleepUntil by c.sleepUntil.collectAsState()
-    val dj by c.player.djMode.collectAsState()
     val eqOn by c.player.eqEnabled.collectAsState()
 
     var drag by remember { mutableStateOf<Float?>(null) }
@@ -3433,7 +3826,9 @@ private fun NowPlayingScreen(c: AppController) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("TOCANDO AGORA", fontSize = 11.sp, letterSpacing = 1.5.sp, color = Tokens.textLow)
                     Text(
-                        track?.album?.ifBlank { "YouTube Music" } ?: "Openfy",
+                        queueTitle.ifBlank {
+                            track?.album?.ifBlank { "YouTube Music" } ?: "Openfy"
+                        },
                         fontSize = 12.sp,
                         color = Tokens.textHigh,
                         maxLines = 1,
@@ -3554,15 +3949,6 @@ private fun NowPlayingScreen(c: AppController) {
                     size = 40.dp,
                     iconSize = 20.dp,
                     tooltip = "Repetir: off / tudo / uma",
-                )
-                ToggleIconButton(
-                    Icons.Filled.AutoAwesome,
-                    "Modo DJ (BPM)",
-                    active = dj,
-                    onClick = { c.player.toggleDj() },
-                    size = 40.dp,
-                    iconSize = 20.dp,
-                    tooltip = "Modo DJ — próximas faixas por BPM",
                 )
             }
 

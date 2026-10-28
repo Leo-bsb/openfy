@@ -21,6 +21,8 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.time.YearMonth
+import java.time.ZoneId
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -31,6 +33,8 @@ sealed interface Screen {
     data object Charts : Screen
     data object Liked : Screen
     data object History : Screen
+    data object TopPlayed : Screen
+    data object Recap : Screen
     data object Downloads : Screen
     data object Settings : Screen
     data class PlaylistView(val id: String) : Screen
@@ -115,6 +119,15 @@ class AppController(
 
     val sleepUntil = MutableStateFlow<Long?>(null)
     val stats = MutableStateFlow<Stats?>(null)
+    val topPlayed = MutableStateFlow<List<Track>>(emptyList())
+    val recapMonth = MutableStateFlow(YearMonth.now())
+    val recapMonths = MutableStateFlow<List<YearMonth>>(emptyList())
+    val recap = MutableStateFlow<RecapSnapshot?>(null)
+    val recapLoading = MutableStateFlow(false)
+    val recapError = MutableStateFlow<String?>(null)
+    val recapFromAccount = MutableStateFlow(false)
+    private var recapGeneration = 0
+    private var lastRecapAuto = 0L
 
     data class Stats(
         val totalPlays: Int = 0,
@@ -153,6 +166,7 @@ class AppController(
 
     /** Conta Supabase + sync de playlists/curtidas com o Android. */
     val account = AccountManager(db, scope)
+    private val recommender = Recommender(db)
 
     init {
         player.radioSource = { token -> yt.radioNext(token) }
@@ -172,15 +186,21 @@ class AppController(
                 if (text != null) message.value = text
             }
         }
-        scope.launch {
-            player.djStatus.collect { text ->
-                if (text != null) message.value = text
-            }
-        }
         scope.launch { yt.prewarm() }
         scope.launch { refreshRecentSearches() }
         scope.launch { refreshDownloads() }
         scope.launch { loadStats() }
+        scope.launch { loadTopPlayed() }
+        scope.launch {
+            var lastId: String? = null
+            player.current.collect { track ->
+                val id = track?.id
+                if (id != null && id != lastId) {
+                    lastId = id
+                    refreshListening()
+                }
+            }
+        }
     }
 
     fun go(target: Screen) {
@@ -239,6 +259,8 @@ class AppController(
             Screen.Settings -> loadSettings()
             Screen.Search -> refreshRecentSearches()
             Screen.Home -> loadStats()
+            Screen.TopPlayed -> loadTopPlayed()
+            Screen.Recap -> loadRecap()
             else -> Unit
         }
     }
@@ -254,6 +276,8 @@ class AppController(
         Screen.Charts -> "charts"
         Screen.Liked -> "liked"
         Screen.History -> "history"
+        Screen.TopPlayed -> "top"
+        Screen.Recap -> "recap"
         Screen.Downloads -> "downloads"
         Screen.Settings -> "settings"
         is Screen.PlaylistView -> "playlist:${s.id}"
@@ -268,6 +292,8 @@ class AppController(
         token == "charts" -> Screen.Charts
         token == "liked" -> Screen.Liked
         token == "history" -> Screen.History
+        token == "top" -> Screen.TopPlayed
+        token == "recap" -> Screen.Recap
         token == "downloads" -> Screen.Downloads
         token == "settings" -> Screen.Settings
         token.startsWith("playlist:") -> Screen.PlaylistView(token.removePrefix("playlist:"))
@@ -311,7 +337,7 @@ class AppController(
     )
 
     // ------------------------------------------------------------------ search
-    fun search(query: String) {
+    fun search(query: String, record: Boolean = true) {
         val clean = query.trim()
         searchQuery.value = query
         if (clean.isEmpty()) {
@@ -322,6 +348,9 @@ class AppController(
         val mode = searchMode.value
         val generation = ++searchGeneration
         searchContinuation = null
+        results.value = emptyList()
+        searchArtists.value = emptyList()
+        searchCards.value = emptyList()
         scope.launch {
             searching.value = true
             searchError.value = null
@@ -337,8 +366,10 @@ class AppController(
                 if (result.tracks.isEmpty() && result.artists.isEmpty() && result.cards.isEmpty()) {
                     searchError.value = "Nada encontrado."
                 }
-                withContext(Dispatchers.IO) { db.addSearchTerm(clean) }
-                refreshRecentSearches()
+                if (record) {
+                    withContext(Dispatchers.IO) { db.addSearchTerm(clean) }
+                    refreshRecentSearches()
+                }
             }.onFailure {
                 searchError.value = it.message ?: "Falha na busca."
                 offline.value = isNetworkError(it)
@@ -527,12 +558,14 @@ class AppController(
     fun loadMoreRemote() {
         val page = remoteCollection.value ?: return
         val token = page.continuation ?: return
+        val targetId = page.id
         if (remoteLoadingMore.value) return
         scope.launch {
             remoteLoadingMore.value = true
             val found = runCatching { withContext(Dispatchers.IO) { yt.collectionNext(token) } }
             found.onSuccess { next ->
                 val current = remoteCollection.value ?: return@onSuccess
+                if (current.id != targetId) return@onSuccess
                 val known = current.tracks.mapTo(HashSet()) { it.id }
                 val extra = next.tracks.filter { it.id !in known }
                 // Algumas playlists devolvem uma pagina repetida com token novo;
@@ -571,7 +604,9 @@ class AppController(
 
     // ------------------------------------------------------------------ radio
     fun startTrackRadio(track: Track) {
-        startRadio(track.id, "RDAMVM${track.id}", "\"${track.title}\"")
+        scope.launch(Dispatchers.IO) { db.remember(track) }
+        player.playThenRadio(track)
+        message.value = "Rádio: ${track.title}"
     }
 
     fun startArtistRadio() {
@@ -582,15 +617,26 @@ class AppController(
     }
 
     private fun startRadio(videoId: String, playlistId: String, label: String) {
+        val expectedCurrent = player.current.value?.id
         scope.launch {
             message.value = "Preparando rádio..."
             val found = runCatching { withContext(Dispatchers.IO) { yt.radio(videoId, playlistId) } }
             found.onSuccess { page ->
+                if (player.current.value?.id != expectedCurrent) return@onSuccess
                 if (page.tracks.isEmpty()) {
                     message.value = "A rádio não retornou faixas."
                     return@onSuccess
                 }
-                player.startRadio(page.tracks, page.continuation)
+                player.setQueueContext("Rádio: $label", "radio", videoId)
+                val seed = page.tracks.first()
+                val selected = recommender.rankRadio(
+                    page.tracks,
+                    seed,
+                    emptyList(),
+                    limit = 20,
+                    policy = Recommender.DiversityPolicy(recentArtistWindow = 3, maxPerArtist = 2),
+                )
+                player.startRadio(selected.ifEmpty { page.tracks }, page.continuation)
                 message.value = "Rádio: $label"
                 offline.value = false
             }.onFailure {
@@ -602,7 +648,7 @@ class AppController(
     }
 
     fun stopRadio() {
-        player.stopRadio()
+        player.stopRadio(clearTail = true)
         message.value = "Rádio encerrada."
     }
 
@@ -612,54 +658,52 @@ class AppController(
      * alimenta a fila quando chegar ao fim.
      */
     fun startPersonalMix() {
+        val expectedCurrent = player.current.value?.id
         scope.launch {
             message.value = "Montando seu mix..."
             val seeds = withContext(Dispatchers.IO) {
-                val liked = db.likedTracks(3)
-                val recent = db.recentlyPlayed(5)
-                (liked + recent).distinctBy { it.id }.take(3)
+                val top = recommender.topPlayed(limit = 5, windowDays = 180)
+                val liked = db.likedTracks(5)
+                val recent = db.recentlyPlayed(8)
+                (top + liked + recent)
+                    .distinctBy { Recommender.canonicalKey(it) }
+                    .take(4)
             }
             if (seeds.isEmpty()) {
-                message.value = "Curta ou ouça algo primeiro para montar o mix."
+                message.value = "Curta ou ou?a algo primeiro para montar o mix."
                 return@launch
             }
             val pages = seeds.map { seed ->
                 async(Dispatchers.IO) {
-                    runCatching { yt.radio(seed.id, "RDAMVM${seed.id}") }.getOrNull()
+                    seed to runCatching { yt.radio(seed.id, "RDAMVM${seed.id}") }.getOrNull()
                 }
-            }.awaitAll().filterNotNull()
-            val blended = interleaveRadios(pages.map { it.tracks }, limit = 60)
+            }.awaitAll().mapNotNull { (seed, page) -> page?.let { seed to it } }
+            if (player.current.value?.id != expectedCurrent) return@launch
+            val ranked = pages.map { (seed, page) ->
+                recommender.rankRadio(
+                    page.tracks,
+                    seed,
+                    emptyList(),
+                    limit = 20,
+                    policy = Recommender.DiversityPolicy(
+                        recentArtistWindow = 4,
+                        maxPerArtist = 2,
+                        maxPerAlbum = 3,
+                    ),
+                )
+            }
+            val blended = recommender.interleave(ranked, limit = 60)
             if (blended.isEmpty()) {
                 message.value = "O mix não retornou faixas."
                 offline.value = true
                 return@launch
             }
-            val continuation = pages.lastOrNull { it.continuation != null }?.continuation
+            val continuation = pages.lastOrNull { it.second.continuation != null }?.second?.continuation
+            player.setQueueContext("Seu mix", "mix")
             player.startRadio(blended, continuation)
             message.value = "Seu mix: ${seeds.joinToString(", ") { it.artist }}."
             offline.value = false
         }
-    }
-
-    /** Alterna as faixas de varias radios, sem repetir. */
-    private fun interleaveRadios(pages: List<List<Track>>, limit: Int): List<Track> {
-        val out = mutableListOf<Track>()
-        val seen = HashSet<String>()
-        var index = 0
-        while (out.size < limit) {
-            var added = false
-            for (page in pages) {
-                val track = page.getOrNull(index) ?: continue
-                if (seen.add(track.id)) {
-                    out += track
-                    added = true
-                    if (out.size >= limit) break
-                }
-            }
-            if (!added) break
-            index++
-        }
-        return out
     }
 
     // ------------------------------------------------------------------ local library
@@ -672,6 +716,7 @@ class AppController(
                     .ifBlank { list.firstOrNull()?.thumbnail.orEmpty() }
                 (if (name != null) Playlist(id, name, list.size, cover) else null) to list
             }
+            if ((screen.value as? Screen.PlaylistView)?.id != id) return@launch
             openPlaylist.value = meta
             openPlaylistTracks.value = tracks
         }
@@ -834,18 +879,38 @@ class AppController(
         player.current.value?.let { toggleLike(it) }
     }
 
-    fun playTracks(tracks: List<Track>, startIndex: Int = 0) {
+    fun playTracks(tracks: List<Track>, startIndex: Int = 0, title: String? = null) {
         if (tracks.isEmpty()) return
+        val (contextTitle, origin) = playbackContext(title)
+        player.setQueueContext(contextTitle, origin)
         player.playNow(tracks, startIndex)
         scope.launch(Dispatchers.IO) { tracks.forEach { db.remember(it) } }
     }
 
     /** Toca a lista embaralhada imediatamente (botoes "Aleatorio" dos cabecalhos). */
-    fun playShuffled(tracks: List<Track>) {
+    fun playShuffled(tracks: List<Track>, title: String? = null) {
         if (tracks.isEmpty()) return
+        val (contextTitle, origin) = playbackContext(title)
+        player.setQueueContext(contextTitle, origin)
         player.playShuffled(tracks)
         scope.launch(Dispatchers.IO) { tracks.forEach { db.remember(it) } }
         message.value = "Aleatório: ${tracks.size} faixas."
+    }
+
+    private fun playbackContext(title: String? = null): Pair<String, String> {
+        if (title != null) return title to "manual"
+        return when (screen.value) {
+            is Screen.PlaylistView -> (openPlaylist.value?.name ?: "Playlist") to "playlist"
+            is Screen.RemoteCollection -> (remoteCollection.value?.title ?: "?lbum") to "album"
+            is Screen.ArtistView -> (artistPage.value?.name ?: "Artista") to "artist"
+            Screen.Charts -> "Em alta" to "charts"
+            Screen.Liked -> "Curtidas" to "liked"
+            Screen.History -> "Histórico" to "history"
+            Screen.Downloads -> "Downloads" to "downloads"
+            Screen.Search -> "Busca" to "search"
+            Screen.Explore -> "Explorar" to "explore"
+            else -> "Openfy" to "library"
+        }
     }
 
     /** Icone de aleatorio: liga/desliga e, se nada toca, inicia o contexto atual. */
@@ -872,7 +937,6 @@ class AppController(
         }
         if (liked.value.isNotEmpty()) return liked.value
         if (recent.value.isNotEmpty()) return recent.value
-        if (results.value.isNotEmpty()) return results.value
         if (chartsTracks.value.isNotEmpty()) return chartsTracks.value
         return emptyList()
     }
@@ -1109,6 +1173,7 @@ class AppController(
                 tracks.forEach { db.addToPlaylist(playlist.id, it) }
             }
             refreshLibrary()
+            account.requestSync()
             importBusy.value = false
             importStatus.value = "\"$title\" importada com ${tracks.size} faixas."
         }
@@ -1142,6 +1207,7 @@ class AppController(
                 delay(120)
             }
             refreshLibrary()
+            account.requestSync()
             importBusy.value = false
             importStatus.value = "\"$name\": $matched de ${rows.size} faixas encontradas."
         }
@@ -1191,6 +1257,7 @@ class AppController(
                 }
             }
             refreshLibrary()
+            account.requestSync()
             importBusy.value = false
             importStatus.value =
                 "Backup importado: ${backup.playlists.size} playlists, ${backup.liked.size} curtidas."
@@ -1246,6 +1313,7 @@ class AppController(
                 shared.tracks.forEach { db.addToPlaylist(created.id, it) }
             }
             refreshLibrary()
+            account.requestSync()
             importBusy.value = false
             importStatus.value = "\"$name\" importada com ${shared.tracks.size} faixas."
         }
@@ -1300,6 +1368,119 @@ class AppController(
                 )
             }
             stats.value = value
+        }
+    }
+
+    fun loadTopPlayed() {
+        scope.launch {
+            val tracks = withContext(Dispatchers.IO) {
+                val weighted = Recommender(db).topPlayed(limit = 100)
+                if (weighted.isNotEmpty()) weighted else db.topPlayed(100)
+            }
+            topPlayed.value = tracks
+        }
+    }
+
+    private fun monthBounds(month: YearMonth): Pair<Long, Long> {
+        val zone = ZoneId.systemDefault()
+        val start = month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        val end = month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        return start to end
+    }
+
+    fun selectRecapMonth(month: YearMonth) {
+        if (recapMonth.value == month && recap.value != null) return
+        recapMonth.value = month
+        loadRecap(month, force = true)
+    }
+
+    fun openRecap() {
+        if (screen.value == Screen.Recap) loadRecap(force = true) else go(Screen.Recap)
+    }
+
+    private fun _stateAccountHasSession(): Boolean = account.state.value.session != null
+
+    fun loadRecap(month: YearMonth = recapMonth.value, force: Boolean = false) {
+        if (recapLoading.value && !force) return
+        val generation = ++recapGeneration
+        recapLoading.value = true
+        recapError.value = null
+        recapFromAccount.value = false
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val months = db.recapMonthKeys().mapNotNull { key ->
+                        runCatching { YearMonth.parse(key) }.getOrNull()
+                    }
+                    val withCurrent = (months + month + YearMonth.now())
+                        .distinct()
+                        .sortedDescending()
+                        .take(12)
+                    val (start, end) = monthBounds(month)
+                    val (prevStart, prevEnd) = monthBounds(month.minusMonths(1))
+                    Triple(
+                        withCurrent,
+                        RecapSnapshot(
+                            summary = db.recapSummary(start, end),
+                            previous = db.recapSummary(prevStart, prevEnd),
+                            topTracks = db.recapTopTracks(start, end, 10),
+                            topArtists = db.recapTopArtists(start, end, 8),
+                            days = db.recapDays(start, end),
+                            firstTimeTracks = db.recapFirstTimeTracks(start, end, 8),
+                            liked = db.recapLiked(start, end),
+                        ),
+                        null,
+                    )
+                }.getOrElse { Triple(emptyList(), null, it.message ?: "Falha ao carregar o recap.") }
+            }
+            if (generation != recapGeneration) return@launch
+            recapMonths.value = result.first
+            val localSnapshot = result.second
+            recap.value = localSnapshot
+            recapError.value = result.third
+            recapLoading.value = false
+            if (localSnapshot != null && _stateAccountHasSession()) {
+                val remote = account.fetchRecap(month)
+                if (generation == recapGeneration && remote != null &&
+                    remote.summary.plays >= localSnapshot.summary.plays
+                ) {
+                    recap.value = localSnapshot.copy(
+                        summary = remote.summary,
+                        topTracks = remote.topTracks.ifEmpty { localSnapshot.topTracks },
+                        topArtists = remote.topArtists.ifEmpty { localSnapshot.topArtists },
+                    )
+                    recapFromAccount.value = true
+                }
+            } else {
+                recapFromAccount.value = false
+            }
+        }
+    }
+
+    /** Atualiza listas e n?meros quando a faixa atual muda, sem recarregar toda a biblioteca. */
+    private fun refreshListening() {
+        scope.launch {
+            delay(700)
+            val (recentTracks, historyTracks, statsValue) = withContext(Dispatchers.IO) {
+                Triple(
+                    db.recentlyPlayed(20),
+                    db.history(200),
+                    Stats(
+                        totalPlays = db.totalPlays(),
+                        totalSeconds = db.totalListenedSeconds(),
+                        topArtists = db.topArtists(5),
+                    ),
+                )
+            }
+            recent.value = recentTracks
+            history.value = historyTracks
+            stats.value = statsValue
+            loadTopPlayed()
+            val now = System.currentTimeMillis()
+            if (screen.value == Screen.Recap && now - lastRecapAuto > 10_000) {
+                lastRecapAuto = now
+                loadRecap(force = true)
+            }
         }
     }
 

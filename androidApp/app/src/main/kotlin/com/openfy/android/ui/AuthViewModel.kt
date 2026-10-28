@@ -157,6 +157,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var crossfadeOld: ExoPlayer? = null
     private var crossfadeDurationMs: Long = 0
     private var crossfadeSeconds = store.crossfadeSeconds()
+    private var radioContinuation: String? = null
+    private var radioLoading = false
+    private var radioSeed: Track? = null
+    private var radioJob: Job? = null
+    private var radioEpoch = 0
+    private var playJob: Job? = null
+    private var radioAdvancePending = false
 
     init {
         activePlayer = playerA
@@ -173,6 +180,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                             durationMs = dur,
                         )
                     }
+                    maybeAppendRadio()
                     if (dur > 0 && crossfadeSeconds > 0 && !crossfading) {
                         val remaining = dur - pos
                         if (remaining <= crossfadeSeconds * 1000L + 4_000L && preloadedTrack == null) {
@@ -374,8 +382,101 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     // ------------------------------------------------------------------ playback
     fun playSearchResult(track: Track) {
-        play(track, _state.value.searchResults, "search")
+        play(track, listOf(track), "search")
+        startRadio(track)
     }
+
+    private fun resetRadio() {
+        radioEpoch++
+        radioJob?.cancel()
+        radioJob = null
+        radioLoading = false
+        radioContinuation = null
+        radioSeed = null
+        radioAdvancePending = false
+    }
+
+    private fun startRadio(seed: Track) {
+        resetRadio()
+        radioSeed = seed
+        val epoch = radioEpoch
+        radioLoading = true
+        radioJob = viewModelScope.launch {
+            val page = runCatching { withContext(Dispatchers.IO) { youtube.radio(seed.id) } }.getOrNull()
+            if (epoch != radioEpoch) return@launch
+            radioLoading = false
+            if (page == null || page.tracks.isEmpty() || _state.value.track?.id != seed.id) return@launch
+            radioContinuation = page.continuation
+            appendRadio(page.tracks.take(60), seed)
+        }
+    }
+
+    private fun maybeAppendRadio() {
+        val s = _state.value
+        if (radioLoading || radioJob?.isActive == true) return
+        val token = radioContinuation ?: return
+        if (s.queueIndex < s.queue.lastIndex - 2) return
+        val seed = radioSeed ?: s.track ?: return
+        val epoch = radioEpoch
+        radioLoading = true
+        radioJob = viewModelScope.launch {
+            val page = runCatching { withContext(Dispatchers.IO) { youtube.radioNext(token) } }.getOrNull()
+            if (epoch != radioEpoch) return@launch
+            radioLoading = false
+            if (page == null || page.tracks.isEmpty()) {
+                radioContinuation = null
+                return@launch
+            }
+            radioContinuation = page.continuation
+            appendRadio(page.tracks, seed)
+        }
+    }
+
+    private fun appendRadio(candidates: List<Track>, seed: Track) {
+        val current = _state.value
+        val ids = current.queue.mapTo(HashSet()) { it.id }
+        val keys = current.queue.mapTo(HashSet()) { radioKey(it) }
+        val recentArtists = current.queue.takeLast(4).mapTo(HashSet()) { radioArtist(it) }
+        val selected = candidates
+            .filter {
+                it.id !in ids &&
+                    it.id != seed.id &&
+                    radioKey(it) !in keys &&
+                    radioArtist(it) !in recentArtists
+            }
+            .distinctBy { radioKey(it) }
+            .take(20)
+        if (selected.isEmpty()) return
+        val wasAtEnd = current.track != null && current.queueIndex >= current.queue.lastIndex
+        val advance = radioAdvancePending
+        radioAdvancePending = false
+        val newQueue = current.queue + selected
+        _state.update { it.copy(queue = newQueue) }
+        com.openfy.core.Log.write("player: radio +${selected.size} faixas")
+        if (wasAtEnd && advance && !current.busy) {
+            play(selected.first(), newQueue, eventSource, keepRadio = true, queueIndex = current.queue.size)
+        }
+    }
+
+    private fun radioKey(track: Track): String {
+        val title = track.title
+            .replace(Regex("\\([^)]*\\)"), " ")
+            .replace(Regex("\\[[^]]*]"), " ")
+            .substringBefore(" - ")
+            .lowercase()
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
+        val artist = radioArtist(track)
+        return "$title|$artist"
+    }
+
+    private fun radioArtist(track: Track): String =
+        track.artist
+            .substringBefore(",")
+            .substringBefore("&")
+            .replace(Regex("(?i)\\b(feat|ft|featuring)\\b.*"), " ")
+            .lowercase()
+            .trim()
 
     fun playPlaylist(playlistId: String) {
         viewModelScope.launch {
@@ -582,7 +683,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     fun playQueueIndex(index: Int) {
         val current = _state.value
         if (index !in current.queue.indices) return
-        play(current.queue[index], current.queue, "queue")
+        play(current.queue[index], current.queue, "queue", queueIndex = index)
     }
 
     fun removeQueueIndex(index: Int) {
@@ -607,7 +708,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(track = null, playing = false, positionMs = 0, durationMs = 0)
                 }
             } else {
-                play(queue[newIndex], queue, "queue")
+                play(queue[newIndex], queue, "queue", queueIndex = newIndex)
             }
         }
     }
@@ -628,16 +729,24 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun play(track: Track, queue: List<Track>, source: String) {
+    private fun play(
+        track: Track,
+        queue: List<Track>,
+        source: String,
+        keepRadio: Boolean = false,
+        queueIndex: Int? = null,
+    ) {
         val session = _state.value.session
         if (session == null) {
             _state.update { it.copy(error = "Entre na conta para tocar.") }
             return
         }
         cancelCrossfade()
+        playJob?.cancel()
+        if (!keepRadio) resetRadio()
         val current = _state.value
         finishEvent(completed = false, skipped = true)
-        val index = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+        val index = (queueIndex ?: queue.indexOfFirst { it.id == track.id }).coerceAtLeast(0)
         eventStartedAt = System.currentTimeMillis()
         eventTrack = track
         eventSource = source
@@ -653,8 +762,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 error = null,
             )
         }
-        viewModelScope.launch {
+        playJob = viewModelScope.launch {
             val media = withContext(Dispatchers.IO) { youtube.media(track.id) } as? Media.Remote
+            if (_state.value.track?.id != track.id) return@launch
             if (media == null) {
                 _state.update {
                     it.copy(
@@ -832,12 +942,17 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val next = current.queueIndex + 1
         if (next !in current.queue.indices) {
             finishEvent(completed = true, skipped = false)
+            if (radioContinuation != null) {
+                radioAdvancePending = true
+                maybeAppendRadio()
+                return
+            }
             player.pause()
             _state.update { it.copy(playing = false) }
             return
         }
         finishEvent(completed = false, skipped = true)
-        play(current.queue[next], current.queue, eventSource)
+        play(current.queue[next], current.queue, eventSource, keepRadio = true, queueIndex = next)
     }
 
     fun previous() {
@@ -848,10 +963,15 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val current = _state.value
+        if (current.queueIndex <= 0) {
+            player.seekTo(0)
+            _state.update { it.copy(positionMs = 0) }
+            return
+        }
         val prev = current.queueIndex - 1
         if (prev !in current.queue.indices) return
         finishEvent(completed = false, skipped = true)
-        play(current.queue[prev], current.queue, eventSource)
+        play(current.queue[prev], current.queue, eventSource, keepRadio = true, queueIndex = prev)
     }
 
     fun seekTo(positionMs: Long) {
@@ -908,6 +1028,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val session = _state.value.session
         viewModelScope.launch {
             finishEvent(completed = false, skipped = true)
+            resetRadio()
             cancelCrossfade()
             playerA.stop()
             playerB.stop()
@@ -929,6 +1050,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         runCatching { finishEvent(completed = false, skipped = true) }
+        runCatching { resetRadio() }
         runCatching { cancelCrossfade() }
         playerA.release()
         playerB.release()
