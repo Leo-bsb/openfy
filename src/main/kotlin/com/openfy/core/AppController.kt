@@ -107,6 +107,9 @@ class AppController(
     val autoDownload = MutableStateFlow(false)
     val audioQuality = MutableStateFlow("HIGH")
     val closeToTray = MutableStateFlow(true)
+    val palette = MutableStateFlow(ColorPalette.OPENFY)
+    val playerLayout = MutableStateFlow(PlayerLayout.CENTER)
+    val coverGradient = MutableStateFlow(true)
 
     // ------------------------------------------------------------------ import / lyrics / stats
     val importDialogOpen = MutableStateFlow(false)
@@ -179,6 +182,11 @@ class AppController(
         audioQuality.value = db.get("audio.quality") ?: "HIGH"
         yt.setQuality(audioQuality.value)
         closeToTray.value = runCatching { db.get("window.closeToTray")?.toBooleanStrict() }.getOrNull() ?: true
+        palette.value = ColorPalette.fromId(db.get("ui.palette"))
+        playerLayout.value = PlayerLayout.fromId(db.get("ui.player.layout"))
+        coverGradient.value = runCatching {
+            db.get("ui.player.coverGradient")?.toBooleanStrict()
+        }.getOrNull() ?: true
         scope.launch { autoDownloadLoop() }
         scope.launch { refreshLibrary() }
         scope.launch {
@@ -1572,6 +1580,21 @@ class AppController(
     fun setCloseToTray(enabled: Boolean) {
         closeToTray.value = enabled
         scope.launch(Dispatchers.IO) { db.put("window.closeToTray", enabled.toString()) }
+    }
+
+    fun setPalette(value: ColorPalette) {
+        palette.value = value
+        scope.launch(Dispatchers.IO) { db.put("ui.palette", value.id) }
+    }
+
+    fun setPlayerLayout(value: PlayerLayout) {
+        playerLayout.value = value
+        scope.launch(Dispatchers.IO) { db.put("ui.player.layout", value.id) }
+    }
+
+    fun setCoverGradient(enabled: Boolean) {
+        coverGradient.value = enabled
+        scope.launch(Dispatchers.IO) { db.put("ui.player.coverGradient", enabled.toString()) }
     }
 
     fun openDataFolder() {

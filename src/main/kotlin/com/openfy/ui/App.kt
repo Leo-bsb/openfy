@@ -120,6 +120,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -131,6 +132,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -147,8 +149,10 @@ import com.openfy.core.Artist
 import com.openfy.core.ArtistPage
 import com.openfy.core.BuildInfo
 import com.openfy.core.CollectionKind
+import com.openfy.core.ColorPalette
 import com.openfy.core.MediaCard
 import com.openfy.core.MediaKind
+import com.openfy.core.PlayerLayout
 import com.openfy.core.Playlist
 import com.openfy.core.PlaylistPrompt
 import com.openfy.core.RecapArtist
@@ -340,6 +344,7 @@ fun OpenfyApp(c: AppController, onExit: () -> Unit) {
     val undo by c.queueUndo.collectAsState()
     val offline by c.offline.collectAsState()
     val importOpen by c.importDialogOpen.collectAsState()
+    val palette by c.palette.collectAsState()
 
     LaunchedEffect(message) {
         if (message != null) {
@@ -357,7 +362,7 @@ fun OpenfyApp(c: AppController, onExit: () -> Unit) {
         if (message != null) lastMessage = message
     }
 
-    OpenfyTheme {
+    OpenfyTheme(palette) {
         Box(Modifier.fillMaxSize().background(Tokens.ink)) {
             // Brilho ambiente no topo, no tom da marca.
             Box(
@@ -1235,9 +1240,10 @@ private fun HomeScreen(c: AppController) {
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     items(recent, key = { "r-${it.id}" }) { track ->
-                        val index = recent.indexOf(track)
                         CoverCard(track.title, track.artist, track.thumbnail) {
-                            c.playTracks(recent, index)
+                            // Recentes s?o sementes: tocar uma faixa abre a r?dio dela,
+                            // n?o enfileira o hist?rico inteiro.
+                            c.playSearchTrack(track)
                         }
                     }
                 }
@@ -2882,6 +2888,9 @@ private fun SettingsScreen(c: AppController) {
     val auto by c.autoDownload.collectAsState()
     val closeToTray by c.closeToTray.collectAsState()
     val downloadedSize by c.downloadsSize.collectAsState()
+    val palette by c.palette.collectAsState()
+    val playerLayout by c.playerLayout.collectAsState()
+    val coverGradient by c.coverGradient.collectAsState()
     var eqOpen by remember { mutableStateOf(false) }
 
     Column(
@@ -2938,6 +2947,39 @@ private fun SettingsScreen(c: AppController) {
                 TextButton(onClick = { eqOpen = true }) {
                     Text("Abrir", color = Tokens.accent)
                 }
+            }
+        }
+
+        SettingsSection("Apar?ncia") {
+            SettingsRow(
+                "Paleta de cores",
+                "Aplicada em todo o app e salva para as pr?ximas aberturas.",
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ColorPalette.entries.forEach { preset ->
+                        SearchChip(preset.label, palette == preset) { c.setPalette(preset) }
+                    }
+                }
+            }
+            SettingsRow(
+                "Layout do player",
+                "Central mant?m a capa no meio; Lateral coloca capa e informa??es lado a lado.",
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    PlayerLayout.entries.forEach { option ->
+                        SearchChip(option.label, playerLayout == option) { c.setPlayerLayout(option) }
+                    }
+                }
+            }
+            SettingsRow(
+                "Fundo pela capa",
+                "Na tela cheia, o gradiente usa as cores dominantes da capa atual.",
+            ) {
+                Switch(
+                    checked = coverGradient,
+                    onCheckedChange = { c.setCoverGradient(it) },
+                    colors = openfySwitchColors(),
+                )
             }
         }
 
@@ -3267,10 +3309,21 @@ private fun TrackRow(
                     )
                 }
                 HorizontalDivider(color = Tokens.line)
-                playlists.forEach { playlist ->
+                if (playlists.isEmpty()) {
                     DropdownMenuItem(
-                        text = { Text("Adicionar a ${playlist.name}") },
-                        onClick = { menuOpen = false; onAddTo(playlist.id) },
+                        text = { Text("Criar nova playlist") },
+                        onClick = { menuOpen = false; c.askCreatePlaylistFor(track) },
+                    )
+                } else {
+                    playlists.forEach { playlist ->
+                        DropdownMenuItem(
+                            text = { Text("Adicionar a ${playlist.name}") },
+                            onClick = { menuOpen = false; onAddTo(playlist.id) },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Criar nova playlist") },
+                        onClick = { menuOpen = false; c.askCreatePlaylistFor(track) },
                     )
                 }
                 onRemove?.let {
@@ -3468,7 +3521,7 @@ private fun QueueRow(
                 HorizontalDivider(color = Tokens.line)
                 if (playlists.isEmpty()) {
                     DropdownMenuItem(
-                        text = { Text("Nova playlist") },
+                        text = { Text("Criar nova playlist") },
                         onClick = { menuOpen = false; c.askCreatePlaylistFor(track) },
                     )
                 } else {
@@ -3479,7 +3532,7 @@ private fun QueueRow(
                         )
                     }
                     DropdownMenuItem(
-                        text = { Text("Nova playlist") },
+                        text = { Text("Criar nova playlist") },
                         onClick = { menuOpen = false; c.askCreatePlaylistFor(track) },
                     )
                 }
@@ -3693,7 +3746,7 @@ private fun AddToPlaylistButton(
     val playlists by c.playlists.collectAsState()
     Box {
         Tip("Adicionar à playlist") {
-            IconButton(onClick = { open = true }, modifier = Modifier.size(size)) {
+            IconButton(onClick = { if (playlists.isEmpty()) c.askCreatePlaylistFor(track) else open = true }, modifier = Modifier.size(size)) {
                 Icon(
                     Icons.AutoMirrored.Filled.PlaylistAdd,
                     "Adicionar à playlist",
@@ -3705,7 +3758,7 @@ private fun AddToPlaylistButton(
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             if (playlists.isEmpty()) {
                 DropdownMenuItem(
-                    text = { Text("Nova playlist") },
+                    text = { Text("Criar nova playlist") },
                     onClick = { open = false; c.askCreatePlaylistFor(track) },
                 )
             } else {
@@ -3717,7 +3770,7 @@ private fun AddToPlaylistButton(
                 }
                 HorizontalDivider(color = Tokens.line)
                 DropdownMenuItem(
-                    text = { Text("Nova playlist") },
+                    text = { Text("Criar nova playlist") },
                     onClick = { open = false; c.askCreatePlaylistFor(track) },
                 )
             }
@@ -3775,6 +3828,32 @@ private fun DownloadButton(
 
 /** Tela cheia do player, no estilo "tocando agora". */
 @Composable
+private fun PlayerBackdrop(url: String, enabled: Boolean) {
+    val fallback = Tokens.heroGradient
+    val ink = Tokens.ink
+    val palette by produceState<ArtworkCache.CoverPalette?>(
+        initialValue = if (enabled) ArtworkCache.peekPalette(url) else null,
+        url,
+        enabled,
+    ) {
+        value = if (enabled && url.isNotBlank()) ArtworkCache.palette(url) else null
+    }
+    val brush = if (!enabled || palette == null) {
+        fallback
+    } else {
+        remember(palette, ink) {
+            val p = palette!!
+            Brush.verticalGradient(
+                0f to lerp(p.primary, ink, 0.38f),
+                0.55f to lerp(p.secondary, ink, 0.68f),
+                1f to ink,
+            )
+        }
+    }
+    Box(Modifier.fillMaxSize().background(brush))
+}
+
+@Composable
 private fun NowPlayingScreen(c: AppController) {
     val track by c.player.current.collectAsState()
     val playing by c.player.playing.collectAsState()
@@ -3792,6 +3871,8 @@ private fun NowPlayingScreen(c: AppController) {
     val lyricsLoading by c.lyricsLoading.collectAsState()
     val sleepUntil by c.sleepUntil.collectAsState()
     val eqOn by c.player.eqEnabled.collectAsState()
+    val layout by c.playerLayout.collectAsState()
+    val coverGradient by c.coverGradient.collectAsState()
 
     var drag by remember { mutableStateOf<Float?>(null) }
     var eqOpen by remember { mutableStateOf(false) }
@@ -3804,12 +3885,14 @@ private fun NowPlayingScreen(c: AppController) {
     val fraction = ((drag ?: (position / total)).toFloat()).coerceIn(0f, 1f)
     val liked = track?.id in likedIds
 
-    BoxWithConstraints(Modifier.fillMaxSize().background(Tokens.heroGradient)) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        PlayerBackdrop(track?.thumbnail.orEmpty(), coverGradient)
         val coverSize = when {
             maxHeight > 760.dp -> 320.dp
             maxHeight > 680.dp -> 270.dp
             else -> 210.dp
         }
+        val sideCover = minOf(coverSize, maxWidth * 0.34f)
         Column(Modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 16.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Tip("Fechar player") {
@@ -3854,6 +3937,36 @@ private fun NowPlayingScreen(c: AppController) {
                     position = drag?.times(total) ?: position,
                     modifier = Modifier.weight(1f),
                 )
+            } else if (layout == PlayerLayout.SIDE) {
+                Row(
+                    Modifier.weight(1f).fillMaxWidth().padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Cover(
+                        track?.thumbnail ?: "",
+                        sideCover,
+                        18.dp,
+                    )
+                    Spacer(Modifier.width(40.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            track?.title ?: "Nada tocando",
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Tokens.textHigh,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            track?.artist ?: "",
+                            fontSize = 15.sp,
+                            color = Tokens.textLow,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             } else {
                 Spacer(Modifier.weight(1f))
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {

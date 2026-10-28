@@ -181,7 +181,10 @@ laços com cabeça de cobra, usada na sidebar, na bandeja e como ícone da janel
 - **Recap**: aba dedicada com seletor de mês, minutos, execuções, conclusão, skip, top faixas/artistas, atividade diária e descobertas. Com conta, o resumo e os tops incluem PC + celular.
 - **Mais ouvidas**: ranking ponderado por curtidas, recência, conclusão e skip, com no-repeat de faixa e diversidade de artista. Toca em contexto ou aleatório.
 - **Seu mix**: usa as faixas mais ouvidas, curtidas e recentes como sementes e intercala as rádios sem deixar um artista dominar.
-- **R?dio autom?tica**: ao terminar playlist/?lbum, continua a r?dio da ?ltima faixa; pode ser desligada nos Ajustes.
+- **Rádio automática**: ao terminar playlist/álbum, continua a rádio da última faixa; pode ser desligada nos Ajustes.
+- **Apar?ncia**: cinco paletas prontas, layout do player Central/Lateral e fundo com gradiente extra?do da capa. Tudo fica salvo para as pr?ximas aberturas.
+- **Recentes**: clicar numa faixa de "Ouvir de novo" toca s? ela e emenda a r?dio, em vez de enfileirar o hist?rico.
+- **Playlists**: o menu de adicionar ? playlist sempre oferece "Criar nova playlist", mesmo quando ainda n?o existe nenhuma.
 
 
 ## Importar, letras e estatísticas
@@ -244,13 +247,13 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.2.4.exe
-dist\Openfy-0.2.4.msi
+dist\Openfy-0.2.5.exe
+dist\Openfy-0.2.5.msi
 dist\Openfy-Android-0.2.6.apk
 ```
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.2.4: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.4  
+Desktop 0.2.5: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.5  
 Android 0.2.6: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.6-android
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
@@ -271,8 +274,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.2.4.exe`
-- `build\compose\binaries\main\msi\Openfy-0.2.4.msi`
+- `build\compose\binaries\main\exe\Openfy-0.2.5.exe`
+- `build\compose\binaries\main\msi\Openfy-0.2.5.msi`
 
 Rodar em desenvolvimento:
 

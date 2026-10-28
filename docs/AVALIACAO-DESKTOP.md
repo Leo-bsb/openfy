@@ -234,3 +234,22 @@ Testes desta rodada: `playerSmoke` (incluindo corrida de r?dio), `recommendation
 
 Ainda no backlog estrutural: outbox/`server_rev`, Realtime, SMTC nativo do Windows,
 assinatura Authenticode, atualiza??o autom?tica e event idempotency no Supabase.
+
+
+---
+
+## Atualiza??o 0.2.5 (2026-10-28)
+
+- Recentes ("Ouvir de novo") agora s?o sementes de r?dio: clicar toca s? a faixa
+  e emenda a r?dio dela, sem transformar o hist?rico em fila.
+- O menu de adicionar ? playlist sempre oferece "Criar nova playlist", inclusive
+  quando ainda n?o existe nenhuma; o bot?o do player abre o di?logo direto nesse caso.
+- Tela cheia do player ganhou fundo em gradiente extra?do das cores dominantes da
+  capa, com op??o de desligar.
+- Ajustes > Apar?ncia: cinco paletas (Openfy, Violeta, Ros?, ?mbar, Gelo) e layout
+  do player Central/Lateral, ambos persistidos no SQLite.
+- `docs/ROADMAP-SPOTIFY.md` registra a avalia??o de fun??es do Spotify priorizadas
+  para o Openfy.
+
+Build 0.2.5 validado com `compileKotlin`, abertura real do app, troca de paleta
+(Violeta), layout Lateral e fundo pela capa.
