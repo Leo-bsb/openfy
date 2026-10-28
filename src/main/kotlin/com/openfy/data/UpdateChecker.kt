@@ -39,7 +39,7 @@ sealed interface UpdateStatus {
  */
 object UpdateChecker {
 
-    private const val RELEASES_URL = "https://api.github.com/repos/Leo-bsb/openfy/releases"
+    private const val RELEASES_URL = "https://api.github.com/repos/Leo-bsb/openfy/releases?per_page=100"
     private const val ONE_DAY_MS = 24L * 3_600_000
 
     private val stableTag = Regex("""^v\d+\.\d+\.\d+$""")

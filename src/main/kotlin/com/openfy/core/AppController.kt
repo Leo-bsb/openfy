@@ -1638,10 +1638,12 @@ class AppController(
         if (updateStatus.value is UpdateStatus.Checking) return
         if (manual) updateStatus.value = UpdateStatus.Checking
         scope.launch {
-            withContext(Dispatchers.IO) {
-                db.put("update.lastCheck", System.currentTimeMillis().toString())
-            }
             val status = UpdateChecker.check(BuildInfo.VERSION)
+            if (status !is UpdateStatus.Error) {
+                withContext(Dispatchers.IO) {
+                    db.put("update.lastCheck", System.currentTimeMillis().toString())
+                }
+            }
             // Automatica nao mostra erro: quem esta offline nao ve notificacao falsa.
             updateStatus.value = if (!manual && status is UpdateStatus.Error) null else status
         }
