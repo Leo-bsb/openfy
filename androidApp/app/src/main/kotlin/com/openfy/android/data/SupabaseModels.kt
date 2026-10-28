@@ -104,6 +104,21 @@ data class LikeUpsert(
 data class DeletedPatch(val deleted: Boolean = true)
 
 @Serializable
+data class IdRow(val id: String = "")
+
+@Serializable
+data class MemberRow(
+    @SerialName("playlist_id") val playlistId: String = "",
+)
+
+@Serializable
+data class MonthlyTrackRow(
+    @SerialName("track_id") val trackId: String = "",
+    val plays: Long = 0,
+    @SerialName("played_ms") val playedMs: Long = 0,
+)
+
+@Serializable
 data class PushPlayEvent(
     @SerialName("user_id") val userId: String,
     @SerialName("device_id") val deviceId: String?,

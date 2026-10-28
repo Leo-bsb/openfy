@@ -2,6 +2,7 @@ package com.openfy.android.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -62,9 +64,11 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -75,6 +79,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -85,31 +90,49 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import com.openfy.android.R
 import com.openfy.android.data.PlaylistDto
+import com.openfy.core.ColorPalette
+import com.openfy.core.PlayerLayout
 import com.openfy.core.Track
 import com.openfy.core.formatTime
 import com.openfy.android.ui.theme.OpenfyAccent
 import com.openfy.android.ui.theme.OpenfyAccent2
 import com.openfy.android.ui.theme.OpenfyInk
+import com.openfy.android.ui.theme.OpenfyHeroGradient
+import com.openfy.android.ui.theme.OpenfyLine
 import com.openfy.android.ui.theme.OpenfyPanel
 import com.openfy.android.ui.theme.OpenfyPanelHigh
 import com.openfy.android.ui.theme.OpenfyTextHigh
 import com.openfy.android.ui.theme.OpenfyTextLow
+import com.openfy.android.ui.theme.OpenfyTheme
 import kotlin.math.max
 import kotlin.math.roundToInt
 
 @Composable
 fun OpenfyApp(viewModel: AuthViewModel = viewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        when {
-            state.loading -> LoadingScreen()
-            state.session == null -> LoginScreen(state, viewModel)
-            else -> MainShell(state, viewModel)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) viewModel.refreshIfStale()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    OpenfyTheme(palette = state.palette) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            when {
+                state.loading -> LoadingScreen()
+                state.session == null -> LoginScreen(state, viewModel)
+                else -> MainShell(state, viewModel)
+            }
         }
     }
 }
@@ -130,6 +153,7 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
     var tab by remember { mutableStateOf(0) }
     var playerOpen by remember { mutableStateOf(false) }
     var addToPlaylistTrack by remember { mutableStateOf<Track?>(null) }
+    var createPlaylistFor by remember { mutableStateOf<Track?>(null) }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(state.error, state.message) {
         val text = state.error ?: state.message
@@ -221,6 +245,19 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                     viewModel.addToPlaylist(playlist, track)
                     addToPlaylistTrack = null
                 },
+                onCreateNew = {
+                    addToPlaylistTrack = null
+                    createPlaylistFor = track
+                },
+            )
+        }
+        createPlaylistFor?.let { pending ->
+            NewPlaylistDialog(
+                onDismiss = { createPlaylistFor = null },
+                onCreate = { name ->
+                    createPlaylistFor = null
+                    viewModel.createPlaylist(name, pending)
+                },
             )
         }
     }
@@ -298,6 +335,43 @@ private fun HomeScreen(state: AuthUiState, viewModel: AuthViewModel, modifier: M
                         TextButton(onClick = { newPlaylistOpen = true }, enabled = !state.busy) {
                             Text("Nova playlist", color = OpenfyAccent2)
                         }
+                    }
+                }
+            }
+        }
+
+        if (state.recentTracks.isNotEmpty()) {
+            item {
+                Text(
+                    "Ouvir de novo",
+                    color = OpenfyTextHigh,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(state.recentTracks.take(12), key = { "recent-${it.id}" }) { track ->
+                        TrackTile(track) { viewModel.playSearchResult(track) }
+                    }
+                }
+            }
+        }
+        if (state.topTracks.isNotEmpty()) {
+            item {
+                Text(
+                    "Mais ouvidas no mês",
+                    color = OpenfyTextHigh,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(state.topTracks.take(12), key = { "top-${it.id}" }) { track ->
+                        TrackTile(track) { viewModel.playTopTrack(track) }
                     }
                 }
             }
@@ -406,6 +480,29 @@ private fun PlaylistCard(playlist: PlaylistDto, onOpen: () -> Unit, onPlay: () -
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun TrackTile(track: Track, onClick: () -> Unit) {
+    Column(Modifier.width(116.dp).clickable(onClick = onClick)) {
+        CoverImage(track.thumbnail, 116.dp, 12.dp)
+        Text(
+            track.title,
+            color = OpenfyTextHigh,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+        Text(
+            track.artist,
+            color = OpenfyTextLow,
+            fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -655,7 +752,11 @@ private fun PlaylistDetailScreen(
             IconButton(onClick = { viewModel.closePlaylist() }) {
                 Icon(Icons.Filled.ArrowBack, "Voltar", tint = OpenfyTextHigh)
             }
-            CoverImage(playlist.coverUrl, 52.dp, 10.dp)
+            CoverImage(
+                playlist.coverUrl.ifBlank { state.playlistTracks.firstOrNull()?.thumbnail.orEmpty() },
+                52.dp,
+                10.dp,
+            )
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
@@ -812,6 +913,61 @@ private fun SettingsScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(Modifier.padding(16.dp)) {
+                Text("Aparência", color = OpenfyTextHigh, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Aplicada em todo o app e salva para as próximas aberturas.",
+                    color = OpenfyTextLow,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Spacer(Modifier.height(10.dp))
+                Text("Paleta de cores", color = OpenfyTextHigh, fontSize = 13.sp)
+                LazyRow(
+                    Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    items(ColorPalette.entries) { preset ->
+                        AppearanceChip(preset.label, state.palette == preset) {
+                            viewModel.setPalette(preset)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Text("Layout do player", color = OpenfyTextHigh, fontSize = 13.sp)
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    PlayerLayout.entries.forEach { option ->
+                        AppearanceChip(option.label, state.playerLayout == option) {
+                            viewModel.setPlayerLayout(option)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Fundo pela capa", color = OpenfyTextHigh, fontSize = 13.sp)
+                        Text(
+                            "No player cheio, o gradiente usa as cores dominantes da capa.",
+                            color = OpenfyTextLow,
+                            fontSize = 11.sp,
+                        )
+                    }
+                    Switch(
+                        checked = state.coverGradient,
+                        onCheckedChange = { viewModel.setCoverGradient(it) },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card(
+            colors = CardDefaults.cardColors(containerColor = OpenfyPanel),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp)) {
                 Text("Openfy Android", color = OpenfyTextHigh, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -828,6 +984,24 @@ private fun SettingsScreen(
             }
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun AppearanceChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = if (selected) OpenfyAccent.copy(alpha = 0.16f) else OpenfyPanelHigh,
+        contentColor = if (selected) OpenfyAccent else OpenfyTextLow,
+        border = BorderStroke(1.dp, if (selected) OpenfyAccent else OpenfyLine),
+        modifier = Modifier.clickable(onClick = onClick),
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 
@@ -897,17 +1071,26 @@ private fun PlayerOverlay(
     val total = max(1L, state.durationMs)
     val fraction = dragging ?: (state.positionMs.toFloat() / total).coerceIn(0f, 1f)
     val liked = track?.id in state.likedIds
+    val coverPalette = rememberCoverPalette(track?.thumbnail.orEmpty(), state.coverGradient)
+    val ink = OpenfyInk
+    val fallback = OpenfyHeroGradient
+    val backdrop = if (!state.coverGradient || coverPalette == null) {
+        fallback
+    } else {
+        remember(coverPalette, ink) {
+            val p = coverPalette!!
+            Brush.verticalGradient(
+                0f to lerp(p.primary, ink, 0.38f),
+                0.55f to lerp(p.secondary, ink, 0.68f),
+                1f to ink,
+            )
+        }
+    }
 
     Surface(Modifier.fillMaxSize(), color = OpenfyInk) {
         Column(
             Modifier.fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0f to OpenfyPanelHigh,
-                        0.55f to OpenfyInk,
-                        1f to OpenfyInk,
-                    )
-                )
+                .background(backdrop)
                 .padding(horizontal = 26.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -930,24 +1113,52 @@ private fun PlayerOverlay(
             }
 
             Spacer(Modifier.weight(1f))
-            CoverImage(track?.thumbnail.orEmpty(), 250.dp, 22.dp)
-            Spacer(Modifier.height(24.dp))
-            Text(
-                track?.title ?: "Nada tocando",
-                color = OpenfyTextHigh,
-                fontSize = 24.sp,
-                fontWeight = FontWeight.Bold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                track?.artist.orEmpty(),
-                color = OpenfyTextLow,
-                fontSize = 14.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            if (state.playerLayout == PlayerLayout.SIDE) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CoverImage(track?.thumbnail.orEmpty(), 124.dp, 18.dp)
+                    Spacer(Modifier.width(20.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            track?.title ?: "Nada tocando",
+                            color = OpenfyTextHigh,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            track?.artist.orEmpty(),
+                            color = OpenfyTextLow,
+                            fontSize = 13.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            } else {
+                CoverImage(track?.thumbnail.orEmpty(), 250.dp, 22.dp)
+                Spacer(Modifier.height(24.dp))
+                Text(
+                    track?.title ?: "Nada tocando",
+                    color = OpenfyTextHigh,
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    track?.artist.orEmpty(),
+                    color = OpenfyTextLow,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Row(
                 Modifier.padding(top = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -1136,6 +1347,7 @@ private fun AddToPlaylistDialog(
     playlists: List<PlaylistDto>,
     onDismiss: () -> Unit,
     onSelect: (PlaylistDto) -> Unit,
+    onCreateNew: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1152,7 +1364,12 @@ private fun AddToPlaylistDialog(
                 )
                 Spacer(Modifier.height(8.dp))
                 if (playlists.isEmpty()) {
-                    Text("Nenhuma playlist ainda. Crie uma na tela inicial.", color = OpenfyTextLow, fontSize = 12.sp)
+                    Column {
+                        Text("Nenhuma playlist ainda.", color = OpenfyTextLow, fontSize = 12.sp)
+                        TextButton(onClick = onCreateNew) {
+                            Text("Criar nova playlist", color = OpenfyAccent2)
+                        }
+                    }
                 } else {
                     LazyColumn(Modifier.heightIn(max = 360.dp)) {
                         items(playlists, key = { it.id }) { playlist ->
@@ -1180,6 +1397,10 @@ private fun AddToPlaylistDialog(
                                 )
                             }
                         }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(onClick = onCreateNew) {
+                        Text("Criar nova playlist", color = OpenfyAccent2)
                     }
                 }
             }

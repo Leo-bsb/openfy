@@ -142,6 +142,62 @@ class SupabaseApi {
         return decoded(response)
     }
 
+    suspend fun ownedPlaylistIds(accessToken: String, userId: String): List<String> {
+        val response = client.get("$baseUrl/rest/v1/playlists") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "id")
+            parameter("owner_id", "eq.$userId")
+            parameter("deleted", "eq.false")
+            parameter("limit", "1000")
+        }
+        return decoded<List<IdRow>>(response).map { it.id }
+    }
+
+    suspend fun memberPlaylistIds(accessToken: String, userId: String): List<String> {
+        val response = client.get("$baseUrl/rest/v1/playlist_members") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "playlist_id")
+            parameter("user_id", "eq.$userId")
+            parameter("deleted", "eq.false")
+            parameter("limit", "1000")
+        }
+        return decoded<List<MemberRow>>(response).map { it.playlistId }
+    }
+
+    suspend fun playlists(accessToken: String, ids: Collection<String>): List<PlaylistDto> {
+        if (ids.isEmpty()) return emptyList()
+        return ids.chunked(50).flatMap { chunk ->
+            val response = client.get("$baseUrl/rest/v1/playlists") {
+                header("apikey", anonKey)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                parameter("select", "id,name,updated_at,cover_url,deleted")
+                parameter("id", "in.(${chunk.joinToString(",")})")
+                parameter("deleted", "eq.false")
+                parameter("order", "created_at.asc")
+                parameter("limit", "1000")
+            }
+            decoded<List<PlaylistDto>>(response)
+        }
+    }
+
+    suspend fun monthlyTopTracks(
+        accessToken: String,
+        month: String,
+        limit: Int = 20,
+    ): List<MonthlyTrackRow> {
+        val response = client.get("$baseUrl/rest/v1/monthly_top_tracks") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "track_id,plays,played_ms")
+            parameter("month", "eq.$month")
+            parameter("order", "plays.desc,played_ms.desc")
+            parameter("limit", limit.toString())
+        }
+        return decoded(response)
+    }
+
     suspend fun playlistItems(accessToken: String, playlistId: String): List<RemotePlaylistItem> {
         val response = client.get("$baseUrl/rest/v1/playlist_items") {
             header("apikey", anonKey)

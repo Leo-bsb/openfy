@@ -2,6 +2,11 @@ package com.openfy.android.data
 
 import android.content.Context
 import android.os.Build
+import com.openfy.core.ColorPalette
+import com.openfy.core.PlayerLayout
+import com.openfy.core.Track
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.util.UUID
 
 data class StoredSession(
@@ -22,6 +27,7 @@ data class StoredSession(
 class SessionStore(context: Context) {
 
     private val prefs = context.getSharedPreferences("openfy_session", Context.MODE_PRIVATE)
+    private val json = Json { ignoreUnknownKeys = true }
 
     fun load(): StoredSession? {
         val access = prefs.getString("access_token", null) ?: return null
@@ -72,7 +78,45 @@ class SessionStore(context: Context) {
 
     fun clear() {
         val crossfade = crossfadeSeconds()
-        prefs.edit().clear().putInt("crossfade_seconds", crossfade).apply()
+        val palette = palette()
+        val layout = playerLayout()
+        val gradient = coverGradient()
+        prefs.edit().clear()
+            .putInt("crossfade_seconds", crossfade)
+            .putString("ui_palette", palette.id)
+            .putString("ui_player_layout", layout.id)
+            .putBoolean("ui_cover_gradient", gradient)
+            .apply()
+    }
+
+    fun palette(): ColorPalette =
+        ColorPalette.fromId(prefs.getString("ui_palette", null))
+
+    fun setPalette(value: ColorPalette) {
+        prefs.edit().putString("ui_palette", value.id).apply()
+    }
+
+    fun playerLayout(): PlayerLayout =
+        PlayerLayout.fromId(prefs.getString("ui_player_layout", null))
+
+    fun setPlayerLayout(value: PlayerLayout) {
+        prefs.edit().putString("ui_player_layout", value.id).apply()
+    }
+
+    fun coverGradient(): Boolean = prefs.getBoolean("ui_cover_gradient", true)
+
+    fun setCoverGradient(enabled: Boolean) {
+        prefs.edit().putBoolean("ui_cover_gradient", enabled).apply()
+    }
+
+    fun recentTracks(): List<Track> = runCatching {
+        json.decodeFromString<List<Track>>(prefs.getString("recent_tracks", null) ?: "[]")
+    }.getOrDefault(emptyList())
+
+    fun setRecentTracks(tracks: List<Track>) {
+        prefs.edit()
+            .putString("recent_tracks", json.encodeToString(tracks.take(24)))
+            .apply()
     }
 
     /** ID estável do aparelho para a conta. */

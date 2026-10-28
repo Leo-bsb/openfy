@@ -25,6 +25,8 @@ import com.openfy.android.data.SessionStore
 import com.openfy.android.data.StoredSession
 import com.openfy.android.data.SupabaseApi
 import com.openfy.android.data.SupabaseException
+import com.openfy.core.ColorPalette
+import com.openfy.core.PlayerLayout
 import com.openfy.core.Track
 import com.openfy.data.Media
 import com.openfy.data.YouTubeEngine
@@ -37,8 +39,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.time.Instant
+import java.time.YearMonth
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -68,6 +73,11 @@ data class AuthUiState(
     val playlistItems: List<RemotePlaylistItem> = emptyList(),
     val playlistLoading: Boolean = false,
     val crossfadeSeconds: Int = 6,
+    val palette: ColorPalette = ColorPalette.OPENFY,
+    val playerLayout: PlayerLayout = PlayerLayout.CENTER,
+    val coverGradient: Boolean = true,
+    val recentTracks: List<Track> = emptyList(),
+    val topTracks: List<Track> = emptyList(),
 ) {
     val hasPrevious: Boolean get() = queueIndex > 0
     val hasNext: Boolean get() = queueIndex >= 0 && queueIndex < queue.lastIndex
@@ -84,6 +94,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         AuthUiState(
             deviceName = store.deviceName(),
             crossfadeSeconds = store.crossfadeSeconds(),
+            palette = store.palette(),
+            playerLayout = store.playerLayout(),
+            coverGradient = store.coverGradient(),
+            recentTracks = store.recentTracks(),
         ),
     )
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
@@ -162,6 +176,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var radioSeed: Track? = null
     private var radioJob: Job? = null
     private var radioEpoch = 0
+    private val homeMutex = Mutex()
+    private var lastHomeLoad = 0L
     private var playJob: Job? = null
     private var radioAdvancePending = false
 
@@ -246,46 +262,82 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun loadHome(session: StoredSession) {
-        try {
-            loadHomeOnce(session)
-        } catch (first: Exception) {
-            val refreshed = ensureSession()
-            if (refreshed != null && refreshed.accessToken != session.accessToken) {
-                _state.update { it.copy(session = refreshed) }
-                try {
-                    loadHomeOnce(refreshed)
-                    return
-                } catch (second: Exception) {
-                    _state.update { it.copy(loading = false, busy = false, error = second.message) }
-                    return
+        homeMutex.withLock {
+            try {
+                loadHomeOnce(session)
+            } catch (first: Exception) {
+                val refreshed = ensureSession()
+                if (refreshed != null && refreshed.accessToken != session.accessToken) {
+                    _state.update { it.copy(session = refreshed) }
+                    try {
+                        loadHomeOnce(refreshed)
+                        return
+                    } catch (second: Exception) {
+                        _state.update { it.copy(loading = false, busy = false, error = second.message) }
+                        return
+                    }
                 }
+                _state.update { it.copy(loading = false, busy = false, error = first.message) }
             }
-            _state.update { it.copy(loading = false, busy = false, error = first.message) }
         }
     }
 
+    /** Atualiza ao voltar ao app, com throttle para não bater no servidor a cada composição. */
+    fun refreshIfStale() {
+        val session = _state.value.session ?: return
+        if (System.currentTimeMillis() - lastHomeLoad < 30_000) return
+        viewModelScope.launch { loadHome(session) }
+    }
+
     private suspend fun loadHomeOnce(session: StoredSession) {
+        if (_state.value.session?.userId != session.userId) return
         api.upsertDevice(session.accessToken, store.deviceId(), store.deviceName())
         val profile = api.profile(session.accessToken, session.userId)
-        val playlists = api.playlists(session.accessToken)
-        val likedIds = runCatching { api.likes(session.accessToken) }.getOrDefault(emptySet())
-        val likedTracks = runCatching {
-            likedIds.chunked(80).flatMap { api.tracks(session.accessToken, it) }.map { it.toTrack() }
-        }.getOrDefault(emptyList())
+        val playlistIds = (
+            api.ownedPlaylistIds(session.accessToken, session.userId) +
+                api.memberPlaylistIds(session.accessToken, session.userId)
+            ).toSet()
+        val playlists = api.playlists(session.accessToken, playlistIds)
+        val likedIds = runCatching { api.likes(session.accessToken) }.getOrNull()
+        val likedTracks = likedIds?.let { ids ->
+            runCatching {
+                ids.chunked(80).flatMap { api.tracks(session.accessToken, it) }.map { it.toTrack() }
+            }.getOrNull()
+        }
+        val topTracks = loadTopTracks(session)
+        if (_state.value.session?.userId != session.userId) return
         _state.update {
             it.copy(
                 loading = false,
                 busy = false,
                 profile = profile,
                 playlists = playlists,
-                likedIds = likedIds,
-                likedTracks = likedTracks,
+                likedIds = likedIds ?: it.likedIds,
+                likedTracks = likedTracks ?: it.likedTracks,
+                topTracks = topTracks ?: it.topTracks,
                 deviceName = store.deviceName(),
                 crossfadeSeconds = store.crossfadeSeconds(),
                 error = null,
             )
         }
+        lastHomeLoad = System.currentTimeMillis()
+        val open = _state.value.openPlaylist
+        if (open != null) {
+            val fresh = playlists.firstOrNull { it.id == open.id }
+            if (fresh == null) {
+                closePlaylist()
+            } else if (fresh != open) {
+                openPlaylist(fresh)
+            }
+        }
     }
+
+    private suspend fun loadTopTracks(session: StoredSession): List<Track>? = runCatching {
+        val month = YearMonth.now().atDay(1).toString()
+        val rows = api.monthlyTopTracks(session.accessToken, month, 20)
+        val byId = api.tracks(session.accessToken, rows.map { it.trackId }).associateBy { it.id }
+        rows.mapNotNull { byId[it.trackId]?.toTrack() }
+    }.getOrNull()
 
     fun signIn(email: String, password: String) {
         if (email.isBlank() || password.length < 6) {
@@ -334,23 +386,58 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null, message = null) }
             loadHome(session)
-            _state.update { it.copy(message = "Biblioteca sincronizada.") }
+            if (_state.value.error == null) {
+                _state.update { it.copy(message = "Biblioteca sincronizada.") }
+            }
         }
     }
 
-    fun createPlaylist(name: String) {
-        val session = _state.value.session ?: return
-        if (name.isBlank()) return
+    fun createPlaylist(name: String, track: Track? = null) {
+        val clean = name.trim()
+        if (clean.isBlank()) return
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null, message = null) }
-            runCatching { api.createPlaylist(session.accessToken, name) }
-                .onSuccess {
-                    loadHome(session)
-                    _state.update { it.copy(message = "Playlist \"${name.trim()}\" criada.") }
+            var created: PlaylistDto? = null
+            runCatching {
+                val playlist = withSession { session ->
+                    api.createPlaylist(session.accessToken, clean)
+                        ?: throw SupabaseException("O servidor não devolveu a playlist criada.")
                 }
-                .onFailure { error ->
-                    _state.update { it.copy(busy = false, error = error.message) }
+                created = playlist
+                if (track != null) {
+                    withSession { session ->
+                        api.addPlaylistItem(session.accessToken, playlist.id, track)
+                    }
                 }
+                playlist
+            }.onSuccess { playlist ->
+                _state.value.session?.let { loadHome(it) }
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        message = if (track != null) {
+                            "\"${track.title}\" adicionada a \"${playlist.name}\"."
+                        } else {
+                            "Playlist \"${playlist.name}\" criada."
+                        },
+                    )
+                }
+            }.onFailure { error ->
+                val partial = created
+                if (partial != null) {
+                    _state.value.session?.let { loadHome(it) }
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = "Playlist \"${partial.name}\" criada, mas a faixa não foi adicionada: ${error.message}",
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(busy = false, error = error.message ?: "Não foi possível criar a playlist.")
+                    }
+                }
+            }
         }
     }
 
@@ -579,6 +666,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         play(track, _state.value.likedTracks, "likes")
     }
 
+    /** Toca a lista de mais ouvidas em ordem, como no desktop. */
+    fun playTopTrack(track: Track) {
+        val tracks = _state.value.topTracks
+        val queue = if (tracks.any { it.id == track.id }) tracks else listOf(track)
+        play(track, queue, "top")
+    }
+
     fun toggleLike(track: Track) {
         val current = _state.value
         if (current.session == null) return
@@ -614,6 +708,15 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun addToPlaylist(playlist: PlaylistDto, track: Track) {
+        val opened = _state.value.openPlaylist
+        if (opened?.id == playlist.id &&
+            _state.value.playlistItems.any { it.trackId == track.id }
+        ) {
+            _state.update {
+                it.copy(message = "\"${track.title}\" já estava em ${playlist.name}.")
+            }
+            return
+        }
         viewModelScope.launch {
             runCatching {
                 withSession { session -> api.addPlaylistItem(session.accessToken, playlist.id, track) }
@@ -652,6 +755,28 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         store.setCrossfadeSeconds(value)
         _state.update { it.copy(crossfadeSeconds = value) }
         if (value == 0) cancelCrossfade()
+    }
+
+    fun setPalette(value: ColorPalette) {
+        store.setPalette(value)
+        _state.update { it.copy(palette = value) }
+    }
+
+    fun setPlayerLayout(value: PlayerLayout) {
+        store.setPlayerLayout(value)
+        _state.update { it.copy(playerLayout = value) }
+    }
+
+    fun setCoverGradient(enabled: Boolean) {
+        store.setCoverGradient(enabled)
+        _state.update { it.copy(coverGradient = enabled) }
+    }
+
+    private fun rememberRecent(track: Track) {
+        val updated = (listOf(track) + _state.value.recentTracks.filterNot { it.id == track.id })
+            .take(24)
+        store.setRecentTracks(updated)
+        _state.update { it.copy(recentTracks = updated) }
     }
 
     // ------------------------------------------------------------------ queue editing
@@ -785,6 +910,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             activePlayer.prepare()
             activePlayer.playWhenReady = true
             _state.update { it.copy(busy = false) }
+            rememberRecent(track)
         }
     }
 
@@ -877,6 +1003,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 busy = false,
             )
         }
+        rememberRecent(nextTrack)
         preloadedTrack = null
         preloadedIndex = -1
         crossfadePrepared = false
@@ -1036,10 +1163,14 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             playerB.clearMediaItems()
             session?.let { api.logout(it.accessToken) }
             store.clear()
+            lastHomeLoad = 0L
             _state.value = AuthUiState(
                 loading = false,
                 deviceName = store.deviceName(),
                 crossfadeSeconds = store.crossfadeSeconds(),
+                palette = store.palette(),
+                playerLayout = store.playerLayout(),
+                coverGradient = store.coverGradient(),
             )
         }
     }
