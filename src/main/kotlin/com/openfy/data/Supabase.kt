@@ -454,16 +454,23 @@ class SupabaseApi {
 
     suspend fun pushPlayEvents(accessToken: String, events: List<PushPlayEvent>) {
         if (events.isEmpty()) return
-        events.chunked(200).forEach { batch ->
-            ensure(
-                client.post("$baseUrl/rest/v1/play_events") {
-                    auth(accessToken)
-                    header("Prefer", "resolution=ignore-duplicates,return=minimal")
-                    parameter("on_conflict", "id")
-                    contentType(ContentType.Application.Json)
-                    setBody(batch)
-                },
-            )
+        // O PostgREST exige o mesmo conjunto de chaves em todos os objetos do lote.
+        // Como `explicitNulls=false`, eventos sem id/contexto serializam menos campos;
+        // agrupa por formato para não misturar objetos com chaves diferentes.
+        events.groupBy { event ->
+            listOf(event.id != null, event.deviceId != null, event.contextId != null)
+        }.values.forEach { group ->
+            group.chunked(200).forEach { batch ->
+                ensure(
+                    client.post("$baseUrl/rest/v1/play_events") {
+                        auth(accessToken)
+                        header("Prefer", "resolution=ignore-duplicates,return=minimal")
+                        parameter("on_conflict", "id")
+                        contentType(ContentType.Application.Json)
+                        setBody(batch)
+                    },
+                )
+            }
         }
     }
 

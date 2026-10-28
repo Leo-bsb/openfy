@@ -51,10 +51,12 @@ fun main() {
                 check(coverUrl.startsWith("https://"), "capa do PC subiu para o Storage")
                 db.setPlaylistCoverUrl(local.id, coverUrl)
                 db.recordPlay(track.id)
+                val contextSeq = db.beginPlay(track, "playlist", "smoke-context", "Smoke")
+                db.finishPlay(contextSeq, 1_000, completed = true, skipped = false)
 
                 val result = SyncEngine(db, api).sync(session)
                 println(result.summary())
-                check(result.pushedEvents >= 1, "evento de escuta do PC subiu para o recap")
+                check(result.pushedEvents >= 2, "eventos com formatos diferentes subiram para o recap")
 
                 val remotePlaylist = api.playlists(auth.accessToken, listOf(local.id)).firstOrNull()
                 check(remotePlaylist?.name == "Smoke PC", "playlist do PC subiu para o servidor")
