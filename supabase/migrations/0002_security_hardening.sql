@@ -21,10 +21,11 @@
 --   * Rode esta migration DEPOIS da 0001_initial.sql, como role postgres
 --     (SQL Editor ou `supabase db push`).
 --   * Publique os clientes atualizados (desktop e Android) ANTES de aplicar.
---     Clientes novos funcionam contra o schema velho (a RPC ainda não existe
---     => shareCode() retorna null; nada quebra). O inverso NÃO vale: assim que
---     esta migration entrar, clientes antigos param de ler `share_code` e o
---     botão "convidar" quebra.
+--     Clientes novos funcionam contra o schema velho: a RPC ainda não existe,
+--     o desktop trata a falha e devolve null; o Android lança exceção tratada
+--     por runCatching. O inverso NÃO vale: assim que esta migration entrar, o
+--     SELECT antigo de playlists (que incluía share_code) falha inteiro nos
+--     clientes velhos, não apenas o botão de convite.
 --   * A segurança só vale de fato depois de aplicar esta migration no projeto
 --     Supabase em produção. O arquivo no repositório não protege nada sozinho.
 --

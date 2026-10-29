@@ -330,3 +330,24 @@ própria de playlist pelo celular.
 
 Ainda faltam: downloads em background com WorkManager, importar CSV/backup JSON,
 MediaSessionService com player dentro do serviço, KMP e Keystore.
+
+---
+
+## Atualização 0.4.1 (2026-10-28)
+
+- **Aleatório**: botão no player mantém a faixa atual e embaralha o restante;
+  desligar restaura a ordem original. O estado persiste entre sessões.
+- **Repetir**: off → toda a fila → uma faixa, com ícone e estado persistidos.
+- **Reordenar a fila**: setas de subir/descer no diálogo da fila, com o índice
+  da faixa atual acompanhando a mudança.
+- **Tocar em seguida / ao fim**: o menu ⋮ das faixas tem "Tocar em seguida" e
+  "Adicionar ao fim da fila"; o diálogo da fila explica o caminho.
+- **Robustez de downloads**: índice ilegível não apaga mais os áudios; gravação
+  do índice com fsync e rollback; cancelamento desconecta a conexão; download
+  na fila fica visível/cancelável; sessão revogada limpa caches locais.
+- Testes: 27 no desktop e 33 no Android (inclui QueueLogic, índice corrompido,
+  corpo truncado e seleção de release). CI verde.
+- APK 0.4.1 (versionCode 13) assinado.
+  SHA-256: `A7B097B943C081812C61CFA27D55E6D35AD156883BB81208746F5EB4585E1558`.
+
+A 0.4.1 ainda não foi validada em aparelho; o último teste real foi na 0.3.1.

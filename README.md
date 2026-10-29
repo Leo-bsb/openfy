@@ -256,12 +256,12 @@ Instaladores (usuário atual, sem admin):
 ```
 dist\Openfy-0.2.8.exe
 dist\Openfy-0.2.8.msi
-dist\Openfy-Android-0.4.0.apk
+dist\Openfy-Android-0.4.1.apk
 ```
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
 Desktop 0.2.8: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.8
-Android 0.4.0: https://github.com/Leo-bsb/openfy/releases/tag/v0.4.0-android
+Android 0.4.1: https://github.com/Leo-bsb/openfy/releases/tag/v0.4.1-android
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
