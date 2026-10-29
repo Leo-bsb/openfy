@@ -1,6 +1,6 @@
 # Roadmap Spotify para o Openfy
 
-Data: 2026-10-28. Base: desktop 0.2.8 e Android 0.4.1.
+Data: 2026-10-28. Base: desktop 0.2.9 e Android 0.4.2.
 
 ## Princípio
 
@@ -19,9 +19,13 @@ API oficial do Spotify ou infraestrutura de tempo real cara.
 
 2. **Home “Feito para você”**: 3 mixes locais + Descobertas da semana.
    - Base: `Recommender`, `startPersonalMix`, rádios do YouTube Music.
-   - Esforço: 4–6 dias.
+   - Antes: unificar o histórico PC + Android, medir o re-ranker contra a rádio
+     crua do YTM e aplicar rank fusion; ver
+     `docs/AVALIACAO-RECOMENDACAO.md`. Sem isso, os mixes repetem o viés local.
+   - Esforço: 4–6 dias (sem contar o histórico unificado).
    - Aceite: mixes de 25–50 faixas, sem repetição, cache diário, estado vazio
-     quando não há histórico, contexto “Mix: Para você” na fila.
+     quando não há histórico, contexto “Mix: Para você” na fila; skip/conclusão
+     não piores que a rádio crua.
 
 3. **Offline completo**: modo offline, fila de downloads, progresso, retry,
    “baixar curtidas”, “manter playlist offline” e limite de espaço.
@@ -89,6 +93,9 @@ API oficial do Spotify ou infraestrutura de tempo real cara.
 - Relógio entre dispositivos pode inverter o vencedor do LWW.
 - InnerTube/YouTube Music é externo e pode mudar; mixes multiplicam chamadas.
 - `Recommender.stats()` lê até 20 mil eventos por chamada; precisa de cache.
+- O re-ranker local nunca foi comparado com a rádio crua do YouTube Music; sem
+  métrica de skip/conclusão, não há evidência de que ele melhora o YTM. Ver
+  `docs/AVALIACAO-RECOMENDACAO.md`.
 - `App.kt`/`AppController.kt` são monólitos; novas telas devem ser extraídas.
 - RLS de papéis de playlist precisa exigir owner/editor para escrita.
 - Não há testes de UI nem CI.

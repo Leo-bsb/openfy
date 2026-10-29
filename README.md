@@ -62,7 +62,7 @@ parava de ler e a UI travava depois de alguns minutos de uso.
 - [x] Transição entre faixas configurável (crossfade equal-power, 0–12 s)
 - [x] Qualidade de áudio Alta/Econômica
 - [x] Schema pronto para sync (`updated_at` + tombstones)
-- [x] "Seu mix" multi-semente (até 3 sementes de curtidas/recentes, faixas intercaladas)
+- [x] "Seu mix" multi-semente (até 4 sementes de curtidas/recentes, faixas intercaladas)
 - [x] Autoplay: busca toca e emenda a rádio; playlist/álbum/mix vai até o fim e então entra na rádio
 - [x] Importar playlist/álbum do YouTube Music por link (sem login)
 - [x] Importar CSV do Exportify (Spotify) casando faixas no catálogo

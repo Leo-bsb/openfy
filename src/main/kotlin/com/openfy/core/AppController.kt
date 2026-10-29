@@ -698,7 +698,7 @@ class AppController(
     }
 
     /**
-     * "Seu mix" multi-semente: junta ate 3 sementes (curtidas + recentes) e
+     * "Seu mix" multi-semente: junta ate 4 sementes (curtidas + recentes) e
      * alterna as faixas das radios de cada uma. A continuacao da ultima radio
      * alimenta a fila quando chegar ao fim.
      */
