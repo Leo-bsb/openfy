@@ -280,3 +280,23 @@ Build 0.2.5 validado com `compileKotlin`, abertura real do app, troca de paleta
 - O updater valida que os links abertos são do host `github.com`, consulta até
   100 releases e só grava o timestamp diário quando a verificação não falha.
 - Testes: 27 no desktop (importadores, BuildInfo e UpdateChecker).
+
+---
+
+## Atualização 0.2.9 (2026-10-28)
+
+- **Perfil próprio**: nova tela na sidebar com avatar e capa (upload para o
+  Supabase Storage), nome, bio, cor, efeitos, visibilidade das estatísticas,
+  ordem/cartões ocultos, top artistas/faixas e até 10 faixas fixadas
+  reordenáveis. Snapshot sanitizado, cache local e sync LWW com o Android.
+- **Discord Rich Presence**: integração opcional via IPC local, desligada por
+  padrão. Mostra título/artista e play/pause, reconecta em segundo plano e
+  limpa a atividade ao pausar/sair. Application ID configurável em Ajustes ›
+  Integrações; falta criar o Application/assets no portal do Discord para o
+  teste ao vivo.
+- Bio agora é gravada junto do snapshot (o campo era perdido ao salvar).
+- Testes: 38 no desktop (inclui `ProfileTest` e `DiscordPayloadTest`).
+- EXE 0.2.9: SHA-256
+  `F9D6A3BF2953289732FE6E733788A6ED0CC49769089530AA44CAAE34B4C13F98`.
+- MSI 0.2.9: SHA-256
+  `DD69378EB8A8579565408C914853FBF6AE0B50E55AE3AE0E7C6C3980F3712E62`.

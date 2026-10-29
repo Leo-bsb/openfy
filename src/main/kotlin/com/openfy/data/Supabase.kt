@@ -7,6 +7,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
+import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
@@ -19,6 +20,8 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 
 /**
  * Configuração pública do Supabase. A chave publishable é feita para ficar no
@@ -54,6 +57,34 @@ data class RemoteProfile(
     @SerialName("display_name") val displayName: String = "",
     @SerialName("avatar_url") val avatarUrl: String = "",
 )
+
+/**
+ * Linha de `activities` usada como snapshot privado do perfil enquanto a
+ * migration 0003 não entra. `payload` guarda o ProfileExtras serializado.
+ */
+@Serializable
+data class RemoteActivity(
+    val id: String = "",
+    val payload: JsonElement = JsonNull,
+    @SerialName("created_at") val createdAt: String = "",
+)
+
+@Serializable
+data class PushActivity(
+    @SerialName("actor_id") val actorId: String,
+    val type: String,
+    val payload: JsonElement,
+    @SerialName("is_public") val isPublic: Boolean = false,
+)
+
+@Serializable
+data class ProfilePatch(
+    @SerialName("display_name") val displayName: String,
+    @SerialName("avatar_url") val avatarUrl: String,
+)
+
+@Serializable
+data class DeletedPatch(val deleted: Boolean = true)
 
 @Serializable
 data class RemoteTrack(
@@ -278,6 +309,104 @@ class SupabaseApi {
             },
         )
         return rows.firstOrNull()
+    }
+
+    suspend fun updateProfile(
+        accessToken: String,
+        userId: String,
+        displayName: String,
+        avatarUrl: String,
+    ) {
+        ensure(
+            client.patch("$baseUrl/rest/v1/profiles") {
+                auth(accessToken)
+                header("Prefer", "return=minimal")
+                parameter("id", "eq.$userId")
+                contentType(ContentType.Application.Json)
+                setBody(ProfilePatch(displayName, avatarUrl))
+            },
+        )
+    }
+
+    /** Último snapshot privado do perfil; a RLS só devolve as linhas do próprio usuário. */
+    suspend fun profilePrefs(accessToken: String, userId: String): RemoteActivity? {
+        val rows = decode<List<RemoteActivity>>(
+            client.get("$baseUrl/rest/v1/activities") {
+                auth(accessToken)
+                parameter("select", "id,payload,created_at")
+                parameter("actor_id", "eq.$userId")
+                parameter("type", "eq.profile_prefs")
+                parameter("deleted", "eq.false")
+                parameter("order", "created_at.desc")
+                parameter("limit", "1")
+            },
+        )
+        return rows.firstOrNull()
+    }
+
+    /**
+     * Grava um novo snapshot e devolve o id. `activities` não permite alterar o
+     * payload de uma linha existente (trigger protect_activity_fields), então a
+     * versão anterior é marcada como deleted depois que a nova entra.
+     */
+    suspend fun saveProfilePrefs(
+        accessToken: String,
+        userId: String,
+        payload: JsonElement,
+    ): String {
+        val rows = decode<List<IdRow>>(
+            client.post("$baseUrl/rest/v1/activities") {
+                auth(accessToken)
+                header("Prefer", "return=representation")
+                contentType(ContentType.Application.Json)
+                setBody(PushActivity(userId, "profile_prefs", payload, isPublic = false))
+            },
+        )
+        return rows.firstOrNull()?.id
+            ?: throw SupabaseException(0, "O servidor não devolveu o id do perfil.")
+    }
+
+    suspend fun deleteActivity(accessToken: String, id: String) {
+        ensure(
+            client.patch("$baseUrl/rest/v1/activities") {
+                auth(accessToken)
+                header("Prefer", "return=minimal")
+                parameter("id", "eq.$id")
+                contentType(ContentType.Application.Json)
+                setBody(DeletedPatch())
+            },
+        )
+    }
+
+    /**
+     * Sobe avatar/capa do perfil no bucket público. O nome inclui timestamp para
+     * o cache dos clients não mostrar a imagem anterior.
+     */
+    suspend fun uploadProfileImage(
+        accessToken: String,
+        userId: String,
+        bucket: String,
+        baseName: String,
+        file: java.io.File,
+    ): String {
+        require(bucket == "avatars" || bucket == "covers") { "bucket inválido" }
+        val ext = file.extension.lowercase().ifBlank { "jpg" }
+        val mime = when (ext) {
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "gif" -> "image/gif"
+            else -> "image/jpeg"
+        }
+        val path = "$userId/$baseName.$ext"
+        ensure(
+            client.post("$baseUrl/storage/v1/object/$bucket/$path") {
+                auth(accessToken)
+                header("x-upsert", "true")
+                contentType(ContentType.parse(mime))
+                setBody(file.readBytes())
+            },
+        )
+        return "$baseUrl/storage/v1/object/public/$bucket/$path?v=${System.currentTimeMillis()}"
     }
 
     suspend fun memberPlaylistIds(accessToken: String, userId: String): List<String> =

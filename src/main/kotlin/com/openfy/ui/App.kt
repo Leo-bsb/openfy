@@ -71,8 +71,12 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Leaderboard
 import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -155,6 +159,13 @@ import com.openfy.core.MediaKind
 import com.openfy.core.PlayerLayout
 import com.openfy.core.Playlist
 import com.openfy.core.PlaylistPrompt
+import com.openfy.core.ProfileArtistStat
+import com.openfy.core.ProfileExtras
+import com.openfy.core.ProfilePin
+import com.openfy.core.ProfileStatsCards
+import com.openfy.core.ProfileStatsData
+import com.openfy.core.ProfileStatsVisibility
+import com.openfy.core.ProfileStyle
 import com.openfy.core.RecapArtist
 import com.openfy.core.RecapDay
 import com.openfy.core.RecapSnapshot
@@ -784,6 +795,7 @@ private fun Sidebar(c: AppController, screen: Screen, playlists: List<Playlist>)
         NavItem("Buscar", Icons.Filled.Search, screen is Screen.Search) { c.go(Screen.Search) }
         NavItem("Explorar", Icons.Filled.Explore, screen is Screen.Explore) { c.go(Screen.Explore) }
         NavItem("Em alta", Icons.AutoMirrored.Filled.TrendingUp, screen is Screen.Charts) { c.go(Screen.Charts) }
+        NavItem("Perfil", Icons.Filled.Person, screen is Screen.Profile) { c.openProfile() }
 
         Spacer(Modifier.height(12.dp))
         Row(
@@ -1101,6 +1113,7 @@ private fun Content(c: AppController, target: Screen) {
             TrackCollection(c, "Curtidas", tracks, emptyList())
         }
         Screen.Downloads -> DownloadsScreen(c)
+        Screen.Profile -> ProfileScreen(c)
         Screen.Settings -> SettingsScreen(c)
         Screen.History -> {
             val tracks by c.history.collectAsState()
@@ -2881,6 +2894,799 @@ private fun DownloadsScreen(c: AppController) {
     }
 }
 
+// ------------------------------------------------------------------ profile
+private fun profileAccent(id: String): Color = when (ColorPalette.fromId(id)) {
+    ColorPalette.OPENFY -> Color(0xFF2FBFA0)
+    ColorPalette.VIOLET -> Color(0xFFA78BFA)
+    ColorPalette.ROSE -> Color(0xFFF472B6)
+    ColorPalette.AMBER -> Color(0xFFF5A524)
+    ColorPalette.ICE -> Color(0xFF7DD3FC)
+}
+
+private fun chooseProfileImage(title: String): File? {
+    val chooser = javax.swing.JFileChooser().apply {
+        dialogTitle = title
+        fileFilter = javax.swing.filechooser.FileNameExtensionFilter(
+            "Imagens", "png", "jpg", "jpeg", "webp", "gif",
+        )
+    }
+    return if (chooser.showOpenDialog(null) == javax.swing.JFileChooser.APPROVE_OPTION) {
+        chooser.selectedFile
+    } else {
+        null
+    }
+}
+
+@Composable
+private fun ProfileScreen(c: AppController) {
+    val account by c.account.state.collectAsState()
+    val liked by c.liked.collectAsState()
+    val session = account.session
+
+    if (session == null) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+            Text(
+                "Perfil",
+                fontSize = 28.sp,
+                fontWeight = FontWeight.Bold,
+                color = Tokens.textHigh,
+                modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+            )
+            Text(
+                "Entre na conta para montar seu perfil e levar as mesmas faixas fixadas, " +
+                    "cores e estatísticas para o celular.",
+                color = Tokens.textLow,
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(16.dp))
+            Button(onClick = { c.go(Screen.Settings) }) {
+                Text("Entrar ou criar conta")
+            }
+        }
+        return
+    }
+
+    val profile = account.profile
+    val extras = account.profileExtras
+    val stats = account.profileStats
+    val accent = profileAccent(extras.accent)
+    val displayName = nameOrFallback(profile?.displayName, session.email)
+    val handle = profile?.handle?.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
+
+    var editing by remember { mutableStateOf(false) }
+    var name by remember(editing, profile?.displayName) {
+        mutableStateOf(profile?.displayName.orEmpty())
+    }
+    var bio by remember(editing, extras.bio) { mutableStateOf(extras.bio) }
+    var avatarFile by remember { mutableStateOf<File?>(null) }
+    var coverFile by remember { mutableStateOf<File?>(null) }
+    var pinMenuOpen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) { c.account.loadProfileStats() }
+
+    val order = ProfileStatsCards.sanitizeOrder(extras.statsOrder)
+    val hidden = extras.statsHidden.toSet()
+    val visibleCards = order.filter { it !in hidden }
+
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 24.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Seu perfil", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Tokens.textHigh)
+                Text(
+                    "Visível só para você até o social ser liberado.",
+                    color = Tokens.textLow,
+                    fontSize = 12.sp,
+                )
+            }
+            if (!editing) {
+                Button(onClick = { editing = true }) {
+                    Icon(Icons.Filled.Edit, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Editar perfil")
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Box(Modifier.fillMaxWidth().height(180.dp).clip(RoundedCornerShape(16.dp))) {
+            ProfileCover(
+                url = extras.coverUrl,
+                gradient = extras.style.coverGradient,
+                accent = accent,
+                glow = extras.style.glow,
+            )
+            Row(
+                Modifier.align(Alignment.BottomStart).padding(16.dp),
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                ProfileAvatar(profile?.avatarUrl.orEmpty(), 88.dp, accent)
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.padding(bottom = 4.dp)) {
+                    Text(
+                        if (editing) name.ifBlank { displayName } else displayName,
+                        color = Tokens.textHigh,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    if (handle.isNotBlank()) {
+                        Text(handle, color = Tokens.textLow, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        val shownBio = if (editing) bio else extras.bio
+        Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                shownBio.ifBlank { "Sem bio ainda. Conte em uma linha o que você anda ouvindo." },
+                color = if (shownBio.isBlank()) Tokens.textLow.copy(alpha = 0.7f) else Tokens.textHigh,
+                fontSize = 13.sp,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    if (extras.statsVisibility == ProfileStatsVisibility.PRIVATE) {
+                        Icons.Filled.Lock
+                    } else {
+                        Icons.Filled.Public
+                    },
+                    null,
+                    tint = accent,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    "Estatísticas: ${ProfileStatsVisibility.label(extras.statsVisibility)}",
+                    color = Tokens.textLow,
+                    fontSize = 11.sp,
+                )
+            }
+        }
+
+        if (account.profileStatus != null || account.error != null) {
+            Text(
+                account.profileStatus ?: account.error.orEmpty(),
+                color = if (account.error != null) Color(0xFFFF8A80) else accent,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+
+        if (visibleCards.isNotEmpty()) {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Estatísticas do mês",
+                    color = Tokens.textHigh,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                if (account.profileStatsLoading) {
+                    CircularProgressIndicator(
+                        Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = accent,
+                    )
+                } else {
+                    TextButton(onClick = { c.account.loadProfileStats(force = true) }) {
+                        Text("Atualizar", color = accent, fontSize = 12.sp)
+                    }
+                }
+            }
+            visibleCards.chunked(2).forEach { row ->
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    row.forEach { id ->
+                        ProfileStatCard(
+                            id = id,
+                            stats = stats,
+                            accent = accent,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    if (row.size == 1) Spacer(Modifier.weight(1f))
+                }
+            }
+        }
+
+        val showArtists = ProfileStatsCards.TOP_ARTISTS !in hidden &&
+            stats?.topArtists?.isNotEmpty() == true
+        if (showArtists) {
+            ProfileTopArtists(stats.topArtists, accent)
+        }
+
+        val showTracks = ProfileStatsCards.TOP_TRACKS !in hidden &&
+            stats?.topTracks?.isNotEmpty() == true
+        if (showTracks) {
+            Text(
+                "Top faixas",
+                color = Tokens.textHigh,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = 18.dp, bottom = 6.dp),
+            )
+            val tracks = stats.topTracks.map { it.track }
+            stats.topTracks.forEachIndexed { index, row ->
+                ProfileTopTrackRow(
+                    position = index + 1,
+                    track = row.track,
+                    plays = row.plays,
+                    accent = accent,
+                ) { c.playTracks(tracks, index, "Top faixas do perfil") }
+            }
+        }
+
+        if (extras.pins.isNotEmpty()) {
+            Text(
+                "Faixas fixadas",
+                color = Tokens.textHigh,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = 18.dp, bottom = 4.dp),
+            )
+            extras.pins.forEachIndexed { index, pin ->
+                ProfilePinRow(
+                    pin = pin,
+                    editing = editing,
+                    accent = accent,
+                    onPlay = {
+                        c.playTracks(extras.pins.map { it.toTrack() }, index, "Faixas fixadas")
+                    },
+                    onUp = { c.moveProfilePin(pin.id, -1) },
+                    onDown = { c.moveProfilePin(pin.id, 1) },
+                    onRemove = { c.removeProfilePin(pin.id) },
+                )
+            }
+        }
+
+        if (editing) {
+            Spacer(Modifier.height(6.dp))
+            SettingsSection("Identidade") {
+                Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it.take(60) },
+                        label = { Text("Nome") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().trackInputFocus(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = bio,
+                        onValueChange = { bio = it.take(ProfileExtras.BIO_LIMIT) },
+                        label = { Text("Bio") },
+                        minLines = 2,
+                        maxLines = 4,
+                        supportingText = {
+                            Text(
+                                "${bio.length}/${ProfileExtras.BIO_LIMIT}",
+                                color = Tokens.textLow,
+                                fontSize = 10.sp,
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth().trackInputFocus(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            chooseProfileImage("Escolha a foto de perfil")?.let { avatarFile = it }
+                        }) {
+                            Icon(Icons.Filled.Image, null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(if (avatarFile == null) "Trocar foto" else "Foto escolhida", color = accent)
+                        }
+                        TextButton(onClick = {
+                            chooseProfileImage("Escolha a capa do perfil")?.let { coverFile = it }
+                        }) {
+                            Icon(Icons.Filled.Image, null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text(if (coverFile == null) "Trocar capa" else "Capa escolhida", color = accent)
+                        }
+                    }
+                    if (avatarFile != null || coverFile != null) {
+                        Text(
+                            "As imagens sobem quando você salvar o perfil.",
+                            color = Tokens.textLow,
+                            fontSize = 10.sp,
+                        )
+                    }
+                }
+            }
+
+            SettingsSection("Cor e efeitos") {
+                SettingsRow("Cor do perfil", "Destaques, gráficos e detalhes.") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ColorPalette.entries.forEach { preset ->
+                            SearchChip(preset.label, extras.accent == preset.id) {
+                                c.updateProfile { it.copy(accent = preset.id) }
+                            }
+                        }
+                    }
+                }
+                SettingsRow("Gradiente na capa", "Usa a cor do perfil quando não há imagem.") {
+                    Switch(
+                        checked = extras.style.coverGradient,
+                        onCheckedChange = { value ->
+                            c.updateProfile { it.copy(style = it.style.copy(coverGradient = value)) }
+                        },
+                        colors = openfySwitchColors(),
+                    )
+                }
+                SettingsRow("Movimento", "Transições suaves na capa e nos cartões.") {
+                    Switch(
+                        checked = extras.style.motion,
+                        onCheckedChange = { value ->
+                            c.updateProfile { it.copy(style = it.style.copy(motion = value)) }
+                        },
+                        colors = openfySwitchColors(),
+                    )
+                }
+                SettingsRow("Brilho", "Contorno iluminado nos cartões.") {
+                    Switch(
+                        checked = extras.style.glow,
+                        onCheckedChange = { value ->
+                            c.updateProfile { it.copy(style = it.style.copy(glow = value)) }
+                        },
+                        colors = openfySwitchColors(),
+                    )
+                }
+            }
+
+            SettingsSection("Quem vê suas estatísticas") {
+                Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ProfileStatsVisibility.all.forEach { value ->
+                            SearchChip(ProfileStatsVisibility.label(value), extras.statsVisibility == value) {
+                                c.updateProfile { it.copy(statsVisibility = value) }
+                            }
+                        }
+                    }
+                    Text(
+                        "Privado mantém os números só neste perfil. Seguidores/público ficam " +
+                            "prontos para quando o perfil social for liberado.",
+                        color = Tokens.textLow,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+            }
+
+            SettingsSection("Cartões de estatística") {
+                Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                    order.forEachIndexed { index, id ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                ProfileStatsCards.label(id),
+                                color = Tokens.textHigh,
+                                fontSize = 12.sp,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(
+                                onClick = { c.moveProfileCard(id, -1) },
+                                enabled = index > 0,
+                                modifier = Modifier.size(28.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.KeyboardArrowUp,
+                                    "Mover para cima",
+                                    tint = if (index > 0) Tokens.textLow else Tokens.textLow.copy(alpha = 0.3f),
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                            IconButton(
+                                onClick = { c.moveProfileCard(id, 1) },
+                                enabled = index < order.lastIndex,
+                                modifier = Modifier.size(28.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.KeyboardArrowDown,
+                                    "Mover para baixo",
+                                    tint = if (index < order.lastIndex) {
+                                        Tokens.textLow
+                                    } else {
+                                        Tokens.textLow.copy(alpha = 0.3f)
+                                    },
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                            Switch(
+                                checked = id !in hidden,
+                                onCheckedChange = { c.toggleProfileCard(id, it) },
+                                colors = openfySwitchColors(),
+                            )
+                        }
+                    }
+                }
+            }
+
+            SettingsSection("Faixas fixadas") {
+                Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+                    Box {
+                        Button(
+                            onClick = { pinMenuOpen = true },
+                            enabled = extras.pins.size < ProfileExtras.PIN_LIMIT,
+                        ) {
+                            Icon(Icons.Filled.Add, null, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(5.dp))
+                            Text("Fixar uma curtida")
+                        }
+                        DropdownMenu(
+                            expanded = pinMenuOpen,
+                            onDismissRequest = { pinMenuOpen = false },
+                        ) {
+                            val available = liked.filter { track ->
+                                extras.pins.none { it.id == track.id }
+                            }
+                            if (available.isEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Nenhuma curtida disponível", fontSize = 12.sp) },
+                                    onClick = { pinMenuOpen = false },
+                                    enabled = false,
+                                )
+                            } else {
+                                available.take(30).forEach { track ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(
+                                                    track.title,
+                                                    fontSize = 12.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                                Text(
+                                                    track.artist,
+                                                    color = Tokens.textLow,
+                                                    fontSize = 10.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            c.addProfilePin(track)
+                                            pinMenuOpen = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Text(
+                        "${extras.pins.size}/${ProfileExtras.PIN_LIMIT} fixadas. " +
+                            "Use as setas para mudar a ordem.",
+                        color = Tokens.textLow,
+                        fontSize = 10.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    if (extras.pins.isEmpty()) {
+                        Text(
+                            "Nada fixado ainda — escolha entre as suas curtidas.",
+                            color = Tokens.textLow,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                }
+            }
+
+            Row(
+                Modifier.padding(top = 14.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Button(
+                    onClick = {
+                        c.saveProfile(name, extras.copy(bio = bio), avatarFile, coverFile)
+                        avatarFile = null
+                        coverFile = null
+                        editing = false
+                    },
+                    enabled = !account.profileBusy,
+                ) {
+                    if (account.profileBusy) {
+                        CircularProgressIndicator(
+                            Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = Tokens.ink,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text("Salvar perfil")
+                }
+                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = {
+                    name = profile?.displayName.orEmpty()
+                    bio = extras.bio
+                    avatarFile = null
+                    coverFile = null
+                    editing = false
+                }) {
+                    Text("Cancelar", color = Tokens.textLow)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+private fun nameOrFallback(name: String?, email: String): String =
+    name?.takeIf { it.isNotBlank() }
+        ?: email.substringBefore("@").ifBlank { "Conta Openfy" }
+
+@Composable
+private fun ProfileCover(url: String, gradient: Boolean, accent: Color, glow: Boolean) {
+    var bitmap by remember(url) { mutableStateOf(ArtworkCache.peek(url)) }
+    LaunchedEffect(url) {
+        if (url.isBlank() || bitmap != null) return@LaunchedEffect
+        bitmap = ArtworkCache.get(url)
+    }
+    Box(
+        Modifier.fillMaxSize().background(
+            if (gradient || url.isBlank()) {
+                Brush.linearGradient(
+                    listOf(
+                        accent.copy(alpha = if (glow) 0.55f else 0.35f),
+                        Tokens.panelHigh,
+                        Tokens.ink,
+                    ),
+                )
+            } else {
+                Brush.verticalGradient(listOf(Tokens.panelHigh, Tokens.ink))
+            },
+        ),
+    ) {
+        val image = bitmap
+        if (image != null) {
+            Image(image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        }
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(
+                    listOf(Color.Transparent, Tokens.ink.copy(alpha = 0.78f)),
+                ),
+            ),
+        )
+    }
+}
+
+@Composable
+private fun ProfileAvatar(url: String, size: Dp, accent: Color) {
+    Box(
+        Modifier.size(size).clip(CircleShape)
+            .background(accent.copy(alpha = 0.28f))
+            .padding(3.dp),
+    ) {
+        Cover(url, size - 6.dp, radius = (size - 6.dp) / 2)
+    }
+}
+
+@Composable
+private fun ProfileStatCard(
+    id: String,
+    stats: ProfileStatsData?,
+    accent: Color,
+    modifier: Modifier = Modifier,
+) {
+    val label = ProfileStatsCards.label(id)
+    val (value, detail) = when (id) {
+        ProfileStatsCards.MINUTES -> formatProfileMinutes(stats?.minutes ?: 0L) to "no mês"
+        ProfileStatsCards.PLAYS -> "${stats?.plays ?: 0}" to "execuções"
+        ProfileStatsCards.LIKES -> "${stats?.likes ?: 0}" to "curtidas"
+        ProfileStatsCards.PLAYLISTS -> "${stats?.playlists ?: 0}" to "playlists"
+        ProfileStatsCards.TOP_ARTISTS ->
+            (stats?.topArtists?.firstOrNull()?.name ?: "—") to "artista mais ouvido"
+        ProfileStatsCards.TOP_TRACKS ->
+            (stats?.topTracks?.firstOrNull()?.track?.title ?: "—") to "faixa mais ouvida"
+        else -> "—" to ""
+    }
+    Column(
+        modifier.clip(RoundedCornerShape(12.dp)).background(Tokens.panel)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(6.dp).clip(CircleShape).background(accent))
+            Spacer(Modifier.width(6.dp))
+            Text(label, color = Tokens.textLow, fontSize = 11.sp)
+        }
+        Text(
+            value,
+            color = Tokens.textHigh,
+            fontSize = if (id == ProfileStatsCards.TOP_ARTISTS || id == ProfileStatsCards.TOP_TRACKS) {
+                15.sp
+            } else {
+                22.sp
+            },
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Text(
+            detail,
+            color = Tokens.textLow,
+            fontSize = 10.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+private fun formatProfileMinutes(minutes: Long): String {
+    if (minutes < 60) return "$minutes min"
+    val hours = minutes / 60
+    val rest = minutes % 60
+    return if (rest == 0L) "${hours}h" else "${hours}h ${rest}m"
+}
+
+@Composable
+private fun ProfileTopArtists(artists: List<ProfileArtistStat>, accent: Color) {
+    Text(
+        "Top artistas",
+        color = Tokens.textHigh,
+        fontSize = 15.sp,
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(top = 18.dp, bottom = 4.dp),
+    )
+    artists.forEachIndexed { index, artist ->
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "${index + 1}",
+                color = accent,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.width(22.dp),
+            )
+            Text(
+                artist.name.ifBlank { "Artista" },
+                color = Tokens.textHigh,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text("${artist.plays} plays", color = Tokens.textLow, fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
+private fun ProfileTopTrackRow(
+    position: Int,
+    track: Track,
+    plays: Long,
+    accent: Color,
+    onPlay: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onPlay)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "$position",
+            color = accent,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.width(22.dp),
+        )
+        Cover(track.thumbnail, 38.dp, radius = 7.dp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                track.title,
+                color = Tokens.textHigh,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                track.artist,
+                color = Tokens.textLow,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text("$plays plays", color = Tokens.textLow, fontSize = 11.sp)
+    }
+}
+
+@Composable
+private fun ProfilePinRow(
+    pin: ProfilePin,
+    editing: Boolean,
+    accent: Color,
+    onPlay: () -> Unit,
+    onUp: () -> Unit,
+    onDown: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Cover(pin.thumbnail, 42.dp, radius = 8.dp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                pin.title,
+                color = Tokens.textHigh,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                pin.artist,
+                color = Tokens.textLow,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            formatTime(pin.durationSec.toDouble()),
+            color = Tokens.textLow,
+            fontSize = 11.sp,
+            modifier = Modifier.padding(horizontal = 6.dp),
+        )
+        if (editing) {
+            IconButton(onClick = onUp, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Filled.KeyboardArrowUp,
+                    "Mover para cima",
+                    tint = Tokens.textLow,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+            IconButton(onClick = onDown, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Filled.KeyboardArrowDown,
+                    "Mover para baixo",
+                    tint = Tokens.textLow,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+            IconButton(onClick = onRemove, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Filled.Delete,
+                    "Remover do perfil",
+                    tint = Tokens.textLow,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        } else {
+            IconButton(onClick = onPlay, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    "Tocar",
+                    tint = accent,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun SettingsScreen(c: AppController) {
     val quality by c.audioQuality.collectAsState()
@@ -2896,7 +3702,14 @@ private fun SettingsScreen(c: AppController) {
     val palette by c.palette.collectAsState()
     val playerLayout by c.playerLayout.collectAsState()
     val coverGradient by c.coverGradient.collectAsState()
+    val discordEnabled by c.discordEnabled.collectAsState()
+    val discordAppId by c.discordAppId.collectAsState()
+    val discordPrivate by c.discordPrivate.collectAsState()
+    val discordStatus by c.discord.status.collectAsState()
+    var appIdDraft by remember { mutableStateOf(discordAppId) }
     var eqOpen by remember { mutableStateOf(false) }
+
+    LaunchedEffect(discordAppId) { appIdDraft = discordAppId }
 
     Column(
         Modifier.fillMaxSize().padding(horizontal = 24.dp)
@@ -3080,6 +3893,10 @@ private fun SettingsScreen(c: AppController) {
                         TextButton(onClick = { c.account.signOut() }, enabled = !account.busy) {
                             Text("Sair", color = Tokens.textLow)
                         }
+                        Spacer(Modifier.width(8.dp))
+                        TextButton(onClick = { c.openProfile() }) {
+                            Text("Abrir perfil", color = Tokens.accent2)
+                        }
                     }
                 }
                 account.status?.let {
@@ -3088,6 +3905,73 @@ private fun SettingsScreen(c: AppController) {
                 account.error?.let {
                     Text(it, color = Color(0xFFFF8A80), fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
                 }
+            }
+        }
+
+        SettingsSection("Integrações") {
+            SettingsRow(
+                "Discord Rich Presence",
+                "Mostra a faixa atual no seu perfil do Discord. Usa o app desktop aberto, sem login.",
+            ) {
+                Switch(
+                    checked = discordEnabled,
+                    onCheckedChange = { c.setDiscordEnabled(it) },
+                    colors = openfySwitchColors(),
+                )
+            }
+            Column(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+                Text(
+                    "Application ID",
+                    color = Tokens.textHigh,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    "Crie um aplicativo em discord.com/developers, copie o Application ID " +
+                        "e envie as imagens \"openfy\", \"play\" e \"pause\" em Rich Presence > Art Assets.",
+                    color = Tokens.textLow,
+                    fontSize = 11.sp,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = appIdDraft,
+                        onValueChange = { appIdDraft = it.filter { char -> char.isDigit() }.take(32) },
+                        singleLine = true,
+                        placeholder = { Text("Ex.: 123456789012345678", color = Tokens.textLow, fontSize = 12.sp) },
+                        modifier = Modifier.width(260.dp).trackInputFocus(),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = { c.setDiscordAppId(appIdDraft) },
+                        enabled = appIdDraft != discordAppId,
+                    ) {
+                        Text("Salvar ID")
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(discordStatus, color = Tokens.textLow, fontSize = 11.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { c.testDiscord() }, enabled = discordEnabled) {
+                        Text("Testar conexão", color = Tokens.accent)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Precisa do Discord desktop aberto.",
+                        color = Tokens.textLow,
+                        fontSize = 10.sp,
+                    )
+                }
+            }
+            SettingsRow(
+                "Modo privado",
+                "Mostra só \"Ouvindo música\" e o nome do Openfy, sem título nem artista.",
+            ) {
+                Switch(
+                    checked = discordPrivate,
+                    onCheckedChange = { c.setDiscordPrivate(it) },
+                    colors = openfySwitchColors(),
+                )
             }
         }
 

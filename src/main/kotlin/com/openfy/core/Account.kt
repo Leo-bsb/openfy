@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.encodeToJsonElement
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -34,6 +36,11 @@ data class StoredSession(
 data class AccountState(
     val session: StoredSession? = null,
     val profile: RemoteProfile? = null,
+    val profileExtras: ProfileExtras = ProfileExtras(),
+    val profileStats: ProfileStatsData? = null,
+    val profileBusy: Boolean = false,
+    val profileStatsLoading: Boolean = false,
+    val profileStatus: String? = null,
     val busy: Boolean = false,
     val status: String? = null,
     val error: String? = null,
@@ -72,6 +79,9 @@ class AccountManager(
 
     private var requestJob: Job? = null
     private var pendingSync = false
+    private var prefsActivityId: String? = null
+    private var prefsSaveJob: Job? = null
+    private var profileStatsJob: Job? = null
 
     init {
         restore()
@@ -183,6 +193,250 @@ class AccountManager(
                     _state.update { it.copy(profile = profile) }
                 }
             }
+        loadProfileExtras(session)
+    }
+
+    /**
+     * Carrega o snapshot privado do perfil. O cache local vence quando tem
+     * updatedAt maior (edição feita offline); o remoto vence caso contrário.
+     */
+    private suspend fun loadProfileExtras(session: StoredSession) {
+        val local = cachedExtras(session.userId)
+        val remote = runCatching { api.profilePrefs(session.accessToken, session.userId) }.getOrNull()
+        val remoteExtras = remote?.payload?.let { payload ->
+            runCatching { json.decodeFromJsonElement<ProfileExtras>(payload) }.getOrNull()
+        }
+        prefsActivityId = remote?.id
+        val chosen = when {
+            remoteExtras == null -> local ?: ProfileExtras()
+            local == null -> remoteExtras
+            local.updatedAt > remoteExtras.updatedAt -> local
+            else -> remoteExtras
+        }.sanitized()
+        _state.update { it.copy(profileExtras = chosen) }
+        cacheExtras(session.userId, chosen)
+        cachedStats(session.userId)?.let { stats ->
+            _state.update { it.copy(profileStats = stats) }
+        }
+        if (local != null && local.updatedAt > (remoteExtras?.updatedAt ?: 0L)) {
+            requestPrefsSave()
+        }
+    }
+
+    private fun prefsKey(userId: String) = "profile.prefs.$userId"
+
+    private fun statsKey(userId: String) = "profile.stats.$userId"
+
+    private fun cachedExtras(userId: String): ProfileExtras? =
+        db.get(prefsKey(userId))
+            ?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { json.decodeFromString<ProfileExtras>(it) }.getOrNull() }
+
+    private fun cacheExtras(userId: String, value: ProfileExtras) {
+        runCatching { db.put(prefsKey(userId), json.encodeToString(value)) }
+    }
+
+    private fun cachedStats(userId: String): ProfileStatsData? =
+        db.get(statsKey(userId))
+            ?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { json.decodeFromString<ProfileStatsData>(it) }.getOrNull() }
+
+    private fun cacheStats(userId: String, value: ProfileStatsData) {
+        runCatching { db.put(statsKey(userId), json.encodeToString(value)) }
+    }
+
+    /** Atualiza o perfil inteiro: nome, avatar, capa e preferências. */
+    fun saveProfile(
+        displayName: String,
+        extras: ProfileExtras,
+        avatarFile: java.io.File? = null,
+        coverFile: java.io.File? = null,
+    ) {
+        val session = _state.value.session
+        if (session == null) {
+            _state.update { it.copy(profileStatus = "Entre na conta para editar o perfil.") }
+            return
+        }
+        if (_state.value.profileBusy) return
+        scope.launch {
+            _state.update {
+                it.copy(profileBusy = true, profileStatus = "Salvando perfil…", error = null)
+            }
+            val cleanName = displayName.trim().take(60).ifBlank {
+                _state.value.profile?.displayName.orEmpty()
+            }
+            var avatarUrl = _state.value.profile?.avatarUrl.orEmpty()
+            var coverUrl = extras.coverUrl
+            val result = runCatching {
+                val active = ensureSession() ?: throw SupabaseException(0, "Sessão expirada.")
+                if (avatarFile != null) {
+                    avatarUrl = api.uploadProfileImage(
+                        active.accessToken,
+                        active.userId,
+                        "avatars",
+                        "avatar-${System.currentTimeMillis()}",
+                        avatarFile,
+                    )
+                }
+                if (coverFile != null) {
+                    coverUrl = api.uploadProfileImage(
+                        active.accessToken,
+                        active.userId,
+                        "covers",
+                        "profile-${System.currentTimeMillis()}",
+                        coverFile,
+                    )
+                }
+                api.updateProfile(active.accessToken, active.userId, cleanName, avatarUrl)
+                val next = extras.copy(
+                    coverUrl = coverUrl,
+                    updatedAt = System.currentTimeMillis(),
+                ).sanitized()
+                savePrefsRemote(active, next)
+                val profile = api.profile(active.accessToken, active.userId)
+                profile to next
+            }
+            result.onSuccess { (profile, next) ->
+                if (profile != null) {
+                    _state.update {
+                        it.copy(
+                            profile = profile,
+                            profileExtras = next,
+                            profileBusy = false,
+                            profileStatus = "Perfil atualizado.",
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            profileExtras = next,
+                            profileBusy = false,
+                            profileStatus = "Perfil atualizado.",
+                        )
+                    }
+                }
+                cacheExtras(session.userId, next)
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        profileBusy = false,
+                        profileStatus = null,
+                        error = error.message ?: "Não foi possível salvar o perfil.",
+                    )
+                }
+            }
+        }
+    }
+
+    /** Pins, cor, bio e cartões de estatística: salva local e sincroniza em debounce. */
+    fun updateProfileExtras(transform: (ProfileExtras) -> ProfileExtras) {
+        val userId = _state.value.session?.userId
+        val next = transform(_state.value.profileExtras)
+            .copy(updatedAt = System.currentTimeMillis())
+            .sanitized()
+        _state.update { it.copy(profileExtras = next) }
+        if (userId != null) cacheExtras(userId, next)
+        requestPrefsSave()
+    }
+
+    private fun requestPrefsSave() {
+        if (_state.value.session == null) return
+        prefsSaveJob?.cancel()
+        prefsSaveJob = scope.launch {
+            delay(900)
+            val active = ensureSession() ?: return@launch
+            val extras = _state.value.profileExtras
+            runCatching { savePrefsRemote(active, extras) }
+                .onSuccess {
+                    _state.update { it.copy(profileStatus = "Perfil sincronizado.") }
+                }
+                .onFailure {
+                    _state.update {
+                        it.copy(profileStatus = "Perfil salvo neste computador; sincroniza quando a rede voltar.")
+                    }
+                }
+        }
+    }
+
+    private suspend fun savePrefsRemote(session: StoredSession, extras: ProfileExtras) {
+        val payload = json.encodeToJsonElement(extras.sanitized())
+        val newId = api.saveProfilePrefs(session.accessToken, session.userId, payload)
+        val oldId = prefsActivityId
+        prefsActivityId = newId
+        cacheExtras(session.userId, extras)
+        if (oldId != null && oldId != newId) {
+            runCatching { api.deleteActivity(session.accessToken, oldId) }
+        }
+    }
+
+    /** Estatísticas do mês corrente, agregadas no servidor; cache para abrir offline. */
+    fun loadProfileStats(force: Boolean = false) {
+        val session = _state.value.session ?: return
+        if (_state.value.profileStatsLoading) return
+        if (!force && _state.value.profileStats != null) return
+        profileStatsJob?.cancel()
+        profileStatsJob = scope.launch {
+            _state.update { it.copy(profileStatsLoading = true) }
+            val result = runCatching {
+                val month = java.time.YearMonth.now()
+                val listening = api.monthlyListening(session.accessToken, month).firstOrNull()
+                val artists = api.monthlyTopArtists(session.accessToken, month, 8)
+                val topRows = api.monthlyTopTracks(session.accessToken, month, 5)
+                val byId = api.tracks(session.accessToken, topRows.map { it.trackId })
+                    .associateBy { it.id }
+                val likes = api.likes(session.accessToken).count { !it.deleted }
+                val playlists = (
+                    api.memberPlaylistIds(session.accessToken, session.userId) +
+                        api.ownedPlaylistIds(session.accessToken, session.userId)
+                    ).toSet().size
+                ProfileStatsData(
+                    month = month.atDay(1).toString(),
+                    minutes = (listening?.playedMs ?: 0L) / 60_000L,
+                    plays = listening?.plays ?: 0L,
+                    uniqueTracks = listening?.uniqueTracks ?: 0L,
+                    likes = likes,
+                    playlists = playlists,
+                    topArtists = artists.map { ProfileArtistStat(it.artist, it.plays) },
+                    topTracks = topRows.mapNotNull { row ->
+                        byId[row.trackId]?.let { remote ->
+                            ProfileTrackStat(
+                                Track(
+                                    id = remote.id,
+                                    title = remote.title,
+                                    artist = remote.artist,
+                                    album = remote.album,
+                                    durationSec = remote.duration,
+                                    thumbnail = remote.thumbnail,
+                                ),
+                                row.plays,
+                            )
+                        }
+                    },
+                    updatedAt = System.currentTimeMillis(),
+                )
+            }
+            result.onSuccess { stats ->
+                cacheStats(session.userId, stats)
+                _state.update { it.copy(profileStats = stats, profileStatsLoading = false) }
+            }.onFailure {
+                val cached = cachedStats(session.userId)
+                _state.update {
+                    it.copy(
+                        profileStats = cached ?: it.profileStats,
+                        profileStatsLoading = false,
+                        profileStatus = if (cached != null) {
+                            "Estatísticas offline (última atualização salva)."
+                        } else {
+                            "Não foi possível carregar as estatísticas."
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    fun clearProfileStatus() {
+        _state.update { it.copy(profileStatus = null) }
     }
 
     fun signIn(email: String, password: String) {

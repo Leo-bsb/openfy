@@ -1,15 +1,18 @@
 # Perfis, social e Discord
 
-Data: 2026-10-28. Base: desktop 0.2.8 e Android 0.4.1.
+Data: 2026-10-28. Base: desktop 0.2.9 e Android 0.4.2.
 
 ## Resumo
 
 A ideia é viável e o banco já tem metade do caminho: `profiles`, `follows`,
 `activities`, `play_events`, playlists públicas e os buckets `avatars`/`covers`
-existem desde a `0001_initial.sql`. O que falta é tela, edição de perfil,
-privacidade e uma camada de estatísticas.
+existem desde a `0001_initial.sql`. O perfil próprio (foto, capa, cor, bio,
+faixas fixadas e estatísticas) e o Discord Rich Presence do desktop já foram
+implementados nas versões 0.2.9/0.4.2. O que falta é a camada social: perfil de
+terceiros, follow com privacidade, block/report, feed e as migrations
+`0002`/`0003`.
 
-Recomendação:
+Plano original (mantido como referência; a ordem foi seguida):
 
 1. **Discord Rich Presence no desktop primeiro** (2–4 dias, sem migration).
    É o ganho mais visível por menos risco.
@@ -24,6 +27,30 @@ Não vale abrir um diretório global de usuários nem expor histórico bruto de
 reprodução. O perfil deve ser encontrado por `@handle`/link, com estatísticas
 agregadas e visibilidade controlada.
 
+## Estado da implementação (0.2.9 / 0.4.2)
+
+- **Desktop**: tela "Perfil" na sidebar, com avatar e capa (upload para os
+  buckets `avatars`/`covers`), nome, bio, cor, efeitos, visibilidade, ordem e
+  cartões ocultos das estatísticas, top artistas/faixas e até 10 faixas
+  fixadas reordenáveis. O snapshot é sanitizado no cliente, salvo no cache
+  local e sincronizado com LWW por `updatedAt`.
+- **Android**: a mesma tela pelo Início/Ajustes, com seleção de imagens pela
+  galeria, cache em `SharedPreferences` e sync com debounce. O snapshot usa a
+  linha privada de `activities` (`type = profile_prefs`) enquanto a `0003` não
+  é aplicada, então PC e celular leem e gravam o mesmo perfil.
+- **Discord**: Rich Presence no desktop via IPC local, desligado por padrão,
+  com toggle em Ajustes › Integrações e Application ID configurável. O payload
+  mostra título/artista e play/pause, é limitado por throttle e limpa a
+  atividade ao pausar/sair. Teste ao vivo depende de criar o Application no
+  Discord Developer Portal e subir os assets `openfy`, `play` e `pause`.
+- **Pendente**: aplicar `0002_security_hardening.sql` depois da adoção dos
+  apps novos; corrigir `profiles_select`/`follows_select`; criar a `0003` com
+  colunas de perfil, pins e RPC de estatísticas; block/report; perfil de
+  terceiros e feed.
+- **Validação**: 38 testes no desktop e 39 no Android; o perfil Android ainda
+  não foi exercitado em aparelho (nenhum device conectado) e o Discord não foi
+  testado com um Application ID real.
+
 ## O que já existe
 
 | Área | Estado atual | Reaproveitamento |
@@ -35,7 +62,7 @@ agregadas e visibilidade controlada.
 | `likes` | Curtidas por usuário | Base para faixas fixadas e top faixas |
 | `playlists` | `visibility` público/privado, membros e convite | Playlists públicas no perfil |
 | Buckets | `avatars` e `covers`, leitura pública, escrita na pasta do usuário | Avatar e capa sem infraestrutura nova |
-| Clients | Só carregam o próprio `RemoteProfile`; não há tela de perfil | Reaproveitar `uploadCover` do desktop e `CoverImage` do Android |
+| Clients | Desktop e Android já têm tela de perfil, upload de avatar/capa e cache local; falta perfil de terceiros | Reaproveitar `ProfileExtras`, `ProfileScreen` e o snapshot privado entre os dois clients |
 
 ### Lacunas e riscos antes de expor perfis
 
@@ -196,7 +223,7 @@ Manter previsível e barato:
 
 ## Discord Rich Presence
 
-### Desktop (recomendado agora)
+### Desktop (implementado na 0.2.9)
 
 O Rich Presence pode ser definido **sem OAuth** enquanto o Discord desktop
 estiver aberto; basta um Application ID público. O transporte é IPC local:
@@ -219,6 +246,12 @@ Comportamento:
   plano na próxima faixa ou após alguns minutos.
 - Ao sair/parar, limpar a atividade.
 
+Implementação atual: `DiscordPresence.kt` conecta ao pipe local, envia
+`SET_ACTIVITY` com throttle e reconecta em segundo plano. O toggle e o
+Application ID ficam em Ajustes › Integrações; sem ID configurado nada é
+enviado. Falta apenas criar o Application e os assets no portal do Discord para
+o teste ao vivo.
+
 Privacidade:
 
 - Desligado por padrão; toggle em Ajustes › Integrações.
@@ -240,7 +273,8 @@ Riscos e esforço:
 Desde o Social SDK 1.10 (agosto/2026), o Discord suporta Rich Presence no
 Android **sem autenticação**, se o app do Discord estiver instalado e logado.
 Porém isso exige o SDK nativo (C++/NDK/JNI), aumenta o APK e não é o mesmo
-esforço do desktop. Para a 0.4.x, não vale.
+esforço do desktop. Para a 0.4.x, não vale; a 0.4.2 mantém o compartilhamento
+pelo share sheet e deixa o Rich Presence só no PC.
 
 Alternativa no Android: botão "Compartilhar faixa" pelo share sheet do sistema.
 "Ouvindo agora" entre seguidores é uma feature social separada, com opt-in e
@@ -259,7 +293,8 @@ expiração, não Rich Presence.
 
 Sugestão de ordem: **4 → 1 → 2 → 3 → 5**. O Discord entrega valor visível
 imediatamente; o perfil próprio organiza a base; o social só entra quando
-block/report existir.
+block/report existir. As fases 1, 2 e 4 estão implementadas em 0.2.9/0.4.2; a
+fase 0 (policies/0002) e as fases 3 e 5 seguem pendentes.
 
 ## Critérios de aceite
 

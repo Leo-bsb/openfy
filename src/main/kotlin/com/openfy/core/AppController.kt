@@ -15,6 +15,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -38,6 +39,7 @@ sealed interface Screen {
     data object TopPlayed : Screen
     data object Recap : Screen
     data object Downloads : Screen
+    data object Profile : Screen
     data object Settings : Screen
     data class PlaylistView(val id: String) : Screen
     data class ArtistView(val id: String) : Screen
@@ -113,6 +115,11 @@ class AppController(
     val playerLayout = MutableStateFlow(PlayerLayout.CENTER)
     val coverGradient = MutableStateFlow(true)
 
+    // ------------------------------------------------------------------ Discord
+    val discordEnabled = MutableStateFlow(false)
+    val discordAppId = MutableStateFlow("")
+    val discordPrivate = MutableStateFlow(true)
+
     // ------------------------------------------------------------------ updates
     val updateAutoCheck = MutableStateFlow(true)
     val updateStatus = MutableStateFlow<UpdateStatus?>(null)
@@ -177,6 +184,9 @@ class AppController(
     val account = AccountManager(db, scope)
     private val recommender = Recommender(db)
 
+    /** Rich Presence local; sem Application ID configurado nada é enviado. */
+    val discord = DiscordPresence(scope)
+
     init {
         player.radioSource = { token -> yt.radioNext(token) }
         player.radioStarter = { id -> yt.radio(id, "RDAMVM$id") }
@@ -193,6 +203,14 @@ class AppController(
         coverGradient.value = runCatching {
             db.get("ui.player.coverGradient")?.toBooleanStrict()
         }.getOrNull() ?: true
+        discordEnabled.value = runCatching {
+            db.get("discord.enabled")?.toBooleanStrict()
+        }.getOrNull() ?: false
+        discordAppId.value = db.get("discord.appId").orEmpty()
+        discordPrivate.value = runCatching {
+            db.get("discord.private")?.toBooleanStrict()
+        }.getOrNull() ?: true
+        discord.configure(discordEnabled.value, discordAppId.value, discordPrivate.value)
         updateAutoCheck.value = runCatching {
             db.get("update.autoCheck")?.toBooleanStrict()
         }.getOrNull() ?: true
@@ -218,6 +236,12 @@ class AppController(
                     refreshListening()
                 }
             }
+        }
+        scope.launch {
+            combine(player.current, player.playing) { track, playing -> track to playing }
+                .collect { (track, playing) ->
+                    discord.update(track, playing, player.position.value)
+                }
         }
     }
 
@@ -274,6 +298,7 @@ class AppController(
             Screen.Explore -> loadExplore()
             Screen.Charts -> loadCharts()
             Screen.Downloads -> refreshDownloads()
+            Screen.Profile -> account.loadProfileStats()
             Screen.Settings -> loadSettings()
             Screen.Search -> refreshRecentSearches()
             Screen.Home -> loadStats()
@@ -297,6 +322,7 @@ class AppController(
         Screen.TopPlayed -> "top"
         Screen.Recap -> "recap"
         Screen.Downloads -> "downloads"
+        Screen.Profile -> "profile"
         Screen.Settings -> "settings"
         is Screen.PlaylistView -> "playlist:${s.id}"
         is Screen.ArtistView -> "artist:${s.id}"
@@ -313,6 +339,7 @@ class AppController(
         token == "top" -> Screen.TopPlayed
         token == "recap" -> Screen.Recap
         token == "downloads" -> Screen.Downloads
+        token == "profile" -> Screen.Profile
         token == "settings" -> Screen.Settings
         token.startsWith("playlist:") -> Screen.PlaylistView(token.removePrefix("playlist:"))
         token.startsWith("artist:") -> Screen.ArtistView(token.removePrefix("artist:"))
@@ -1605,6 +1632,105 @@ class AppController(
     fun setCoverGradient(enabled: Boolean) {
         coverGradient.value = enabled
         scope.launch(Dispatchers.IO) { db.put("ui.player.coverGradient", enabled.toString()) }
+    }
+
+    // ------------------------------------------------------------------ Discord
+    fun setDiscordEnabled(enabled: Boolean) {
+        discordEnabled.value = enabled
+        scope.launch(Dispatchers.IO) { db.put("discord.enabled", enabled.toString()) }
+        discord.configure(enabled, discordAppId.value, discordPrivate.value)
+    }
+
+    fun setDiscordAppId(raw: String) {
+        val value = raw.filter { it.isDigit() }.take(32)
+        discordAppId.value = value
+        scope.launch(Dispatchers.IO) { db.put("discord.appId", value) }
+        discord.configure(discordEnabled.value, value, discordPrivate.value)
+    }
+
+    fun setDiscordPrivate(enabled: Boolean) {
+        discordPrivate.value = enabled
+        scope.launch(Dispatchers.IO) { db.put("discord.private", enabled.toString()) }
+        discord.configure(discordEnabled.value, discordAppId.value, enabled)
+    }
+
+    fun testDiscord() = discord.test()
+
+    // ------------------------------------------------------------------ profile
+    fun openProfile() = go(Screen.Profile)
+
+    fun saveProfile(
+        displayName: String,
+        extras: ProfileExtras,
+        avatarFile: File? = null,
+        coverFile: File? = null,
+    ) = account.saveProfile(displayName, extras, avatarFile, coverFile)
+
+    fun updateProfile(transform: (ProfileExtras) -> ProfileExtras) =
+        account.updateProfileExtras(transform)
+
+    fun addProfilePin(track: Track) {
+        account.updateProfileExtras { extras ->
+            if (extras.pins.size >= ProfileExtras.PIN_LIMIT) {
+                extras
+            } else {
+                extras.copy(
+                    pins = (extras.pins + ProfilePin.from(track))
+                        .distinctBy { it.id }
+                        .take(ProfileExtras.PIN_LIMIT),
+                )
+            }
+        }
+    }
+
+    fun removeProfilePin(id: String) {
+        account.updateProfileExtras { extras ->
+            extras.copy(pins = extras.pins.filterNot { it.id == id })
+        }
+    }
+
+    fun moveProfilePin(id: String, delta: Int) {
+        account.updateProfileExtras { extras ->
+            val list = extras.pins.toMutableList()
+            val from = list.indexOfFirst { it.id == id }
+            val to = (from + delta).coerceIn(0, (list.size - 1).coerceAtLeast(0))
+            if (from < 0 || from == to) {
+                extras
+            } else {
+                list.add(to, list.removeAt(from))
+                extras.copy(pins = list)
+            }
+        }
+    }
+
+    fun moveProfileCard(id: String, delta: Int) {
+        account.updateProfileExtras { extras ->
+            val order = ProfileStatsCards.sanitizeOrder(extras.statsOrder).toMutableList()
+            val from = order.indexOf(id)
+            val to = (from + delta).coerceIn(0, (order.size - 1).coerceAtLeast(0))
+            if (from < 0 || from == to) {
+                extras
+            } else {
+                order.add(to, order.removeAt(from))
+                extras.copy(statsOrder = order)
+            }
+        }
+    }
+
+    fun toggleProfileCard(id: String, visible: Boolean) {
+        account.updateProfileExtras { extras ->
+            val hidden = if (visible) {
+                extras.statsHidden - id
+            } else {
+                (extras.statsHidden + id).distinct()
+            }
+            extras.copy(statsHidden = hidden)
+        }
+    }
+
+    fun shutdown() {
+        discord.shutdown()
+        account.shutdown()
     }
 
     // ------------------------------------------------------------------ updates

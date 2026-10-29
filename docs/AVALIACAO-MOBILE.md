@@ -351,3 +351,23 @@ MediaSessionService com player dentro do serviço, KMP e Keystore.
   SHA-256: `A7B097B943C081812C61CFA27D55E6D35AD156883BB81208746F5EB4585E1558`.
 
 A 0.4.1 ainda não foi validada em aparelho; o último teste real foi na 0.3.1.
+
+---
+
+## Atualização 0.4.2 (2026-10-28)
+
+- **Perfil próprio**: tela acessível pelo Início e Ajustes, com foto e capa
+  escolhidas pela galeria, nome, bio, cor/efeitos, visibilidade, ordem e
+  cartões ocultos das estatísticas, top artistas/faixas e até 10 faixas
+  fixadas reordenáveis.
+- Snapshot `ProfileExtras` sanitizado, cache local por usuário, leitura remota
+  da linha privada `profile_prefs` e sync com debounce + LWW por `updatedAt`.
+  Edições offline ficam no aparelho e sobem quando a rede volta.
+- **Fila**: o diálogo agora também expõe aleatório e repetir, junto das setas
+  de reordenação.
+- Bio agora é enviada no `saveProfile` (o campo era perdido ao salvar).
+- Testes: 39 no Android (inclui `ProfilePrefsTest`) e 38 no desktop. CI verde.
+- APK 0.4.2 (versionCode 14) assinado.
+  SHA-256: `498D004F22D455113476DF372FB6125C8AF4E6FE92C003A9981E7805F1EA523E`.
+
+A 0.4.2 ainda não foi validada em aparelho; o último teste real foi na 0.3.1.

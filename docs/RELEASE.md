@@ -1,6 +1,6 @@
 # RELEASE — checklist do desktop
 
-Versão atual: **0.2.8** (mesmo número em `BuildInfo.VERSION`, `version` e
+Versão atual: **0.2.9** (mesmo número em `BuildInfo.VERSION`, `version` e
 `packageVersion` no `build.gradle.kts`). O verificador de atualizações do app
 (`UpdateChecker`) compara com a maior tag `vX.Y.Z` estável publicada aqui;
 tags com sufixo (`-android`) e prereleases/drafts são ignoradas.
@@ -16,7 +16,7 @@ integridade do download.
   ```powershell
   .\gradlew.bat --no-daemon compileKotlin
   ```
-- [ ] Commit de versão separado (ex.: `Desktop 0.2.8`), para a tag apontar
+- [ ] Commit de versão separado (ex.: `Desktop 0.2.9`), para a tag apontar
   exatamente para o código empacotado.
 
 ## 2. Build do instalador
@@ -40,7 +40,7 @@ Get-FileHash build\compose\binaries\main\msi\Openfy-*.msi -Algorithm SHA256
 
 ## 4. Tag + GitHub Release
 
-- [ ] `git tag v0.2.8` e `git push origin v0.2.8` (a partir do commit de versão).
+- [ ] `git tag v0.2.9` e `git push origin v0.2.9` (a partir do commit de versão).
 - [ ] Criar a release pela UI da API:
   `https://api.github.com/repos/Leo-bsb/openfy/releases` é lida pelo app —
   tag **sem** sufixo, `draft=false`, `prerelease=false`.
@@ -52,7 +52,7 @@ Get-FileHash build\compose\binaries\main\msi\Openfy-*.msi -Algorithm SHA256
 
 - [ ] Atualizar `site/` com a nova versão e link do instalador.
 - [ ] Atualizar a tabela de releases no `README.md`
-  (ex.: `Desktop 0.2.8: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.8`).
+  (ex.: `Desktop 0.2.9: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.9`).
 - [ ] Anotar a versão em `docs/` se houver changelog da sprint.
 
 ## 6. Conferência final

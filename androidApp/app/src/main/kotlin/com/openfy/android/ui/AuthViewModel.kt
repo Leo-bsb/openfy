@@ -50,6 +50,12 @@ import com.openfy.core.Artist
 import com.openfy.core.ArtistPage
 import com.openfy.core.Importer
 import com.openfy.core.PlayerLayout
+import com.openfy.core.ProfileArtistStat
+import com.openfy.core.ProfileExtras
+import com.openfy.core.ProfilePin
+import com.openfy.core.ProfileStatsCards
+import com.openfy.core.ProfileStatsData
+import com.openfy.core.ProfileTrackStat
 import com.openfy.core.QueueLogic
 import com.openfy.core.RemoteCollection
 import com.openfy.core.RepeatMode
@@ -73,6 +79,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.encodeToJsonElement
 import java.io.File
 import java.time.Instant
 import java.time.YearMonth
@@ -92,6 +101,11 @@ data class AuthUiState(
     val busy: Boolean = false,
     val session: StoredSession? = null,
     val profile: Profile? = null,
+    val profileExtras: ProfileExtras = ProfileExtras(),
+    val profileStats: ProfileStatsData? = null,
+    val profileStatsLoading: Boolean = false,
+    val profileBusy: Boolean = false,
+    val profileStatus: String? = null,
     val playlists: List<PlaylistDto> = emptyList(),
     val deviceName: String = "",
     val error: String? = null,
@@ -289,6 +303,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val lyricsCache = mutableMapOf<String, List<LyricLine>>()
     private var lastSessionSave = 0L
     private var lastSavedTrack = ""
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
+    private var prefsSaveJob: Job? = null
+    private var profileStatsJob: Job? = null
+    private var prefsActivityId: String? = null
     private val downloader = AudioDownloader(downloadStore) {
         _state.value.downloadLimitMb.toLong() * BYTES_PER_MB
     }
@@ -493,6 +514,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 it.copy(
                     session = null,
                     profile = null,
+                    profileExtras = ProfileExtras(),
+                    profileStats = null,
+                    profileStatus = null,
                     playlists = emptyList(),
                     likedIds = emptySet(),
                     likedTracks = emptyList(),
@@ -600,6 +624,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 offline = true,
                 offlineSavedAtMs = snapshot.savedAtMs,
                 profile = snapshot.profile ?: it.profile,
+                profileExtras = withContext(Dispatchers.IO) {
+                    store.profilePrefs(userId)
+                } ?: it.profileExtras,
+                profileStats = withContext(Dispatchers.IO) {
+                    store.profileStats(userId)
+                } ?: it.profileStats,
                 playlists = snapshot.playlists,
                 likedIds = snapshot.likedIds.toSet(),
                 likedTracks = snapshot.likedTracks,
@@ -634,6 +664,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }.getOrNull()
         }
         val topTracks = loadTopTracks(session)
+        loadProfileExtras(session)
         if (_state.value.session?.userId != session.userId) return
         _state.update {
             it.copy(
@@ -681,6 +712,316 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val byId = api.tracks(session.accessToken, rows.map { it.trackId }).associateBy { it.id }
         rows.mapNotNull { byId[it.trackId]?.toTrack() }
     }.getOrNull()
+
+    // ------------------------------------------------------------------ profile
+
+    /**
+     * Carrega o snapshot privado do perfil. O cache local vence quando tem
+     * `updatedAt` maior (edição offline); o remoto vence caso contrário.
+     */
+    private suspend fun loadProfileExtras(session: StoredSession) {
+        val local = withContext(Dispatchers.IO) { store.profilePrefs(session.userId) }
+        val remote = runCatching { api.profilePrefs(session.accessToken, session.userId) }.getOrNull()
+        val remoteExtras = remote?.payload?.let { payload ->
+            runCatching { json.decodeFromJsonElement<ProfileExtras>(payload) }.getOrNull()
+        }
+        if (_state.value.session?.userId != session.userId) return
+        prefsActivityId = remote?.id
+        val chosen = when {
+            remoteExtras == null -> local ?: ProfileExtras()
+            local == null -> remoteExtras
+            local.updatedAt > remoteExtras.updatedAt -> local
+            else -> remoteExtras
+        }.sanitized()
+        withContext(Dispatchers.IO) { store.setProfilePrefs(session.userId, chosen) }
+        val cachedStats = withContext(Dispatchers.IO) { store.profileStats(session.userId) }
+        _state.update {
+            it.copy(
+                profileExtras = chosen,
+                profileStats = it.profileStats ?: cachedStats,
+            )
+        }
+        if (local != null && local.updatedAt > (remoteExtras?.updatedAt ?: 0L)) {
+            requestPrefsSave()
+        }
+    }
+
+    /** Bio, cor, pins e cartões: salva local na hora e sincroniza com debounce. */
+    fun updateProfileExtras(transform: (ProfileExtras) -> ProfileExtras) {
+        val userId = _state.value.session?.userId
+        val next = transform(_state.value.profileExtras)
+            .copy(updatedAt = System.currentTimeMillis())
+            .sanitized()
+        _state.update { it.copy(profileExtras = next) }
+        if (userId != null) store.setProfilePrefs(userId, next)
+        requestPrefsSave()
+    }
+
+    private fun requestPrefsSave() {
+        if (_state.value.session == null) return
+        prefsSaveJob?.cancel()
+        prefsSaveJob = viewModelScope.launch {
+            delay(900)
+            val session = _state.value.session ?: return@launch
+            val extras = _state.value.profileExtras
+            runCatching {
+                withSession { active -> savePrefsRemote(active, extras) }
+            }.onSuccess {
+                if (_state.value.session?.userId == session.userId) {
+                    _state.update { it.copy(profileStatus = "Perfil sincronizado.") }
+                }
+            }.onFailure {
+                if (_state.value.session?.userId == session.userId) {
+                    _state.update {
+                        it.copy(
+                            profileStatus = "Perfil salvo neste aparelho; sincroniza quando a rede voltar.",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun savePrefsRemote(session: StoredSession, extras: ProfileExtras) {
+        val payload = json.encodeToJsonElement(extras.sanitized())
+        val newId = api.saveProfilePrefs(session.accessToken, session.userId, payload)
+        val oldId = prefsActivityId
+        prefsActivityId = newId
+        store.setProfilePrefs(session.userId, extras)
+        if (oldId != null && oldId != newId) {
+            runCatching { api.deleteActivity(session.accessToken, oldId) }
+        }
+    }
+
+    /** Atualiza nome, avatar, capa e preferências do perfil. */
+    fun saveProfile(
+        displayName: String,
+        extras: ProfileExtras,
+        avatarUri: Uri? = null,
+        coverUri: Uri? = null,
+    ) {
+        val session = _state.value.session ?: return
+        if (_state.value.profileBusy) return
+        _state.update {
+            it.copy(profileBusy = true, profileStatus = "Salvando perfil…", error = null)
+        }
+        viewModelScope.launch {
+            val cleanName = displayName.trim().take(60).ifBlank {
+                _state.value.profile?.displayName.orEmpty()
+            }
+            var avatarUrl = _state.value.profile?.avatarUrl.orEmpty()
+            var coverUrl = extras.coverUrl
+            val result = runCatching {
+                withSession { active ->
+                    avatarUri?.let { uri ->
+                        val (bytes, mime, ext) = readImage(uri)
+                        avatarUrl = api.uploadProfileImage(
+                            active.accessToken,
+                            active.userId,
+                            "avatars",
+                            "avatar-${System.currentTimeMillis()}",
+                            bytes,
+                            mime,
+                            ext,
+                        )
+                    }
+                    coverUri?.let { uri ->
+                        val (bytes, mime, ext) = readImage(uri)
+                        coverUrl = api.uploadProfileImage(
+                            active.accessToken,
+                            active.userId,
+                            "covers",
+                            "profile-${System.currentTimeMillis()}",
+                            bytes,
+                            mime,
+                            ext,
+                        )
+                    }
+                    api.updateProfile(active.accessToken, active.userId, cleanName, avatarUrl)
+                    val next = extras.copy(
+                        coverUrl = coverUrl,
+                        updatedAt = System.currentTimeMillis(),
+                    ).sanitized()
+                    savePrefsRemote(active, next)
+                    api.profile(active.accessToken, active.userId) to next
+                }
+            }
+            result.onSuccess { (profile, next) ->
+                store.setProfilePrefs(session.userId, next)
+                _state.update {
+                    it.copy(
+                        profile = profile ?: it.profile,
+                        profileExtras = next,
+                        profileBusy = false,
+                        profileStatus = "Perfil atualizado.",
+                    )
+                }
+            }.onFailure { error ->
+                val next = extras.copy(
+                    coverUrl = coverUrl,
+                    updatedAt = System.currentTimeMillis(),
+                ).sanitized()
+                store.setProfilePrefs(session.userId, next)
+                _state.update {
+                    it.copy(
+                        profileExtras = next,
+                        profileBusy = false,
+                        profileStatus = null,
+                        error = error.message ?: "Não foi possível salvar o perfil.",
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun readImage(uri: Uri): Triple<ByteArray, String, String> =
+        withContext(Dispatchers.IO) {
+            val resolver = getApplication<Application>().contentResolver
+            val mime = resolver.getType(uri)?.lowercase() ?: "image/jpeg"
+            val extension = when (mime) {
+                "image/png" -> "png"
+                "image/webp" -> "webp"
+                "image/gif" -> "gif"
+                else -> "jpg"
+            }
+            val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+                ?: throw IllegalArgumentException("Não foi possível ler a imagem escolhida.")
+            require(bytes.isNotEmpty()) { "A imagem escolhida está vazia." }
+            require(bytes.size <= 8 * 1024 * 1024) { "A imagem deve ter no máximo 8 MB." }
+            Triple(bytes, mime, extension)
+        }
+
+    fun addProfilePin(track: Track) {
+        updateProfileExtras { extras ->
+            if (extras.pins.size >= ProfileExtras.PIN_LIMIT) {
+                extras
+            } else {
+                extras.copy(
+                    pins = (extras.pins + ProfilePin.from(track))
+                        .distinctBy { it.id }
+                        .take(ProfileExtras.PIN_LIMIT),
+                )
+            }
+        }
+    }
+
+    fun removeProfilePin(id: String) {
+        updateProfileExtras { extras ->
+            extras.copy(pins = extras.pins.filterNot { it.id == id })
+        }
+    }
+
+    fun moveProfilePin(id: String, delta: Int) {
+        updateProfileExtras { extras ->
+            val list = extras.pins.toMutableList()
+            val from = list.indexOfFirst { it.id == id }
+            val to = (from + delta).coerceIn(0, (list.size - 1).coerceAtLeast(0))
+            if (from < 0 || from == to) {
+                extras
+            } else {
+                list.add(to, list.removeAt(from))
+                extras.copy(pins = list)
+            }
+        }
+    }
+
+    fun moveProfileCard(id: String, delta: Int) {
+        updateProfileExtras { extras ->
+            val order = ProfileStatsCards.sanitizeOrder(extras.statsOrder).toMutableList()
+            val from = order.indexOf(id)
+            val to = (from + delta).coerceIn(0, (order.size - 1).coerceAtLeast(0))
+            if (from < 0 || from == to) {
+                extras
+            } else {
+                order.add(to, order.removeAt(from))
+                extras.copy(statsOrder = order)
+            }
+        }
+    }
+
+    fun toggleProfileCard(id: String, visible: Boolean) {
+        updateProfileExtras { extras ->
+            val hidden = if (visible) {
+                extras.statsHidden - id
+            } else {
+                (extras.statsHidden + id).distinct()
+            }
+            extras.copy(statsHidden = hidden)
+        }
+    }
+
+    /** Estatísticas do mês corrente, cache para abrir offline. */
+    fun loadProfileStats(force: Boolean = false) {
+        val session = _state.value.session ?: return
+        if (_state.value.profileStatsLoading) return
+        if (!force && _state.value.profileStats != null) return
+        profileStatsJob?.cancel()
+        _state.update { it.copy(profileStatsLoading = true) }
+        profileStatsJob = viewModelScope.launch {
+            val result = runCatching {
+                withSession { active ->
+                    val month = YearMonth.now().atDay(1).toString()
+                    val listening = api.monthlyListening(active.accessToken, month)
+                    val artists = api.monthlyTopArtists(active.accessToken, month, 8)
+                    val topRows = api.monthlyTopTracks(active.accessToken, month, 5)
+                    val byId = if (topRows.isEmpty()) {
+                        emptyMap()
+                    } else {
+                        api.tracks(active.accessToken, topRows.map { it.trackId })
+                            .associateBy { it.id }
+                    }
+                    val likes = api.likes(active.accessToken).size
+                    val playlists = (
+                        api.ownedPlaylistIds(active.accessToken, active.userId) +
+                            api.memberPlaylistIds(active.accessToken, active.userId)
+                        ).toSet().size
+                    ProfileStatsData(
+                        month = month,
+                        minutes = (listening?.playedMs ?: 0L) / 60_000L,
+                        plays = listening?.plays ?: 0L,
+                        uniqueTracks = listening?.uniqueTracks ?: 0L,
+                        likes = likes,
+                        playlists = playlists,
+                        topArtists = artists.map { ProfileArtistStat(it.artist, it.plays) },
+                        topTracks = topRows.mapNotNull { row ->
+                            byId[row.trackId]?.let { remote ->
+                                ProfileTrackStat(
+                                    Track(
+                                        id = remote.id,
+                                        title = remote.title,
+                                        artist = remote.artist,
+                                        album = remote.album,
+                                        durationSec = remote.duration,
+                                        thumbnail = remote.thumbnail,
+                                    ),
+                                    row.plays,
+                                )
+                            }
+                        },
+                        updatedAt = System.currentTimeMillis(),
+                    )
+                }
+            }
+            result.onSuccess { stats ->
+                withContext(Dispatchers.IO) { store.setProfileStats(session.userId, stats) }
+                if (_state.value.session?.userId == session.userId) {
+                    _state.update {
+                        it.copy(profileStats = stats, profileStatsLoading = false)
+                    }
+                }
+            }.onFailure {
+                val cached = withContext(Dispatchers.IO) { store.profileStats(session.userId) }
+                if (_state.value.session?.userId == session.userId) {
+                    _state.update {
+                        it.copy(
+                            profileStats = cached ?: it.profileStats,
+                            profileStatsLoading = false,
+                        )
+                    }
+                }
+            }
+        }
+    }
 
     fun signIn(email: String, password: String) {
         if (email.isBlank() || password.length < 6) {
@@ -1227,6 +1568,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val tracks = _state.value.topTracks
         val queue = if (tracks.any { it.id == track.id }) tracks else listOf(track)
         play(track, queue, "top")
+    }
+
+    /** Fila avulsa para perfil/coleções que não têm tela própria no player. */
+    fun playTracks(tracks: List<Track>, index: Int, source: String = "profile") {
+        if (index !in tracks.indices) return
+        play(tracks[index], tracks, source, queueIndex = index)
     }
 
     fun toggleLike(track: Track) {

@@ -2,6 +2,8 @@ package com.openfy.android.data
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 
 @Serializable
 data class AuthUser(
@@ -39,6 +41,27 @@ data class Profile(
     val handle: String = "",
     @SerialName("display_name") val displayName: String = "",
     @SerialName("avatar_url") val avatarUrl: String = "",
+)
+
+@Serializable
+data class RemoteActivity(
+    val id: String = "",
+    val payload: JsonElement = JsonNull,
+    @SerialName("created_at") val createdAt: String = "",
+)
+
+@Serializable
+data class PushActivity(
+    @SerialName("actor_id") val actorId: String,
+    val type: String,
+    val payload: JsonElement,
+    @SerialName("is_public") val isPublic: Boolean = false,
+)
+
+@Serializable
+data class ProfilePatch(
+    @SerialName("display_name") val displayName: String,
+    @SerialName("avatar_url") val avatarUrl: String,
 )
 
 @Serializable

@@ -19,6 +19,7 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import java.time.Instant
 
 class SupabaseException(message: String, val status: Int = 0) : Exception(message)
@@ -128,6 +129,90 @@ class SupabaseApi {
         }
         val rows: List<Profile> = decoded(response)
         return rows.firstOrNull()
+    }
+
+    suspend fun updateProfile(
+        accessToken: String,
+        userId: String,
+        displayName: String,
+        avatarUrl: String,
+    ) {
+        val response = client.patch("$baseUrl/rest/v1/profiles") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=minimal")
+            parameter("id", "eq.$userId")
+            contentType(ContentType.Application.Json)
+            setBody(ProfilePatch(displayName, avatarUrl))
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
+    /** Último snapshot privado do perfil; a RLS devolve só as linhas do próprio usuário. */
+    suspend fun profilePrefs(accessToken: String, userId: String): RemoteActivity? {
+        val response = client.get("$baseUrl/rest/v1/activities") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "id,payload,created_at")
+            parameter("actor_id", "eq.$userId")
+            parameter("type", "eq.profile_prefs")
+            parameter("deleted", "eq.false")
+            parameter("order", "created_at.desc")
+            parameter("limit", "1")
+        }
+        return decoded<List<RemoteActivity>>(response).firstOrNull()
+    }
+
+    suspend fun saveProfilePrefs(
+        accessToken: String,
+        userId: String,
+        payload: JsonElement,
+    ): String {
+        val response = client.post("$baseUrl/rest/v1/activities") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=representation")
+            contentType(ContentType.Application.Json)
+            setBody(PushActivity(userId, "profile_prefs", payload, isPublic = false))
+        }
+        val rows = decoded<List<IdRow>>(response)
+        return rows.firstOrNull()?.id
+            ?: throw SupabaseException("O servidor não devolveu o id do perfil.")
+    }
+
+    suspend fun deleteActivity(accessToken: String, id: String) {
+        val response = client.patch("$baseUrl/rest/v1/activities") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=minimal")
+            parameter("id", "eq.$id")
+            contentType(ContentType.Application.Json)
+            setBody(DeletedPatch())
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
+    suspend fun uploadProfileImage(
+        accessToken: String,
+        userId: String,
+        bucket: String,
+        baseName: String,
+        bytes: ByteArray,
+        mime: String,
+        extension: String,
+    ): String {
+        require(bucket == "avatars" || bucket == "covers") { "bucket inválido" }
+        val ext = extension.lowercase().ifBlank { "jpg" }
+        val path = "$userId/$baseName.$ext"
+        val response = client.post("$baseUrl/storage/v1/object/$bucket/$path") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("x-upsert", "true")
+            contentType(ContentType.parse(mime))
+            setBody(bytes)
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+        return "$baseUrl/storage/v1/object/public/$bucket/$path?v=${System.currentTimeMillis()}"
     }
 
     suspend fun playlists(accessToken: String): List<PlaylistDto> {

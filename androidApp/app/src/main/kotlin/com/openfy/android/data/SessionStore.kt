@@ -4,6 +4,8 @@ import android.content.Context
 import android.os.Build
 import com.openfy.core.ColorPalette
 import com.openfy.core.PlayerLayout
+import com.openfy.core.ProfileExtras
+import com.openfy.core.ProfileStatsData
 import com.openfy.core.RepeatMode
 import com.openfy.core.Track
 import kotlinx.serialization.encodeToString
@@ -130,6 +132,28 @@ class SessionStore(context: Context) {
 
     fun setEqGains(gains: List<Int>) {
         prefs.edit().putString("eq_gains", gains.joinToString(",")).apply()
+    }
+
+    fun profilePrefs(userId: String): ProfileExtras? = runCatching {
+        val raw = prefs.getString("profile_prefs_$userId", null) ?: return null
+        json.decodeFromString<ProfileExtras>(raw).sanitized()
+    }.getOrNull()
+
+    fun setProfilePrefs(userId: String, value: ProfileExtras) {
+        prefs.edit()
+            .putString("profile_prefs_$userId", json.encodeToString(value.sanitized()))
+            .apply()
+    }
+
+    fun profileStats(userId: String): ProfileStatsData? = runCatching {
+        val raw = prefs.getString("profile_stats_$userId", null) ?: return null
+        json.decodeFromString<ProfileStatsData>(raw)
+    }.getOrNull()
+
+    fun setProfileStats(userId: String, value: ProfileStatsData) {
+        prefs.edit()
+            .putString("profile_stats_$userId", json.encodeToString(value))
+            .apply()
     }
 
     fun recentTracks(): List<Track> = runCatching {
