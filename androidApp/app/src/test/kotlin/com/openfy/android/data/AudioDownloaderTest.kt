@@ -96,6 +96,31 @@ class AudioDownloaderTest {
     }
 
     @Test
+    fun truncatedBodyIsRejected() {
+        val dir = Files.createTempDirectory("openfy-audio-truncated").toFile()
+        val server = server { exchange ->
+            exchange.sendResponseHeaders(200, 4096)
+            exchange.responseBody.use { it.write(ByteArray(10) { 1 }) }
+        }
+        try {
+            val store = DownloadStore(dir)
+            val result = AudioDownloader(store) { 10L * 1024 * 1024 }.download(
+                Track("abc", "Titulo", "Artista"),
+                "http://127.0.0.1:${server.address.port}/audio",
+                emptyMap(),
+                {},
+                { false },
+            )
+            assertTrue(result is DownloadResult.Failed)
+            assertFalse(store.isDownloaded("abc"))
+            assertFalse(dir.listFiles().orEmpty().any { it.name.endsWith(".part") })
+        } finally {
+            server.stop(0)
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
     fun refusesWhenLimitIsFull() {
         val dir = Files.createTempDirectory("openfy-audio-limit").toFile()
         try {

@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.material.icons.filled.MoreVert
@@ -52,9 +53,12 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Timer
@@ -124,6 +128,7 @@ import com.openfy.core.ColorPalette
 import com.openfy.core.MediaKind
 import com.openfy.core.PlayerLayout
 import com.openfy.core.RemoteCollection
+import com.openfy.core.RepeatMode
 import com.openfy.core.Track
 import com.openfy.core.formatTime
 import com.openfy.android.ui.theme.OpenfyAccent
@@ -941,7 +946,7 @@ private fun TrackRow(
                         },
                     )
                     DropdownMenuItem(
-                        text = { Text("Adicionar à fila") },
+                        text = { Text("Adicionar ao fim da fila") },
                         leadingIcon = { Icon(Icons.Filled.QueueMusic, null) },
                         onClick = {
                             menuOpen = false
@@ -2215,7 +2220,15 @@ private fun PlayerOverlay(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = { viewModel.previous() }) {
+                IconButton(onClick = { viewModel.toggleShuffle() }, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        Icons.Filled.Shuffle,
+                        if (state.shuffle) "Desligar aleatório" else "Aleatório",
+                        tint = if (state.shuffle) OpenfyAccent else OpenfyTextLow,
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                IconButton(onClick = { viewModel.previous() }, modifier = Modifier.size(40.dp)) {
                     Icon(
                         Icons.Filled.SkipPrevious,
                         "Anterior",
@@ -2223,7 +2236,7 @@ private fun PlayerOverlay(
                         modifier = Modifier.size(32.dp),
                     )
                 }
-                Spacer(Modifier.width(22.dp))
+                Spacer(Modifier.width(14.dp))
                 Box(
                     Modifier.size(68.dp).background(OpenfyAccent, CircleShape)
                         .clickable(enabled = track != null && !state.busy) { viewModel.togglePlay() },
@@ -2240,13 +2253,29 @@ private fun PlayerOverlay(
                         )
                     }
                 }
-                Spacer(Modifier.width(22.dp))
-                IconButton(onClick = { viewModel.next() }) {
+                Spacer(Modifier.width(14.dp))
+                IconButton(onClick = { viewModel.next() }, modifier = Modifier.size(40.dp)) {
                     Icon(
                         Icons.Filled.SkipNext,
                         "Próxima",
                         tint = OpenfyTextHigh,
                         modifier = Modifier.size(32.dp),
+                    )
+                }
+                IconButton(onClick = { viewModel.cycleRepeat() }, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        if (state.repeatMode == RepeatMode.ONE) {
+                            Icons.Filled.RepeatOne
+                        } else {
+                            Icons.Filled.Repeat
+                        },
+                        when (state.repeatMode) {
+                            RepeatMode.OFF -> "Repetir desligado"
+                            RepeatMode.ALL -> "Repetir toda a fila"
+                            RepeatMode.ONE -> "Repetir uma faixa"
+                        },
+                        tint = if (state.repeatMode == RepeatMode.OFF) OpenfyTextLow else OpenfyAccent,
+                        modifier = Modifier.size(22.dp),
                     )
                 }
             }
@@ -2278,7 +2307,16 @@ private fun QueueDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = OpenfyPanelHigh,
-        title = { Text("Fila · ${state.queue.size} faixas", color = OpenfyTextHigh) },
+        title = {
+            Column {
+                Text("Fila · ${state.queue.size} faixas", color = OpenfyTextHigh)
+                Text(
+                    "Use as setas para reordenar. Para incluir outra faixa, use ⋮ › Tocar em seguida ou Adicionar ao fim da fila.",
+                    color = OpenfyTextLow,
+                    fontSize = 10.sp,
+                )
+            }
+        },
         text = {
             if (state.queue.isEmpty()) {
                 Text("A fila está vazia.", color = OpenfyTextLow, fontSize = 12.sp)
@@ -2327,7 +2365,41 @@ private fun QueueDialog(
                                     modifier = Modifier.size(16.dp),
                                 )
                             }
-                            IconButton(onClick = { viewModel.removeQueueIndex(index) }) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Box(
+                                    Modifier.size(28.dp).clip(CircleShape)
+                                        .clickable(enabled = index > 0) {
+                                            viewModel.moveQueueIndex(index, index - 1)
+                                        },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        Icons.Filled.KeyboardArrowUp,
+                                        "Mover para cima",
+                                        tint = if (index > 0) OpenfyTextLow else OpenfyLine,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                                Box(
+                                    Modifier.size(28.dp).clip(CircleShape)
+                                        .clickable(enabled = index < state.queue.lastIndex) {
+                                            viewModel.moveQueueIndex(index, index + 1)
+                                        },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        Icons.Filled.KeyboardArrowDown,
+                                        "Mover para baixo",
+                                        tint = if (index < state.queue.lastIndex) OpenfyTextLow else OpenfyLine,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            }
+                            Box(
+                                Modifier.size(36.dp).clip(CircleShape)
+                                    .clickable { viewModel.removeQueueIndex(index) },
+                                contentAlignment = Alignment.Center,
+                            ) {
                                 Icon(
                                     Icons.Filled.Delete,
                                     "Remover da fila",

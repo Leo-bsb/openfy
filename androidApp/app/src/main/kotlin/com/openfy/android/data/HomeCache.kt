@@ -62,7 +62,9 @@ class HomeCache(dir: File) {
         return runCatching { json.decodeFromString<HomeSnapshot>(text) }.getOrNull()
     }
 
+    @Synchronized
     fun clear() {
         runCatching { file.delete() }
+        runCatching { temp.delete() }
     }
 }

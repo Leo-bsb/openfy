@@ -37,33 +37,45 @@ class DownloadStore(private val dir: File) {
         index ?: loadIndex().also { index = it }
 
     private fun loadIndex(): LinkedHashMap<String, DownloadEntry> {
-        val text = runCatching { indexFile().readText() }.getOrNull() ?: return LinkedHashMap()
+        val file = indexFile()
+        val text = runCatching { file.readText() }.getOrNull() ?: return LinkedHashMap()
         val list = runCatching { json.decodeFromString<List<DownloadEntry>>(text) }.getOrNull()
-            ?: return LinkedHashMap()
+        if (list == null) {
+            // Índice ilegível: preserva o arquivo para diagnóstico e nunca trata
+            // os áudios como órfãos. Sem isso, uma queda de energia poderia
+            // apagar todos os downloads no próximo boot.
+            runCatching { file.renameTo(File(dir, "$INDEX_NAME.corrupt")) }
+            return LinkedHashMap()
+        }
         return LinkedHashMap(list.associateBy { it.track.id })
     }
 
-    private fun persist() {
-        runCatching {
-            if (!dir.isDirectory) dir.mkdirs()
-            val temp = File(dir, "$INDEX_NAME.tmp")
-            temp.writeText(json.encodeToString(loadedIndex().values.toList()))
-            runCatching {
-                java.nio.file.Files.move(
-                    temp.toPath(),
-                    indexFile().toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
-                )
-            }.onFailure {
-                java.nio.file.Files.move(
-                    temp.toPath(),
-                    indexFile().toPath(),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                )
-            }
+    /** Grava o índice de forma atômica. Retorna false se o arquivo não puder ser salvo. */
+    private fun persist(): Boolean = runCatching {
+        if (!dir.isDirectory) dir.mkdirs()
+        val temp = File(dir, "$INDEX_NAME.tmp")
+        val bytes = json.encodeToString(loadedIndex().values.toList()).toByteArray()
+        FileOutputStream(temp).use { output ->
+            output.write(bytes)
+            output.flush()
+            output.fd.sync()
         }
-    }
+        runCatching {
+            java.nio.file.Files.move(
+                temp.toPath(),
+                indexFile().toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            )
+        }.onFailure {
+            java.nio.file.Files.move(
+                temp.toPath(),
+                indexFile().toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            )
+        }
+        true
+    }.getOrDefault(false)
 
     fun all(): List<DownloadEntry> = synchronized(lock) { loadedIndex().values.toList() }
 
@@ -90,11 +102,17 @@ class DownloadStore(private val dir: File) {
     fun fileNameFor(track: Track, contentType: String?): String =
         "${sanitizeId(track.id)}.${extensionFor(contentType)}"
 
-    /** Registra o download concluído no índice e devolve o arquivo final. */
-    fun put(entry: DownloadEntry): DownloadEntry = synchronized(lock) {
-        loadedIndex()[entry.track.id] = entry
-        persist()
-        entry
+    /**
+     * Registra o download concluído no índice. Retorna false se o índice não
+     * puder ser gravado (o chamador deve apagar o arquivo para não deixá-lo órfão).
+     */
+    fun put(entry: DownloadEntry): Boolean = synchronized(lock) {
+        val previous = loadedIndex().put(entry.track.id, entry)
+        val ok = persist()
+        if (!ok) {
+            if (previous != null) loadedIndex()[entry.track.id] = previous else loadedIndex().remove(entry.track.id)
+        }
+        ok
     }
 
     /** Remove o registro e o arquivo; ignora se não existir. */
@@ -118,8 +136,9 @@ class DownloadStore(private val dir: File) {
     }
 
     /**
-     * Chamado na inicialização: remove `.part` órfãos, entradas cujo arquivo
-     * sumiu/truncou e arquivos que não constam no índice.
+     * Chamado na inicialização: remove `.part` órfãos e entradas cujo arquivo
+     * sumiu/truncou. Arquivos de áudio que não estão no índice NÃO são apagados:
+     * um índice ilegível não pode virar perda de todos os downloads.
      */
     fun repair(): Int {
         var fixed = 0
@@ -141,16 +160,14 @@ class DownloadStore(private val dir: File) {
                 missing.forEach { loadedIndex().remove(it.track.id) }
                 persist()
             }
-            fixed += missing.size
-        }
-        val keep = synchronized(lock) {
-            loadedIndex().values.mapTo(HashSet()) { it.fileName } + INDEX_NAME + "$INDEX_NAME.tmp"
-        }
-        dir.listFiles()?.forEach { f ->
-            if (f.isFile && f.name !in keep) {
-                runCatching { f.delete() }
-                fixed++
+            // Só apaga arquivo truncado de entrada conhecida; arquivos fora do
+            // índice continuam intocados para não transformar índice ilegível
+            // em perda de downloads.
+            missing.forEach { entry ->
+                val file = File(dir, entry.fileName)
+                if (file.isFile) runCatching { file.delete() }
             }
+            fixed += missing.size
         }
         return fixed
     }
@@ -238,6 +255,7 @@ class AudioDownloader(
             }
             activeConnection = connection
             val code = connection.responseCode
+            if (isCancelled()) return DownloadResult.Cancelled
             if (code == 401 || code == 403) {
                 // Google devolve 403 quando o link temporário expira.
                 return DownloadResult.Failed("O link do áudio expirou.", expired = true)
@@ -280,6 +298,7 @@ class AudioDownloader(
                 output.flush()
                 // fsync evita arquivo truncado por queda de energia.
                 runCatching { file.fd.sync() }
+                runCatching { output.close() }
             }
             if (declared > 0 && written != declared) {
                 temp.deleteQuietly()
@@ -295,16 +314,17 @@ class AudioDownloader(
                 finalFile.deleteQuietly()
                 return DownloadResult.Failed("Download terminou vazio ou corrompido.")
             }
-            DownloadResult.Success(
-                store.put(
-                    DownloadEntry(
-                        track = track,
-                        fileName = finalFile.name,
-                        sizeBytes = finalFile.length(),
-                        downloadedAtMs = System.currentTimeMillis(),
-                    ),
-                ),
+            val entry = DownloadEntry(
+                track = track,
+                fileName = finalFile.name,
+                sizeBytes = finalFile.length(),
+                downloadedAtMs = System.currentTimeMillis(),
             )
+            if (!store.put(entry)) {
+                finalFile.deleteQuietly()
+                return DownloadResult.Failed("Não foi possível salvar o índice de downloads.")
+            }
+            DownloadResult.Success(entry)
         } catch (error: Exception) {
             if (isCancelled()) {
                 DownloadResult.Cancelled

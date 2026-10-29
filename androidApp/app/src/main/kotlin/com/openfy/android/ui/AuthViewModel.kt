@@ -50,7 +50,9 @@ import com.openfy.core.Artist
 import com.openfy.core.ArtistPage
 import com.openfy.core.Importer
 import com.openfy.core.PlayerLayout
+import com.openfy.core.QueueLogic
 import com.openfy.core.RemoteCollection
+import com.openfy.core.RepeatMode
 import com.openfy.core.SearchMode
 import com.openfy.core.Track
 import com.openfy.data.Media
@@ -112,6 +114,8 @@ data class AuthUiState(
     val playlistItems: List<RemotePlaylistItem> = emptyList(),
     val playlistLoading: Boolean = false,
     val crossfadeSeconds: Int = 6,
+    val shuffle: Boolean = false,
+    val repeatMode: RepeatMode = RepeatMode.OFF,
     val palette: ColorPalette = ColorPalette.OPENFY,
     val playerLayout: PlayerLayout = PlayerLayout.CENTER,
     val coverGradient: Boolean = true,
@@ -145,7 +149,9 @@ data class AuthUiState(
     val downloadLimitMb: Int = SessionStore.DEFAULT_DOWNLOAD_LIMIT_MB,
 ) {
     val hasPrevious: Boolean get() = queueIndex > 0
-    val hasNext: Boolean get() = queueIndex >= 0 && queueIndex < queue.lastIndex
+    val hasNext: Boolean
+        get() = queueIndex >= 0 && queue.isNotEmpty() &&
+            (queueIndex < queue.lastIndex || repeatMode == RepeatMode.ALL)
     val downloadUsedBytes: Long get() = downloads.sumOf { it.sizeBytes }
 }
 
@@ -163,6 +169,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         AuthUiState(
             deviceName = store.deviceName(),
             crossfadeSeconds = store.crossfadeSeconds(),
+            shuffle = store.shuffle(),
+            repeatMode = store.repeatMode(),
             palette = store.palette(),
             playerLayout = store.playerLayout(),
             coverGradient = store.coverGradient(),
@@ -216,7 +224,18 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (playbackState == Player.STATE_ENDED) {
                     finishEvent(completed = true, skipped = false)
-                    next()
+                    val ended = _state.value
+                    if (ended.repeatMode == RepeatMode.ONE && ended.track != null) {
+                        play(
+                            ended.track,
+                            ended.queue,
+                            eventSource,
+                            keepRadio = true,
+                            queueIndex = ended.queueIndex,
+                        )
+                    } else {
+                        next()
+                    }
                 }
             }
 
@@ -252,6 +271,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var crossfadeOld: ExoPlayer? = null
     private var crossfadeDurationMs: Long = 0
     private var crossfadeSeconds = store.crossfadeSeconds()
+    private var shuffleSnapshotQueue: List<Track>? =
+        store.shuffleSnapshotQueue().takeIf { it.isNotEmpty() }
+    private var shuffleSnapshotIndex = store.shuffleSnapshotIndex()
     private var radioContinuation: String? = null
     private var radioLoading = false
     private var radioSeed: Track? = null
@@ -317,6 +339,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                             current.queueIndex,
                             current.positionMs,
                         )
+                        shuffleSnapshotQueue?.let { snapshot ->
+                            store.setShuffleSnapshot(snapshot, shuffleSnapshotIndex)
+                        }
                     }
                 }
             }
@@ -449,13 +474,38 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun ensureSession(): StoredSession? {
         val current = store.load() ?: return null
         if (!current.isExpired) return current
-        val result = runCatching { refreshSession(current) }
+        val result = try {
+            Result.success(refreshSession(current))
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            Result.failure(error)
+        }
         val refreshed = result.getOrNull()
         if (refreshed != null) return refreshed
         // Null com sucesso = o servidor rejeitou o refresh (credencial inválida).
         // Falha de rede/servidor não pode deslogar: mantém a sessão para o cache offline.
         if (result.isSuccess) {
             store.clear()
+            homeCache.clear()
+            playlistCache.clear()
+            _state.update {
+                it.copy(
+                    session = null,
+                    profile = null,
+                    playlists = emptyList(),
+                    likedIds = emptySet(),
+                    likedTracks = emptyList(),
+                    topTracks = emptyList(),
+                    recentTracks = emptyList(),
+                    openPlaylist = null,
+                    playlistTracks = emptyList(),
+                    playlistItems = emptyList(),
+                    offline = false,
+                    offlineSavedAtMs = 0,
+                    downloadProgress = emptyMap(),
+                )
+            }
             return null
         }
         return current
@@ -1680,8 +1730,82 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         _state.update {
-            it.copy(queue = it.queue + track, message = "Na fila: ${track.title}")
+            it.copy(queue = it.queue + track, message = "No fim da fila: ${track.title}")
         }
+        invalidatePreload()
+    }
+
+    /** Liga/desliga o aleatório guardando a ordem original para restaurar depois. */
+    fun toggleShuffle() {
+        val current = _state.value
+        if (current.shuffle) {
+            val snapshot = shuffleSnapshotQueue
+            val (restored, restoredIndex) = if (snapshot != null) {
+                QueueLogic.restored(snapshot, current.queue, current.track?.id)
+            } else {
+                current.queue to current.queueIndex
+            }
+            shuffleSnapshotQueue = null
+            shuffleSnapshotIndex = -1
+            store.setShuffle(false)
+            store.clearShuffleSnapshot()
+            _state.update {
+                it.copy(
+                    queue = restored,
+                    queueIndex = if (restored.isEmpty()) -1 else restoredIndex.coerceIn(0, restored.lastIndex),
+                    shuffle = false,
+                    message = "Aleatório desligado.",
+                )
+            }
+        } else {
+            val (shuffled, shuffledIndex) = QueueLogic.shuffled(current.queue, current.queueIndex)
+            shuffleSnapshotQueue = current.queue
+            shuffleSnapshotIndex = current.queueIndex
+            store.setShuffle(true)
+            store.setShuffleSnapshot(current.queue, current.queueIndex)
+            _state.update {
+                it.copy(
+                    queue = shuffled,
+                    queueIndex = shuffledIndex,
+                    shuffle = true,
+                    message = "Aleatório ligado.",
+                )
+            }
+        }
+        cancelCrossfade()
+        invalidatePreload()
+    }
+
+    /** Off -> repetir tudo -> repetir uma -> off. */
+    fun cycleRepeat() {
+        val next = when (_state.value.repeatMode) {
+            RepeatMode.OFF -> RepeatMode.ALL
+            RepeatMode.ALL -> RepeatMode.ONE
+            RepeatMode.ONE -> RepeatMode.OFF
+        }
+        store.setRepeatMode(next)
+        _state.update {
+            it.copy(
+                repeatMode = next,
+                message = when (next) {
+                    RepeatMode.OFF -> "Repetição desligada."
+                    RepeatMode.ALL -> "Repetir: toda a fila."
+                    RepeatMode.ONE -> "Repetir: uma faixa."
+                },
+            )
+        }
+        invalidatePreload()
+    }
+
+    /** Reordena a fila; se a faixa atual for movida, o índice acompanha. */
+    fun moveQueueIndex(from: Int, to: Int) {
+        val current = _state.value
+        if (from !in current.queue.indices) return
+        val queue = QueueLogic.moved(current.queue, from, to)
+        if (queue === current.queue) return
+        val trackIndex = current.track?.id?.let { id -> queue.indexOfFirst { it.id == id } } ?: -1
+        val newIndex = if (trackIndex >= 0) trackIndex else current.queueIndex.coerceIn(0, queue.lastIndex)
+        _state.update { it.copy(queue = queue, queueIndex = newIndex) }
         invalidatePreload()
     }
 
@@ -1696,7 +1820,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         if (index !in current.queue.indices) return
         val queue = current.queue.toMutableList()
         val wasCurrent = index == current.queueIndex
-        queue.removeAt(index)
+        val removed = queue.removeAt(index)
+        if (shuffleSnapshotQueue != null) {
+            shuffleSnapshotQueue = shuffleSnapshotQueue?.filterNot { it.id == removed.id }
+            store.setShuffleSnapshot(shuffleSnapshotQueue.orEmpty(), shuffleSnapshotIndex)
+        }
         val newIndex = when {
             queue.isEmpty() -> -1
             index < current.queueIndex -> current.queueIndex - 1
@@ -1752,14 +1880,43 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         if (!keepRadio) resetRadio()
         val current = _state.value
         finishEvent(completed = false, skipped = true)
-        val index = (queueIndex ?: queue.indexOfFirst { it.id == track.id }).coerceAtLeast(0)
+        if (queue.isEmpty()) return
+        val requestedIndex = (queueIndex ?: queue.indexOfFirst { it.id == track.id })
+            .coerceIn(0, queue.lastIndex)
+        val sameQueue = current.queue.size == queue.size &&
+            current.queue.indices.all { current.queue[it].id == queue[it].id }
+        val queueToUse: List<Track>
+        val index: Int
+        if (current.shuffle && !sameQueue) {
+            // Nova fila com aleatório ligado: mantém a faixa escolhida e
+            // embaralha o resto, guardando a ordem original.
+            val selectedIndex = queue.indexOfFirst { it.id == track.id }
+            val rest = if (selectedIndex >= 0) {
+                queue.filterIndexed { i, _ -> i != selectedIndex }
+            } else {
+                queue
+            }
+            queueToUse = listOf(track) + rest.shuffled()
+            index = 0
+            shuffleSnapshotQueue = queue
+            shuffleSnapshotIndex = requestedIndex
+            store.setShuffleSnapshot(queue, requestedIndex)
+        } else {
+            queueToUse = queue
+            index = requestedIndex
+            if (current.shuffle && shuffleSnapshotQueue == null) {
+                shuffleSnapshotQueue = queue
+                shuffleSnapshotIndex = index
+                store.setShuffleSnapshot(queue, index)
+            }
+        }
         eventStartedAt = System.currentTimeMillis()
         eventTrack = track
         eventSource = source
         _state.update {
             it.copy(
                 track = track,
-                queue = queue,
+                queue = queueToUse,
                 queueIndex = index,
                 playing = false,
                 busy = true,
@@ -1849,8 +2006,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private fun maybePreloadNext() {
         if (crossfadeSeconds <= 0 || preloading || preloadedTrack != null || crossfading) return
         val s = _state.value
-        val nextIndex = s.queueIndex + 1
-        if (nextIndex !in s.queue.indices) return
+        if (s.repeatMode == RepeatMode.ONE || s.queue.size < 2) return
+        val nextIndex = QueueLogic.autoNextIndex(s.queueIndex, s.queue.size, s.repeatMode) ?: return
         val track = s.queue[nextIndex]
         val currentId = s.track?.id
         com.openfy.core.Log.write("player: preparando crossfade ${track.id}")
@@ -1869,7 +2026,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     mediaSource(track, media)
                 } ?: return@launch
                 val now = _state.value
-                if (crossfading || now.track?.id != currentId || now.queueIndex + 1 != nextIndex) {
+                val expected = QueueLogic.autoNextIndex(now.queueIndex, now.queue.size, now.repeatMode)
+                if (crossfading ||
+                    now.track?.id != currentId ||
+                    expected != nextIndex ||
+                    now.queue.getOrNull(nextIndex)?.id != track.id
+                ) {
                     return@launch
                 }
                 val standby = standbyPlayer
@@ -1989,6 +2151,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val next = current.queueIndex + 1
         if (next !in current.queue.indices) {
             finishEvent(completed = true, skipped = false)
+            if (current.repeatMode == RepeatMode.ALL && current.queue.isNotEmpty()) {
+                play(current.queue[0], current.queue, eventSource, keepRadio = true, queueIndex = 0)
+                return
+            }
             if (radioContinuation != null) {
                 radioAdvancePending = true
                 maybeAppendRadio()
@@ -2096,11 +2262,15 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             store.clear()
             homeCache.clear()
             playlistCache.clear()
+            shuffleSnapshotQueue = null
+            shuffleSnapshotIndex = -1
             lastHomeLoad = 0L
             _state.value = AuthUiState(
                 loading = false,
                 deviceName = store.deviceName(),
                 crossfadeSeconds = store.crossfadeSeconds(),
+                shuffle = store.shuffle(),
+                repeatMode = store.repeatMode(),
                 palette = store.palette(),
                 playerLayout = store.playerLayout(),
                 coverGradient = store.coverGradient(),
@@ -2132,19 +2302,22 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(message = "Esta faixa já está baixada.") }
             return
         }
-        if (downloadJobs[track.id]?.isActive == true) return
+        if (downloadJobs[track.id]?.isActive == true) {
+            _state.update { it.copy(message = "Esta faixa já está na fila de downloads.") }
+            return
+        }
         launchDownload(track)
     }
 
     fun cancelDownload(trackId: String) {
-        if (activeDownloadId == trackId) downloader.cancelCurrent()
         downloadJobs[trackId]?.cancel()
+        if (activeDownloadId == trackId) downloader.cancelCurrent()
     }
 
     fun removeDownload(trackId: String) {
         val job = downloadJobs[trackId]
-        if (activeDownloadId == trackId) downloader.cancelCurrent()
         job?.cancel()
+        if (activeDownloadId == trackId) downloader.cancelCurrent()
         viewModelScope.launch {
             job?.cancelAndJoin()
             val removed = withContext(Dispatchers.IO) { downloadStore.remove(trackId) }
@@ -2177,6 +2350,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     val job = async { runDownload(track) }
                     downloadJobs[track.id] = job
                     val ok = runCatching { job.await() }.getOrDefault(false)
+                    if (job.isCancelled) continue
                     if (ok) {
                         done++
                     } else {
@@ -2201,9 +2375,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         playlistDownloadJob = null
         val jobs = downloadJobs.values.toList()
         downloadJobs.clear()
-        downloader.cancelCurrent()
         playlistJob?.cancel()
         jobs.forEach { it.cancel() }
+        downloader.cancelCurrent()
         viewModelScope.launch {
             playlistJob?.cancelAndJoin()
             jobs.forEach { it.cancelAndJoin() }
@@ -2241,8 +2415,17 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun runDownload(track: Track): Boolean =
-        downloadMutex.withLock { runDownloadLocked(track) }
+    private suspend fun runDownload(track: Track): Boolean {
+        // Fica visível/cancelável já na fila, antes de esperar o mutex.
+        _state.update { it.copy(downloadProgress = it.downloadProgress + (track.id to 0f)) }
+        return try {
+            downloadMutex.withLock { runDownloadLocked(track) }
+        } finally {
+            val self = coroutineContext[Job]
+            if (self != null && downloadJobs[track.id] === self) downloadJobs.remove(track.id)
+            _state.update { it.copy(downloadProgress = it.downloadProgress - track.id) }
+        }
+    }
 
     /** Um download por vez: o saldo do limite não é lido por duas conexões ao mesmo tempo. */
     private suspend fun runDownloadLocked(track: Track): Boolean {
@@ -2265,7 +2448,6 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             return false
         }
         downloadJobs[track.id] = self
-        _state.update { it.copy(downloadProgress = it.downloadProgress + (track.id to 0f)) }
         try {
             var outcome = attemptDownload(track, self)
             if ((outcome as? DownloadResult.Failed)?.expired == true) {
@@ -2295,7 +2477,6 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }
         } finally {
             if (downloadJobs[track.id] === self) downloadJobs.remove(track.id)
-            _state.update { it.copy(downloadProgress = it.downloadProgress - track.id) }
         }
     }
 
@@ -2336,6 +2517,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val current = _state.value
         current.track?.let { track ->
             store.setPlaybackSession(current.queue, current.queueIndex, current.positionMs)
+            shuffleSnapshotQueue?.let { snapshot ->
+                store.setShuffleSnapshot(snapshot, shuffleSnapshotIndex)
+            }
         }
         lyricsJob?.cancel()
         sleepJob?.cancel()

@@ -20,7 +20,7 @@ class DownloadStoreTest {
             val target = java.io.File(dir, file)
             target.writeBytes(ByteArray(32) { 1 })
 
-            store.put(DownloadEntry(track, file, target.length(), 123L))
+            assertTrue(store.put(DownloadEntry(track, file, target.length(), 123L)))
 
             assertTrue(store.isDownloaded("abc"))
             assertEquals(file, store.fileFor("abc")?.name)
@@ -46,30 +46,49 @@ class DownloadStoreTest {
     }
 
     @Test
-    fun repairRemovesOrphanFilesAndTruncatedEntries() {
+    fun repairRemovesTruncatedEntriesButKeepsOrphanFiles() {
         val dir = Files.createTempDirectory("openfy-downloads-orphans").toFile()
         try {
             val store = DownloadStore(dir)
             val intact = Track("intacta", "Titulo", "Artista")
             val intactFile = java.io.File(dir, store.fileNameFor(intact, "audio/webm"))
             intactFile.writeBytes(ByteArray(16) { 1 })
-            store.put(DownloadEntry(intact, intactFile.name, intactFile.length(), 1L))
+            assertTrue(store.put(DownloadEntry(intact, intactFile.name, intactFile.length(), 1L)))
 
             val truncated = Track("truncada", "Titulo", "Artista")
             val truncatedFile = java.io.File(dir, store.fileNameFor(truncated, null))
             truncatedFile.writeBytes(ByteArray(4) { 1 })
-            store.put(DownloadEntry(truncated, truncatedFile.name, 32L, 1L))
+            assertTrue(store.put(DownloadEntry(truncated, truncatedFile.name, 32L, 1L)))
 
             val orphan = java.io.File(dir, "orfao.webm")
             orphan.writeBytes(ByteArray(8) { 1 })
 
             val fixed = store.repair()
 
-            assertTrue(fixed >= 2)
+            assertTrue(fixed >= 1)
             assertEquals(listOf("intacta"), store.all().map { it.track.id })
             assertTrue(intactFile.isFile)
             assertFalse(truncatedFile.exists())
-            assertFalse(orphan.exists())
+            assertTrue(orphan.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun corruptIndexPreservesAudioFiles() {
+        val dir = Files.createTempDirectory("openfy-downloads-corrupt").toFile()
+        try {
+            java.io.File(dir, DownloadStore.INDEX_NAME).writeText("{ nao e json")
+            val audio = java.io.File(dir, "antiga.webm")
+            audio.writeBytes(ByteArray(16) { 1 })
+
+            val store = DownloadStore(dir)
+
+            assertEquals(0, store.repair())
+            assertTrue(audio.isFile)
+            assertTrue(java.io.File(dir, "${DownloadStore.INDEX_NAME}.corrupt").isFile)
+            assertTrue(store.all().isEmpty())
         } finally {
             dir.deleteRecursively()
         }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import com.openfy.core.ColorPalette
 import com.openfy.core.PlayerLayout
+import com.openfy.core.RepeatMode
 import com.openfy.core.Track
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -158,6 +159,40 @@ class SessionStore(context: Context) {
     fun playbackIndex(): Int = prefs.getInt("playback_index", -1)
 
     fun playbackPosition(): Long = prefs.getLong("playback_position", 0L)
+
+    fun shuffle(): Boolean = prefs.getBoolean("play_shuffle", false)
+
+    fun setShuffle(enabled: Boolean) {
+        prefs.edit().putBoolean("play_shuffle", enabled).apply()
+    }
+
+    fun repeatMode(): RepeatMode = runCatching {
+        RepeatMode.valueOf(prefs.getString("play_repeat", null).orEmpty())
+    }.getOrDefault(RepeatMode.OFF)
+
+    fun setRepeatMode(mode: RepeatMode) {
+        prefs.edit().putString("play_repeat", mode.name).apply()
+    }
+
+    fun shuffleSnapshotQueue(): List<Track> = runCatching {
+        json.decodeFromString<List<Track>>(prefs.getString("shuffle_queue", null) ?: "[]")
+    }.getOrDefault(emptyList())
+
+    fun shuffleSnapshotIndex(): Int = prefs.getInt("shuffle_index", -1)
+
+    fun setShuffleSnapshot(queue: List<Track>, index: Int) {
+        prefs.edit()
+            .putString("shuffle_queue", json.encodeToString(queue.take(400)))
+            .putInt("shuffle_index", index.coerceAtMost(399))
+            .apply()
+    }
+
+    fun clearShuffleSnapshot() {
+        prefs.edit()
+            .remove("shuffle_queue")
+            .remove("shuffle_index")
+            .apply()
+    }
 
     fun setPlaybackSession(queue: List<Track>, index: Int, positionMs: Long) {
         if (queue.isEmpty() || index !in queue.indices) return
