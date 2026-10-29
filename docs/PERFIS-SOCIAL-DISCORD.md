@@ -55,7 +55,7 @@ agregadas e visibilidade controlada.
 
 | Área | Estado atual | Reaproveitamento |
 | --- | --- | --- |
-| `profiles` | `id`, `handle` único, `display_name`, `avatar_url`, `is_public` | Base do perfil; faltam capa, bio, cor, efeitos e preferências |
+| `profiles` | `id`, `handle` único, `display_name`, `avatar_url`, `is_public` | Base do perfil; capa, bio, cor e efeitos ficam no snapshot privado até a `0003` |
 | `follows` | Seguir/deixar de seguir, soft delete | Follow e contadores; a policy atual expõe o grafo inteiro |
 | `activities` | Tipos livres, `payload` JSONB, `is_public` | Feed futuro; não usar para "tocando agora" sem opt-in |
 | `play_events` | Histórico detalhado, só o dono lê | Estatísticas via RPC `SECURITY DEFINER`, nunca SELECT direto |
@@ -78,10 +78,10 @@ agregadas e visibilidade controlada.
   top artistas, dias ativos), nunca os eventos crus.
 - **Não existe block/report.** Sem isso, perfil público vira vetor de assédio.
   Block é pré-requisito para abrir a visualização de terceiros.
-- **Android ainda não sobe imagem.** O desktop tem `uploadCover`; o Android
-  precisa de upload de avatar/capa (pode ser o mesmo endpoint, corpo binário).
-- **Não há cache offline do perfil.** O perfil próprio deve abrir sem rede,
-  como a Home e as playlists abertas já fazem.
+- ~~**Android ainda não sobe imagem.**~~ **Resolvido na 0.4.2**: avatar e capa
+  são escolhidos pela galeria e enviados ao mesmo Storage do desktop.
+- ~~**Não há cache offline do perfil.**~~ **Resolvido na 0.4.2**: snapshot
+  local por usuário, com LWW e sync posterior quando a rede volta.
 
 ## Produto: perfil próprio
 

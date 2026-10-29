@@ -245,9 +245,14 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
   e no celular. O celular também importa playlist/álbum público do YouTube
   Music por link.
 - Eventos de escuta do PC e do Android alimentam o recap mensal da conta.
-- Ainda faltam no Android: downloads/offline com banco local, importar CSV/backup
-  e o módulo compartilhado KMP. O player em background mantém o processo vivo;
-  se o app for removido dos recentes, a reprodução para.
+- Perfil próprio no PC e no celular: foto, capa, bio, cor/efeitos, estatísticas
+  configuráveis e faixas fixadas. O snapshot sincroniza com LWW e abre offline.
+- Discord Rich Presence opcional no PC: Ajustes > Integrações, com Application
+  ID do Discord Developer Portal; mostra título/artista e play/pause.
+- Ainda faltam no Android: downloads em background com WorkManager, importar
+  CSV/backup JSON, MediaSessionService com player dentro do serviço e o módulo
+  compartilhado KMP. O player em background mantém o processo vivo; se o app
+  for removido dos recentes, a reprodução para.
 - Nesta versão o merge é LWW por `updated_at`. O próximo passo é trocar por
   outbox + `server_rev` para conflitos offline mais seguros.
 
