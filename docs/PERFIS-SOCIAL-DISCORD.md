@@ -47,9 +47,11 @@ agregadas e visibilidade controlada.
   apps novos; corrigir `profiles_select`/`follows_select`; criar a `0003` com
   colunas de perfil, pins e RPC de estatísticas; block/report; perfil de
   terceiros e feed.
-- **Validação**: 38 testes no desktop e 39 no Android; o perfil Android ainda
-  não foi exercitado em aparelho (nenhum device conectado) e o Discord não foi
-  testado com um Application ID real.
+- **Validação**: 38 testes no desktop e 39 no Android. A 0.4.2 foi instalada
+  sobre a 0.3.1 em um Galaxy A15; Home, Perfil com estatísticas reais e o
+  diálogo da fila funcionaram, mas edição/upload de imagem ainda não foram
+  exercitados no aparelho. O Discord não foi testado com um Application ID
+  real.
 
 ## O que já existe
 

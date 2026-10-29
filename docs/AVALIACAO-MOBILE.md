@@ -370,4 +370,15 @@ A 0.4.1 ainda não foi validada em aparelho; o último teste real foi na 0.3.1.
 - APK 0.4.2 (versionCode 14) assinado.
   SHA-256: `498D004F22D455113476DF372FB6125C8AF4E6FE92C003A9981E7805F1EA523E`.
 
-A 0.4.2 ainda não foi validada em aparelho; o último teste real foi na 0.3.1.
+### Testado no Galaxy A15
+
+- Instalação sobre a 0.3.1 com `adb install -r`, preservando conta e dados.
+- Home abriu com a conta sincronizada; o Perfil mostrou as estatísticas reais
+  (3h14m, 62 execuções, 1 curtida, 5 playlists, top Billie Eilish e top faixa
+  COPYCAT).
+- Diálogo "Fila · 32 faixas" abriu com aleatório, repetir, setas de reordenação
+  e as faixas.
+- Logcat sem `FATAL EXCEPTION`.
+
+A edição de perfil, o upload de avatar/capa e o salvamento ainda não foram
+exercitados no aparelho.
