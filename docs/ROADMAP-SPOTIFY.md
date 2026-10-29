@@ -46,7 +46,8 @@ API oficial do Spotify ou infraestrutura de tempo real cara.
 - **Ferramentas de playlist**: ordenar, buscar, filtrar, multiseleção, pastas.
 - **Letras 2.0**: cache offline, offset por faixa, compartilhar trecho, modo
   imersivo.
-- **Perfil/avatar e playlists públicas**: buckets `avatars` e schema prontos.
+- **Perfil próprio (avatar, capa, cor, pins e estatísticas)**: buckets e schema
+  prontos; plano em `docs/PERFIS-SOCIAL-DISCORD.md`.
 - **SMTC nativo do Windows**: capa/título na central de mídia e Bluetooth.
 - **Release Radar local**: novidades de artistas seguidos.
 - **Rádio de playlist/álbum e “não tocar esta faixa”**.
@@ -56,10 +57,12 @@ API oficial do Spotify ou infraestrutura de tempo real cara.
 
 - Handoff “continuar no celular” (`playback_state`/`devices`).
 - Connect/Jam entre dispositivos.
-- Feed social, follows e “amigos ouvindo agora”.
+- Feed social, follows, perfis de terceiros e “amigos ouvindo agora” — só com
+  block/report; ver `docs/PERFIS-SOCIAL-DISCORD.md`.
 - Gapless e normalização de volume.
 - EQ de 10 bandas/preamp e presets custom.
-- Daylist por horário; Last.fm/Discord Rich Presence.
+- Daylist por horário; Last.fm. Discord Rich Presence no desktop pode ser
+  antecipado como ganho rápido (2–4 dias); no Android exige o Social SDK nativo.
 - Tradução de letras com API paga.
 
 ## O que não vale a pena agora
