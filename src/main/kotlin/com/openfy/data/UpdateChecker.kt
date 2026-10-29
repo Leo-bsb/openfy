@@ -78,34 +78,46 @@ object UpdateChecker {
             val releases = runCatching { json.parseToJsonElement(text).jsonArray }.getOrNull()
                 ?: return@withContext UpdateStatus.Error("Resposta inválida do GitHub.")
 
-            var best: Pair<IntArray, DesktopRelease>? = null
-            for (item in releases) {
-                val obj = runCatching { item.jsonObject }.getOrNull() ?: continue
-                if (obj["draft"]?.jsonPrimitive?.booleanOrNull == true) continue
-                if (obj["prerelease"]?.jsonPrimitive?.booleanOrNull == true) continue
-                val tag = obj["tag_name"]?.jsonPrimitive?.contentOrNull ?: continue
-                if (!stableTag.matches(tag)) continue
-                val version = tag.removePrefix("v")
-                val parts = parseVersion(version) ?: continue
-                if (compare(parts, currentParts) <= 0) continue
-                val previous = best
-                if (previous != null && compare(parts, previous.first) <= 0) continue
-                val releaseUrl = obj["html_url"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                val installerUrl = obj["assets"]?.jsonArray
-                    ?.firstNotNullOfOrNull { asset ->
-                        val a = runCatching { asset.jsonObject }.getOrNull() ?: return@firstNotNullOfOrNull null
-                        val name = a["name"]?.jsonPrimitive?.contentOrNull ?: return@firstNotNullOfOrNull null
-                        val link = a["browser_download_url"]?.jsonPrimitive?.contentOrNull
-                            ?: return@firstNotNullOfOrNull null
-                        if (name.endsWith(".exe", ignoreCase = true)) link else null
-                    }
-                best = parts to DesktopRelease(version, releaseUrl, installerUrl)
-            }
-
-            val newest = best
+            val newest = selectBest(releases, currentParts)
             if (newest == null) UpdateStatus.UpToDate
-            else UpdateStatus.Available(newest.second)
+            else UpdateStatus.Available(newest)
         }
+
+    /** Escolhe a maior release estável do desktop acima da versão atual. */
+    internal fun selectBest(releases: kotlinx.serialization.json.JsonArray, currentParts: IntArray): DesktopRelease? {
+        var best: Pair<IntArray, DesktopRelease>? = null
+        for (item in releases) {
+            val obj = runCatching { item.jsonObject }.getOrNull() ?: continue
+            if (obj["draft"]?.jsonPrimitive?.booleanOrNull == true) continue
+            if (obj["prerelease"]?.jsonPrimitive?.booleanOrNull == true) continue
+            val tag = obj["tag_name"]?.jsonPrimitive?.contentOrNull ?: continue
+            if (!stableTag.matches(tag)) continue
+            val version = tag.removePrefix("v")
+            val parts = parseVersion(version) ?: continue
+            if (compare(parts, currentParts) <= 0) continue
+            val previous = best
+            if (previous != null && compare(parts, previous.first) <= 0) continue
+            val releaseUrl = obj["html_url"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val installerUrl = obj["assets"]?.jsonArray
+                ?.firstNotNullOfOrNull { asset ->
+                    val a = runCatching { asset.jsonObject }.getOrNull() ?: return@firstNotNullOfOrNull null
+                    val name = a["name"]?.jsonPrimitive?.contentOrNull ?: return@firstNotNullOfOrNull null
+                    val link = a["browser_download_url"]?.jsonPrimitive?.contentOrNull
+                        ?: return@firstNotNullOfOrNull null
+                    if (name.endsWith(".exe", ignoreCase = true)) link else null
+                }
+            best = parts to DesktopRelease(version, releaseUrl, installerUrl)
+        }
+        return best?.second
+    }
+
+    /** Variante pura usada pelos testes: recebe o JSON cru do GitHub. */
+    internal fun newestRelease(jsonText: String, current: String): DesktopRelease? {
+        val parts = parseVersion(current) ?: return null
+        val releases = runCatching { json.parseToJsonElement(jsonText).jsonArray }.getOrNull()
+            ?: return null
+        return selectBest(releases, parts)
+    }
 
     private fun get(): Pair<Int, String> {
         val request = HttpRequest.newBuilder(URI.create(RELEASES_URL))
@@ -118,11 +130,14 @@ object UpdateChecker {
         return response.statusCode() to response.body()
     }
 
-    /** Semver simples: exatamente três números; qualquer outra forma é rejeitada. */
+    /**
+     * Semver simples: exatamente três números; qualquer outra forma é rejeitada.
+     */
     internal fun parseVersion(value: String): IntArray? {
         val parts = value.trim().split('.')
         if (parts.size != 3) return null
         return IntArray(3) { index ->
+            if (!parts[index].matches(Regex("""\d+"""))) return null
             parts[index].toIntOrNull() ?: return null
         }
     }

@@ -34,4 +34,39 @@ class UpdateCheckerTest {
         assertFalse(UpdateChecker.shouldAutoCheck(now - 23 * 3_600_000L, now))
         assertTrue(UpdateChecker.shouldAutoCheck(now - 24 * 3_600_000L, now))
     }
+
+    @Test
+    fun selectsNewestStableDesktopReleaseWithInstaller() {
+        val json = """
+            [
+              {"tag_name":"v0.2.9","draft":false,"prerelease":false,
+               "html_url":"https://github.com/Leo-bsb/openfy/releases/tag/v0.2.9",
+               "assets":[{"name":"Openfy-0.2.9.exe","browser_download_url":"https://github.com/x/0.2.9.exe"}]},
+              {"tag_name":"v0.3.0-android","draft":false,"prerelease":false,
+               "html_url":"https://github.com/Leo-bsb/openfy/releases/tag/v0.3.0-android","assets":[]},
+              {"tag_name":"v0.3.1","draft":true,"prerelease":false,
+               "html_url":"https://github.com/Leo-bsb/openfy/releases/tag/v0.3.1","assets":[]},
+              {"tag_name":"v0.2.10","draft":false,"prerelease":false,
+               "html_url":"https://github.com/Leo-bsb/openfy/releases/tag/v0.2.10",
+               "assets":[{"name":"Openfy-0.2.10.msi","browser_download_url":"https://github.com/x/0.2.10.msi"},
+                         {"name":"Openfy-0.2.10.exe","browser_download_url":"https://github.com/x/0.2.10.exe"}]}
+            ]
+        """.trimIndent()
+
+        val release = UpdateChecker.newestRelease(json, "0.2.8")
+        assertEquals("0.2.10", release?.version)
+        assertEquals("https://github.com/x/0.2.10.exe", release?.installerUrl)
+    }
+
+    @Test
+    fun ignoresEverythingAtOrBelowCurrentVersion() {
+        val json = """
+            [
+              {"tag_name":"v0.2.8","draft":false,"prerelease":false,"html_url":"","assets":[]},
+              {"tag_name":"v0.2.7","draft":false,"prerelease":false,"html_url":"","assets":[]}
+            ]
+        """.trimIndent()
+        assertNull(UpdateChecker.newestRelease(json, "0.2.8"))
+        assertNull(UpdateChecker.newestRelease("nao e json", "0.2.8"))
+    }
 }
