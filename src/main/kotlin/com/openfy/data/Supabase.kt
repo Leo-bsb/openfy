@@ -22,6 +22,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import com.openfy.core.Track
 
 /**
  * Configuração pública do Supabase. A chave publishable é feita para ficar no
@@ -170,6 +171,55 @@ data class PushPlayEvent(
     val skipped: Boolean = false,
     val source: String = "desktop",
     @SerialName("context_id") val contextId: String? = null,
+)
+
+@Serializable
+data class RemotePlayEvent(
+    val id: String,
+    @SerialName("track_id") val trackId: String,
+    @SerialName("started_at") val startedAt: String,
+    @SerialName("played_ms") val playedMs: Int = 0,
+    @SerialName("duration_ms") val durationMs: Int = 0,
+    val completed: Boolean = false,
+    val skipped: Boolean = false,
+    val source: String = "desktop",
+    @SerialName("context_id") val contextId: String? = null,
+    val deleted: Boolean = false,
+    @SerialName("updated_at") val updatedAt: String? = null,
+)
+
+@Serializable
+data class PushDevice(
+    val id: String,
+    val name: String,
+    val platform: String,
+    @SerialName("last_seen_at") val lastSeenAt: String,
+)
+
+@Serializable
+data class RemotePlaybackState(
+    @SerialName("device_id") val deviceId: String? = null,
+    @SerialName("track_id") val trackId: String? = null,
+    val queue: List<Track> = emptyList(),
+    @SerialName("queue_index") val queueIndex: Int = -1,
+    @SerialName("position_ms") val positionMs: Int = 0,
+    val playing: Boolean = false,
+    val shuffle: Boolean = false,
+    val repeat: String = "OFF",
+    @SerialName("updated_at") val updatedAt: String? = null,
+)
+
+@Serializable
+data class PushPlaybackState(
+    @SerialName("user_id") val userId: String,
+    @SerialName("device_id") val deviceId: String?,
+    @SerialName("track_id") val trackId: String?,
+    val queue: List<Track>,
+    @SerialName("queue_index") val queueIndex: Int,
+    @SerialName("position_ms") val positionMs: Int,
+    val playing: Boolean,
+    val shuffle: Boolean,
+    val repeat: String,
 )
 
 @Serializable
@@ -378,6 +428,39 @@ class SupabaseApi {
         )
     }
 
+    /** Snapshot dos ajustes (tema, player, download, EQ) privado da conta. */
+    suspend fun settingsPrefs(accessToken: String, userId: String): RemoteActivity? {
+        val rows = decode<List<RemoteActivity>>(
+            client.get("$baseUrl/rest/v1/activities") {
+                auth(accessToken)
+                parameter("select", "id,payload,created_at")
+                parameter("actor_id", "eq.$userId")
+                parameter("type", "eq.settings_prefs")
+                parameter("deleted", "eq.false")
+                parameter("order", "created_at.desc")
+                parameter("limit", "1")
+            },
+        )
+        return rows.firstOrNull()
+    }
+
+    suspend fun saveSettingsPrefs(
+        accessToken: String,
+        userId: String,
+        payload: JsonElement,
+    ): String {
+        val rows = decode<List<IdRow>>(
+            client.post("$baseUrl/rest/v1/activities") {
+                auth(accessToken)
+                header("Prefer", "return=representation")
+                contentType(ContentType.Application.Json)
+                setBody(PushActivity(userId, "settings_prefs", payload, isPublic = false))
+            },
+        )
+        return rows.firstOrNull()?.id
+            ?: throw SupabaseException(0, "O servidor não devolveu o id dos ajustes.")
+    }
+
     /**
      * Sobe avatar/capa do perfil no bucket público. O nome inclui timestamp para
      * o cache dos clients não mostrar a imagem anterior.
@@ -426,7 +509,6 @@ class SupabaseApi {
                 auth(accessToken)
                 parameter("select", "id")
                 parameter("owner_id", "eq.$userId")
-                parameter("deleted", "eq.false")
                 parameter("limit", "1000")
             },
         ).map { it.id }
@@ -524,6 +606,70 @@ class SupabaseApi {
                 parameter("select", "id,title,artist,album,duration,thumbnail")
                 parameter("id", inClause(ids))
                 parameter("limit", "1000")
+            },
+        )
+    }
+
+    /**
+     * Escutas da conta. `cursor` é o `updated_at` da última linha vista; usar
+     * updated_at (e não started_at) pega eventos que o celular enviou offline
+     * depois, sem depender do relógio do aparelho.
+     */
+    suspend fun playEvents(
+        accessToken: String,
+        cursor: String? = null,
+        limit: Int = 2000,
+    ): List<RemotePlayEvent> =
+        decode(
+            client.get("$baseUrl/rest/v1/play_events") {
+                auth(accessToken)
+                parameter(
+                    "select",
+                    "id,track_id,started_at,played_ms,duration_ms,completed,skipped," +
+                        "source,context_id,deleted,updated_at",
+                )
+                if (cursor.isNullOrBlank()) {
+                    parameter("order", "started_at.desc")
+                } else {
+                    parameter("updated_at", "gt.$cursor")
+                    parameter("order", "updated_at.asc")
+                }
+                parameter("limit", limit.toString())
+            },
+        )
+
+    suspend fun registerDevice(accessToken: String, deviceId: String, name: String) {
+        ensure(
+            client.post("$baseUrl/rest/v1/devices") {
+                auth(accessToken)
+                header("Prefer", "resolution=merge-duplicates,return=minimal")
+                parameter("on_conflict", "id")
+                contentType(ContentType.Application.Json)
+                setBody(PushDevice(deviceId, name, "windows", java.time.Instant.now().toString()))
+            },
+        )
+    }
+
+    suspend fun playbackState(accessToken: String): RemotePlaybackState? =
+        decode<List<RemotePlaybackState>>(
+            client.get("$baseUrl/rest/v1/playback_state") {
+                auth(accessToken)
+                parameter(
+                    "select",
+                    "device_id,track_id,queue,queue_index,position_ms,playing,shuffle,repeat,updated_at",
+                )
+                parameter("limit", "1")
+            },
+        ).firstOrNull()
+
+    suspend fun pushPlaybackState(accessToken: String, state: PushPlaybackState) {
+        ensure(
+            client.post("$baseUrl/rest/v1/playback_state") {
+                auth(accessToken)
+                header("Prefer", "resolution=merge-duplicates,return=minimal")
+                parameter("on_conflict", "user_id")
+                contentType(ContentType.Application.Json)
+                setBody(state)
             },
         )
     }

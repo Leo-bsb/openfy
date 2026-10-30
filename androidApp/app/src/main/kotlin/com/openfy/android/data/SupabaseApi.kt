@@ -267,6 +267,172 @@ class SupabaseApi {
         }
     }
 
+    /** Todos os itens (inclusive tombstones) de várias playlists, para o pull. */
+    suspend fun allPlaylistItems(
+        accessToken: String,
+        playlistIds: Collection<String>,
+    ): List<RemotePlaylistItem> {
+        if (playlistIds.isEmpty()) return emptyList()
+        return playlistIds.chunked(40).flatMap { chunk ->
+            val response = client.get("$baseUrl/rest/v1/playlist_items") {
+                header("apikey", anonKey)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                parameter("select", "id,playlist_id,track_id,rank,deleted,updated_at")
+                parameter("playlist_id", "in.(${chunk.joinToString(",")})")
+                parameter("order", "playlist_id.asc,rank.asc")
+                parameter("limit", "5000")
+            }
+            decoded<List<RemotePlaylistItem>>(response)
+        }
+    }
+
+    suspend fun renamePlaylist(accessToken: String, playlistId: String, name: String) {
+        val response = client.patch("$baseUrl/rest/v1/playlists") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=minimal")
+            parameter("id", "eq.$playlistId")
+            contentType(ContentType.Application.Json)
+            setBody(PlaylistPatch(name.trim(), Instant.now().toString()))
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
+    suspend fun deletePlaylist(accessToken: String, playlistId: String) {
+        val response = client.patch("$baseUrl/rest/v1/playlists") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=minimal")
+            parameter("id", "eq.$playlistId")
+            contentType(ContentType.Application.Json)
+            setBody(UpdatedPlaylistPatch(Instant.now().toString(), deleted = true))
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
+    /** Upsert de playlists usado pelo flush do outbox (criar/renomear/excluir). */
+    suspend fun upsertPlaylists(accessToken: String, playlists: List<PushPlaylist>) {
+        if (playlists.isEmpty()) return
+        playlists.chunked(100).forEach { batch ->
+            val response = client.post("$baseUrl/rest/v1/playlists") {
+                header("apikey", anonKey)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                header("Prefer", "resolution=merge-duplicates,return=minimal")
+                parameter("on_conflict", "id")
+                contentType(ContentType.Application.Json)
+                setBody(batch)
+            }
+            if (!response.status.isSuccess()) decodeError(response)
+        }
+    }
+
+    /** Upsert de itens usado pelo reorder e pelo flush do outbox. */
+    suspend fun upsertPlaylistItems(accessToken: String, items: List<PushPlaylistItem>) {
+        if (items.isEmpty()) return
+        items.chunked(200).forEach { batch ->
+            val response = client.post("$baseUrl/rest/v1/playlist_items") {
+                header("apikey", anonKey)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                header("Prefer", "resolution=merge-duplicates,return=minimal")
+                parameter("on_conflict", "id")
+                contentType(ContentType.Application.Json)
+                setBody(batch)
+            }
+            if (!response.status.isSuccess()) decodeError(response)
+        }
+    }
+
+    /** Curtidas com tombstones; o pull substitui o conjunto local com segurança. */
+    suspend fun likeRows(accessToken: String): List<RemoteLikeDto> {
+        val response = client.get("$baseUrl/rest/v1/likes") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "track_id,deleted,updated_at")
+            parameter("limit", "5000")
+        }
+        return decoded(response)
+    }
+
+    suspend fun playEvents(
+        accessToken: String,
+        cursor: String? = null,
+        limit: Int = 1000,
+    ): List<RemotePlayEventDto> {
+        val response = client.get("$baseUrl/rest/v1/play_events") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter(
+                "select",
+                "id,track_id,started_at,played_ms,duration_ms,completed,skipped," +
+                    "source,context_id,deleted,updated_at",
+            )
+            if (cursor.isNullOrBlank()) {
+                parameter("order", "started_at.desc")
+            } else {
+                parameter("updated_at", "gt.$cursor")
+                parameter("order", "updated_at.asc")
+            }
+            parameter("limit", limit.toString())
+        }
+        return decoded(response)
+    }
+
+    suspend fun playbackState(accessToken: String): PlaybackStateDto? {
+        val response = client.get("$baseUrl/rest/v1/playback_state") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter(
+                "select",
+                "device_id,track_id,queue,queue_index,position_ms,playing,shuffle,repeat,updated_at",
+            )
+            parameter("limit", "1")
+        }
+        return decoded<List<PlaybackStateDto>>(response).firstOrNull()
+    }
+
+    suspend fun pushPlaybackState(accessToken: String, state: PushPlaybackState) {
+        val response = client.post("$baseUrl/rest/v1/playback_state") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "resolution=merge-duplicates,return=minimal")
+            parameter("on_conflict", "user_id")
+            contentType(ContentType.Application.Json)
+            setBody(state)
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
+    suspend fun settingsPrefs(accessToken: String, userId: String): RemoteActivity? {
+        val response = client.get("$baseUrl/rest/v1/activities") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "id,payload,created_at")
+            parameter("actor_id", "eq.$userId")
+            parameter("type", "eq.settings_prefs")
+            parameter("deleted", "eq.false")
+            parameter("order", "created_at.desc")
+            parameter("limit", "1")
+        }
+        return decoded<List<RemoteActivity>>(response).firstOrNull()
+    }
+
+    suspend fun saveSettingsPrefs(
+        accessToken: String,
+        userId: String,
+        payload: JsonElement,
+    ): String {
+        val response = client.post("$baseUrl/rest/v1/activities") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=representation")
+            contentType(ContentType.Application.Json)
+            setBody(PushActivity(userId, "settings_prefs", payload, isPublic = false))
+        }
+        val rows = decoded<List<IdRow>>(response)
+        return rows.firstOrNull()?.id
+            ?: throw SupabaseException("O servidor não devolveu o id dos ajustes.")
+    }
+
     suspend fun monthlyTopTracks(
         accessToken: String,
         month: String,
@@ -349,7 +515,7 @@ class SupabaseApi {
             header("Prefer", "return=minimal")
             parameter("id", "eq.$playlistId")
             contentType(ContentType.Application.Json)
-            setBody(CoverPatch(url))
+            setBody(CoverUpdatedPatch(url, Instant.now().toString()))
         }
         if (!response.status.isSuccess()) decodeError(response)
     }

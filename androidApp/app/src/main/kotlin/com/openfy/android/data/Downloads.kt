@@ -240,6 +240,9 @@ class AudioDownloader(
             (dir.usableSpace - DISK_SAFETY_BYTES).coerceAtLeast(0),
         )
         if (budget <= MIN_FREE_BYTES) {
+            com.openfy.core.Log.write(
+                "download: ${track.id} sem orçamento (usado=${store.usedBytes()}, limite=${limitBytes()})",
+            )
             return DownloadResult.Failed("Limite de armazenamento atingido. Apague downloads em Ajustes.")
         }
         var connection: HttpURLConnection? = null
@@ -255,6 +258,10 @@ class AudioDownloader(
             }
             activeConnection = connection
             val code = connection.responseCode
+            com.openfy.core.Log.write(
+                "download: ${track.id} resposta $code " +
+                    "(${connection.contentType.orEmpty()}, ${connection.contentLengthLong} bytes)",
+            )
             if (isCancelled()) return DownloadResult.Cancelled
             if (code == 401 || code == 403) {
                 // Google devolve 403 quando o link temporário expira.
@@ -322,10 +329,15 @@ class AudioDownloader(
             )
             if (!store.put(entry)) {
                 finalFile.deleteQuietly()
+                com.openfy.core.Log.write("download: falha ao gravar índice de ${track.id}")
                 return DownloadResult.Failed("Não foi possível salvar o índice de downloads.")
             }
+            com.openfy.core.Log.write("download: ${track.id} ok ($written bytes em ${finalFile.name})")
             DownloadResult.Success(entry)
         } catch (error: Exception) {
+            com.openfy.core.Log.write(
+                "download: ${track.id} falhou (${error.javaClass.simpleName}: ${error.message})",
+            )
             if (isCancelled()) {
                 DownloadResult.Cancelled
             } else {

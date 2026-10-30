@@ -40,6 +40,14 @@ class PlaylistCache(dir: File) {
         }
     }
 
+    fun remove(playlistId: String) {
+        synchronized(lock) {
+            if (playlistId !in cache) return
+            cache = cache - playlistId
+            persist()
+        }
+    }
+
     fun clear() {
         synchronized(lock) {
             cache = emptyMap()

@@ -41,6 +41,20 @@ data class PendingPlayEvent(
     val contextTitle: String,
 )
 
+/** Evento de escuta vindo do Supabase (PC ou Android). */
+data class RemotePlayEventRow(
+    val eventId: String,
+    val trackId: String,
+    val startedAt: Long,
+    val playedMs: Int,
+    val durationMs: Int,
+    val completed: Boolean,
+    val skipped: Boolean,
+    val origin: String,
+    val contextId: String?,
+    val deleted: Boolean,
+)
+
 /** Linha bruta usada pelo recomendador e pelo recap. */
 data class PlayEventRow(
     val trackId: String,
@@ -58,13 +72,14 @@ data class SyncResult(
     val remotePlaylists: Int = 0,
     val remoteItems: Int = 0,
     val remoteLikes: Int = 0,
+    val remoteEvents: Int = 0,
     val pushedPlaylists: Int = 0,
     val pushedItems: Int = 0,
     val pushedLikes: Int = 0,
     val pushedEvents: Int = 0,
 ) {
     fun summary(): String =
-        "Sync: $remotePlaylists playlists, $remoteItems itens e $remoteLikes curtidas recebidos; " +
-            "$pushedPlaylists playlists, $pushedItems itens, $pushedLikes curtidas e " +
-            "$pushedEvents escutas enviados."
+        "Sync: $remotePlaylists playlists, $remoteItems itens, $remoteLikes curtidas e " +
+            "$remoteEvents escutas recebidos; $pushedPlaylists playlists, $pushedItems itens, " +
+            "$pushedLikes curtidas e $pushedEvents escutas enviados."
 }

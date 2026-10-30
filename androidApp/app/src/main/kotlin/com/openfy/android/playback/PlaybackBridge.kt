@@ -13,6 +13,7 @@ data class PlaybackInfo(
     val thumbnail: String = "",
     val playing: Boolean = false,
     val durationMs: Long = 0L,
+    val positionMs: Long = 0L,
     val hasPrevious: Boolean = false,
     val hasNext: Boolean = false,
 )
@@ -28,11 +29,13 @@ object PlaybackBridge {
     var onNext: (() -> Unit)? = null
     var onPrevious: (() -> Unit)? = null
     var onStop: (() -> Unit)? = null
+    var onSeek: ((Long) -> Unit)? = null
 
     fun update(
         track: Track?,
         playing: Boolean,
         durationMs: Long,
+        positionMs: Long,
         hasPrevious: Boolean,
         hasNext: Boolean,
     ) {
@@ -43,6 +46,7 @@ object PlaybackBridge {
             thumbnail = track?.thumbnail.orEmpty(),
             playing = playing,
             durationMs = durationMs,
+            positionMs = positionMs.coerceAtLeast(0L),
             hasPrevious = hasPrevious,
             hasNext = hasNext,
         )
@@ -56,6 +60,7 @@ object PlaybackBridge {
         onNext = null
         onPrevious = null
         onStop = null
+        onSeek = null
         _info.value = PlaybackInfo()
     }
 
@@ -65,4 +70,5 @@ object PlaybackBridge {
     fun next() = onNext?.invoke()
     fun previous() = onPrevious?.invoke()
     fun stop() = onStop?.invoke()
+    fun seek(positionMs: Long) = onSeek?.invoke(positionMs)
 }

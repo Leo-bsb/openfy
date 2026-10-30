@@ -1,5 +1,6 @@
 package com.openfy.android.data
 
+import com.openfy.core.Track
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
@@ -80,6 +81,7 @@ data class RemotePlaylistItem(
     @SerialName("track_id") val trackId: String = "",
     val rank: String = "",
     val deleted: Boolean = false,
+    @SerialName("updated_at") val updatedAt: String? = null,
 )
 
 @Serializable
@@ -100,6 +102,14 @@ data class PushTrack(
     val album: String,
     val duration: Int,
     val thumbnail: String,
+)
+
+@Serializable
+data class PushPlaylist(
+    val id: String,
+    val name: String,
+    @SerialName("cover_url") val coverUrl: String = "",
+    val deleted: Boolean = false,
 )
 
 @Serializable
@@ -172,6 +182,7 @@ data class JoinBody(@SerialName("p_code") val code: String)
 
 @Serializable
 data class PushPlayEvent(
+    val id: String? = null,
     @SerialName("user_id") val userId: String,
     @SerialName("device_id") val deviceId: String?,
     @SerialName("track_id") val trackId: String,
@@ -182,6 +193,73 @@ data class PushPlayEvent(
     val skipped: Boolean,
     val source: String,
     @SerialName("context_id") val contextId: String?,
+)
+
+@Serializable
+data class RemotePlayEventDto(
+    val id: String = "",
+    @SerialName("track_id") val trackId: String = "",
+    @SerialName("started_at") val startedAt: String = "",
+    @SerialName("played_ms") val playedMs: Int = 0,
+    @SerialName("duration_ms") val durationMs: Int = 0,
+    val completed: Boolean = false,
+    val skipped: Boolean = false,
+    val source: String = "android",
+    @SerialName("context_id") val contextId: String? = null,
+    val deleted: Boolean = false,
+    @SerialName("updated_at") val updatedAt: String? = null,
+)
+
+@Serializable
+data class RemoteLikeDto(
+    @SerialName("track_id") val trackId: String = "",
+    val deleted: Boolean = false,
+    @SerialName("updated_at") val updatedAt: String? = null,
+)
+
+@Serializable
+data class PlaylistPatch(
+    val name: String,
+    @SerialName("updated_at") val updatedAt: String,
+    val deleted: Boolean? = null,
+)
+
+@Serializable
+data class UpdatedPlaylistPatch(
+    @SerialName("updated_at") val updatedAt: String,
+    val deleted: Boolean? = null,
+)
+
+@Serializable
+data class CoverUpdatedPatch(
+    @SerialName("cover_url") val coverUrl: String,
+    @SerialName("updated_at") val updatedAt: String,
+)
+
+@Serializable
+data class PlaybackStateDto(
+    @SerialName("track_id") val trackId: String? = null,
+    val queue: List<Track> = emptyList(),
+    @SerialName("queue_index") val queueIndex: Int = -1,
+    @SerialName("position_ms") val positionMs: Int = 0,
+    val playing: Boolean = false,
+    val shuffle: Boolean = false,
+    val repeat: String = "OFF",
+    @SerialName("device_id") val deviceId: String? = null,
+    @SerialName("updated_at") val updatedAt: String? = null,
+)
+
+@Serializable
+data class PushPlaybackState(
+    @SerialName("user_id") val userId: String,
+    @SerialName("device_id") val deviceId: String?,
+    @SerialName("track_id") val trackId: String?,
+    val queue: List<Track>,
+    @SerialName("queue_index") val queueIndex: Int,
+    @SerialName("position_ms") val positionMs: Int,
+    val playing: Boolean,
+    val shuffle: Boolean,
+    val repeat: String,
 )
 
 @Serializable

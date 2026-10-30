@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.os.Build
 import android.os.IBinder
 import android.support.v4.media.MediaMetadataCompat
@@ -44,16 +45,24 @@ class PlaybackService : Service() {
     private var artwork: Bitmap? = null
     private var artworkJob: Job? = null
 
+    /** Assinatura do que aparece na notificação; posição não força rebuild. */
+    private var notificationKey = ""
+
     override fun onCreate() {
         super.onCreate()
         createChannel()
         session = MediaSessionCompat(this, "Openfy").apply {
+            setFlags(
+                MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
+                    MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS,
+            )
             setCallback(object : MediaSessionCompat.Callback() {
                 override fun onPlay() { PlaybackBridge.play() }
                 override fun onPause() { PlaybackBridge.pause() }
                 override fun onSkipToNext() { PlaybackBridge.next() }
                 override fun onSkipToPrevious() { PlaybackBridge.previous() }
                 override fun onStop() { PlaybackBridge.stop() }
+                override fun onSeekTo(pos: Long) { PlaybackBridge.seek(pos) }
             })
             isActive = true
         }
@@ -71,6 +80,7 @@ class PlaybackService : Service() {
                         if (artworkUrl == info.thumbnail) {
                             artwork = loaded
                             session.setMetadata(metadata(info))
+                            notificationKey = ""
                             notify(info)
                         }
                     }
@@ -98,12 +108,6 @@ class PlaybackService : Service() {
         return START_NOT_STICKY
     }
 
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        PlaybackBridge.stop()
-        stopSelf()
-        super.onTaskRemoved(rootIntent)
-    }
-
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
@@ -124,6 +128,7 @@ class PlaybackService : Service() {
             description = "Controles do player do Openfy"
             setShowBadge(false)
             setSound(null, null)
+            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
         }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
@@ -146,13 +151,17 @@ class PlaybackService : Service() {
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(text)
+            .setSubText(if (info.playing) "Tocando" else "Pausado")
             .setContentIntent(content)
             .setDeleteIntent(actionIntent(ACTION_STOP, 14))
             .setOnlyAlertOnce(true)
+            .setShowWhen(false)
             .setOngoing(info.playing)
+            .setSilent(true)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setColor(ACCENT)
             .addAction(android.R.drawable.ic_media_previous, "Anterior", previous)
             .addAction(
                 if (info.playing) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
@@ -161,6 +170,8 @@ class PlaybackService : Service() {
             )
             .addAction(android.R.drawable.ic_media_next, "Próxima", next)
         artwork?.let { builder.setLargeIcon(it) }
+        // A barra de progresso/arrasto da notificação vem da MediaSession; o
+        // MediaStyle só precisa apontar para ela.
         builder.setStyle(
             androidx.media.app.NotificationCompat.MediaStyle()
                 .setMediaSession(session.sessionToken)
@@ -194,13 +205,14 @@ class PlaybackService : Service() {
                 PlaybackStateCompat.ACTION_PLAY or
                     PlaybackStateCompat.ACTION_PAUSE or
                     PlaybackStateCompat.ACTION_PLAY_PAUSE or
+                    PlaybackStateCompat.ACTION_SEEK_TO or
                     PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
                     PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
                     PlaybackStateCompat.ACTION_STOP,
             )
             .setState(
                 if (info.playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED,
-                PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN,
+                info.positionMs.coerceAtLeast(0L),
                 1f,
             )
             .build()
@@ -211,7 +223,7 @@ class PlaybackService : Service() {
             runCatching {
                 val request = ImageRequest.Builder(this@PlaybackService)
                     .data(url)
-                    .size(256, 256)
+                    .size(512, 512)
                     .bitmapConfig(Bitmap.Config.ARGB_8888)
                     .build()
                 val result = SingletonImageLoader.get(this@PlaybackService).execute(request)
@@ -222,6 +234,9 @@ class PlaybackService : Service() {
     }
 
     private fun notify(info: PlaybackInfo) {
+        val key = "${info.trackId}|${info.playing}|${info.durationMs}|$artworkUrl|${artwork != null}"
+        if (key == notificationKey) return
+        notificationKey = key
         runCatching {
             NotificationManagerCompat.from(this)
                 .notify(NOTIFICATION_ID, buildNotification(info))
@@ -231,6 +246,7 @@ class PlaybackService : Service() {
     companion object {
         private const val CHANNEL_ID = "openfy_playback"
         private const val NOTIFICATION_ID = 711
+        private val ACCENT = Color.parseColor("#7DD3FC")
         const val ACTION_TOGGLE = "com.openfy.android.playback.TOGGLE"
         const val ACTION_NEXT = "com.openfy.android.playback.NEXT"
         const val ACTION_PREVIOUS = "com.openfy.android.playback.PREVIOUS"

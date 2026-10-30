@@ -249,10 +249,15 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
   configuráveis e faixas fixadas. O snapshot sincroniza com LWW e abre offline.
 - Discord Rich Presence opcional no PC: Ajustes > Integrações, com Application
   ID do Discord Developer Portal; mostra título/artista e play/pause.
-- Ainda faltam no Android: downloads em background com WorkManager, importar
-  CSV/backup JSON, MediaSessionService com player dentro do serviço e o módulo
-  compartilhado KMP. O player em background mantém o processo vivo; se o app
-  for removido dos recentes, a reprodução para.
+- Ainda faltam no Android: importar CSV/backup JSON, MediaSessionService com
+  player dentro do serviço e o módulo compartilhado KMP.
+- Downloads no Android rodam no `DownloadEngine` (fora do ciclo de vida da tela)
+  com `DownloadService` em primeiro plano (`dataSync`), então continuam ao abrir
+  outro app e mostram progresso/cancelar na notificação. Os downloads usam uma
+  URL extraída só para eles (o Google limita a segunda conexão no link do player).
+- Sync offline no Android: alterações entram em outbox e exclusões viram
+  tombstones, então nada volta ao sincronizar. Ajustes convergem pelo maior
+  `updatedAt` e a fila/posição é passada entre aparelhos por `playback_state`.
 - Nesta versão o merge é LWW por `updated_at`. O próximo passo é trocar por
   outbox + `server_rev` para conflitos offline mais seguros.
 
@@ -263,12 +268,18 @@ Instaladores (usuário atual, sem admin):
 ```
 dist\Openfy-0.2.9.exe
 dist\Openfy-0.2.9.msi
-dist\Openfy-Android-0.4.2.apk
+dist\Openfy-Android-0.6.0.apk
 ```
+
+Páginas (GitHub Pages): https://leo-bsb.github.io/openfy/
+Convite de playlist: https://leo-bsb.github.io/openfy/join.html?code=CODIGO
+OAuth: https://leo-bsb.github.io/openfy/oauth/spotify.html ·
+https://leo-bsb.github.io/openfy/oauth/google.html ·
+Privacidade/termos: `/privacy.html` e `/terms.html`
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
 Desktop 0.2.9: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.9
-Android 0.4.2: https://github.com/Leo-bsb/openfy/releases/tag/v0.4.2-android
+Android 0.6.0: https://github.com/Leo-bsb/openfy/releases/tag/v0.6.0-android
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos

@@ -73,10 +73,10 @@ class SessionStore(context: Context) {
     }
 
     fun crossfadeSeconds(): Int =
-        prefs.getInt("crossfade_seconds", 6).coerceIn(0, 12)
+        prefs.getInt("crossfade_seconds", 6).coerceIn(0, 15)
 
     fun setCrossfadeSeconds(seconds: Int) {
-        prefs.edit().putInt("crossfade_seconds", seconds.coerceIn(0, 12)).apply()
+        prefs.edit().putInt("crossfade_seconds", seconds.coerceIn(0, 15)).apply()
     }
 
     fun clear() {
@@ -87,6 +87,8 @@ class SessionStore(context: Context) {
         val eqEnabled = eqEnabled()
         val eqGains = eqGains()
         val downloadLimit = downloadLimitMb()
+        val quality = audioQuality()
+        val autoDownload = autoDownload()
         prefs.edit().clear()
             .putInt("crossfade_seconds", crossfade)
             .putString("ui_palette", palette.id)
@@ -95,6 +97,8 @@ class SessionStore(context: Context) {
             .putBoolean("eq_enabled", eqEnabled)
             .putString("eq_gains", eqGains.joinToString(","))
             .putInt("download_limit_mb", downloadLimit)
+            .putString("audio_quality", quality)
+            .putBoolean("download_auto", autoDownload)
             .apply()
     }
 
@@ -132,6 +136,48 @@ class SessionStore(context: Context) {
 
     fun setEqGains(gains: List<Int>) {
         prefs.edit().putString("eq_gains", gains.joinToString(",")).apply()
+    }
+
+    fun audioQuality(): String =
+        prefs.getString("audio_quality", "HIGH")?.takeIf { it == "LOW" || it == "HIGH" } ?: "HIGH"
+
+    fun setAudioQuality(value: String) {
+        prefs.edit().putString("audio_quality", if (value == "LOW") "LOW" else "HIGH").apply()
+    }
+
+    fun autoDownload(): Boolean = prefs.getBoolean("download_auto", false)
+
+    fun setAutoDownload(enabled: Boolean) {
+        prefs.edit().putBoolean("download_auto", enabled).apply()
+    }
+
+    /** Id da linha de `activities` que guarda os ajustes sincronizados. */
+    fun settingsActivityId(): String? = prefs.getString("settings_activity_id", null)
+
+    fun setSettingsActivityId(id: String?) {
+        prefs.edit().apply {
+            if (id.isNullOrBlank()) remove("settings_activity_id") else putString("settings_activity_id", id)
+        }.apply()
+    }
+
+    fun settingsUpdatedAt(): Long = prefs.getLong("settings_updated_at", 0L)
+
+    fun setSettingsUpdatedAt(value: Long) {
+        prefs.edit().putLong("settings_updated_at", value).apply()
+    }
+
+    /** Quando este aparelho enviou a fila pela última vez (handoff). */
+    fun playbackLastPushMs(): Long = prefs.getLong("playback_last_push_ms", 0L)
+
+    fun setPlaybackLastPushMs(value: Long) {
+        prefs.edit().putLong("playback_last_push_ms", value).apply()
+    }
+
+    /** Assinatura da última fila enviada, para não repetir upsert à toa. */
+    fun playbackSignature(): String? = prefs.getString("playback_signature", null)
+
+    fun setPlaybackSignature(value: String) {
+        prefs.edit().putString("playback_signature", value).apply()
     }
 
     fun profilePrefs(userId: String): ProfileExtras? = runCatching {

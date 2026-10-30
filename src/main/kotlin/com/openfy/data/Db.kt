@@ -7,6 +7,7 @@ import com.openfy.core.RecapArtist
 import com.openfy.core.RecapDay
 import com.openfy.core.RecapSummary
 import com.openfy.core.RecapTrack
+import com.openfy.core.RemotePlayEventRow
 import com.openfy.core.SyncLike
 import com.openfy.core.SyncPlaylist
 import com.openfy.core.SyncPlaylistItem
@@ -222,6 +223,38 @@ class Db(file: Path) : AutoCloseable {
                 )
                 st.execute("pragma user_version=8")
             }
+            if (version < 9) {
+                // v9: sync incremental de verdade. dirty=1 marca apenas o que mudou
+                // neste aparelho; o push nao pode reescrever o que veio da nuvem.
+                if (!hasColumn("playlist", "dirty")) {
+                    st.execute("alter table playlist add column dirty integer not null default 1")
+                }
+                if (!hasColumn("liked", "dirty")) {
+                    st.execute("alter table liked add column dirty integer not null default 1")
+                }
+                if (!hasColumn("playlist_item", "dirty")) {
+                    st.execute("alter table playlist_item add column dirty integer not null default 1")
+                }
+                st.execute("create index if not exists playlist_dirty_idx on playlist(dirty)")
+                st.execute("create index if not exists liked_dirty_idx on liked(dirty)")
+                st.execute("create index if not exists playlist_item_dirty_idx on playlist_item(dirty)")
+                // O evento precisa de um id estavel antes de subir. Eventos antigos
+                // sem id ganham UUID agora; os novos ja nascem com id.
+                val missing = mutableListOf<Int>()
+                st.executeQuery(
+                    "select seq from play_event where event_id is null or event_id=''"
+                ).use { rs -> while (rs.next()) missing += rs.getInt(1) }
+                missing.forEach { seq ->
+                    st.execute(
+                        "update play_event set event_id='${UUID.randomUUID()}' where seq=$seq"
+                    )
+                }
+                st.execute(
+                    "create unique index if not exists play_event_event_id_uidx " +
+                        "on play_event(event_id)"
+                )
+                st.execute("pragma user_version=9")
+            }
         }
     }
 
@@ -272,13 +305,13 @@ class Db(file: Path) : AutoCloseable {
         val now = System.currentTimeMillis()
         if (liked) {
             // Soft delete: o sync precisa saber que a curtida foi removida.
-            conn.prepareStatement("update liked set deleted=1, updated_at=? where id=?").use { ps ->
+            conn.prepareStatement("update liked set deleted=1, updated_at=?, dirty=1 where id=?").use { ps ->
                 ps.setLong(1, now); ps.setString(2, id); ps.executeUpdate()
             }
         } else {
             conn.prepareStatement(
-                "insert into liked(id, at, updated_at, deleted) values(?,?,?,0) " +
-                    "on conflict(id) do update set at=excluded.at, updated_at=excluded.updated_at, deleted=0"
+                "insert into liked(id, at, updated_at, deleted, dirty) values(?,?,?,0,1) " +
+                    "on conflict(id) do update set at=excluded.at, updated_at=excluded.updated_at, deleted=0, dirty=1"
             ).use { ps ->
                 ps.setString(1, id); ps.setLong(2, now); ps.setLong(3, now); ps.executeUpdate()
             }
@@ -345,8 +378,8 @@ class Db(file: Path) : AutoCloseable {
         val id = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
         conn.prepareStatement(
-            "insert into playlist(id, name, created_at, cover, updated_at, deleted) " +
-                "values(?,?,?,'',?,0)"
+            "insert into playlist(id, name, created_at, cover, updated_at, deleted, dirty) " +
+                "values(?,?,?,'',?,0,1)"
         ).use { ps ->
             ps.setString(1, id); ps.setString(2, name); ps.setLong(3, now); ps.setLong(4, now)
             ps.executeUpdate()
@@ -357,11 +390,11 @@ class Db(file: Path) : AutoCloseable {
     @Synchronized
     fun deletePlaylist(id: String) {
         val now = System.currentTimeMillis()
-        conn.prepareStatement("update playlist set deleted=1, updated_at=? where id=?").use { ps ->
+        conn.prepareStatement("update playlist set deleted=1, updated_at=?, dirty=1 where id=?").use { ps ->
             ps.setLong(1, now); ps.setString(2, id); ps.executeUpdate()
         }
         conn.prepareStatement(
-            "update playlist_item set deleted=1, updated_at=? where playlist_id=?"
+            "update playlist_item set deleted=1, updated_at=?, dirty=1 where playlist_id=?"
         ).use { ps ->
             ps.setLong(1, now); ps.setString(2, id); ps.executeUpdate()
         }
@@ -369,7 +402,7 @@ class Db(file: Path) : AutoCloseable {
 
     @Synchronized
     fun renamePlaylist(id: String, name: String) {
-        conn.prepareStatement("update playlist set name=?, updated_at=? where id=?").use { ps ->
+        conn.prepareStatement("update playlist set name=?, updated_at=?, dirty=1 where id=?").use { ps ->
             ps.setString(1, name); ps.setLong(2, System.currentTimeMillis()); ps.setString(3, id)
             ps.executeUpdate()
         }
@@ -377,7 +410,7 @@ class Db(file: Path) : AutoCloseable {
 
     @Synchronized
     fun setPlaylistCover(id: String, path: String) {
-        conn.prepareStatement("update playlist set cover=?, updated_at=? where id=?").use { ps ->
+        conn.prepareStatement("update playlist set cover=?, updated_at=?, dirty=1 where id=?").use { ps ->
             ps.setString(1, path); ps.setLong(2, System.currentTimeMillis()); ps.setString(3, id)
             ps.executeUpdate()
         }
@@ -385,7 +418,7 @@ class Db(file: Path) : AutoCloseable {
 
     @Synchronized
     fun setPlaylistCoverUrl(id: String, url: String) {
-        conn.prepareStatement("update playlist set cover_url=?, updated_at=? where id=?").use { ps ->
+        conn.prepareStatement("update playlist set cover_url=?, updated_at=?, dirty=1 where id=?").use { ps ->
             ps.setString(1, url); ps.setLong(2, System.currentTimeMillis()); ps.setString(3, id)
             ps.executeUpdate()
         }
@@ -418,10 +451,10 @@ class Db(file: Path) : AutoCloseable {
             ps.executeQuery().use { rs -> if (rs.next()) rs.getInt(1) else 1 }
         }
         conn.prepareStatement(
-            "insert into playlist_item(playlist_id, id, position, updated_at, deleted) " +
-                "values(?,?,?,?,0) " +
+            "insert into playlist_item(playlist_id, id, position, updated_at, deleted, dirty) " +
+                "values(?,?,?,?,0,1) " +
                 "on conflict(playlist_id, id) do update set " +
-                "position=excluded.position, updated_at=excluded.updated_at, deleted=0"
+                "position=excluded.position, updated_at=excluded.updated_at, deleted=0, dirty=1"
         ).use { ps ->
             ps.setString(1, playlistId); ps.setString(2, track.id); ps.setInt(3, position)
             ps.setLong(4, System.currentTimeMillis()); ps.executeUpdate()
@@ -432,7 +465,7 @@ class Db(file: Path) : AutoCloseable {
     @Synchronized
     fun removeFromPlaylist(playlistId: String, trackId: String) {
         conn.prepareStatement(
-            "update playlist_item set deleted=1, updated_at=? where playlist_id=? and id=?"
+            "update playlist_item set deleted=1, updated_at=?, dirty=1 where playlist_id=? and id=?"
         ).use { ps ->
             ps.setLong(1, System.currentTimeMillis())
             ps.setString(2, playlistId)
@@ -460,9 +493,18 @@ class Db(file: Path) : AutoCloseable {
 
     // ------------------------------------------------------------------ sync
     @Synchronized
-    fun syncPlaylists(): List<SyncPlaylist> =
+    fun syncPlaylists(): List<SyncPlaylist> = syncPlaylists(dirtyOnly = false)
+
+    /** Apenas linhas alteradas neste aparelho; o sync nao reescreve o que veio da nuvem. */
+    @Synchronized
+    fun dirtyPlaylists(): List<SyncPlaylist> = syncPlaylists(dirtyOnly = true)
+
+    private fun syncPlaylists(dirtyOnly: Boolean): List<SyncPlaylist> =
         conn.createStatement().use { st ->
-            st.executeQuery("select id, name, updated_at, deleted, cover_url from playlist").use { rs ->
+            st.executeQuery(
+                "select id, name, updated_at, deleted, cover_url from playlist" +
+                    if (dirtyOnly) " where dirty=1" else ""
+            ).use { rs ->
                 buildList {
                     while (rs.next()) {
                         add(
@@ -480,10 +522,16 @@ class Db(file: Path) : AutoCloseable {
         }
 
     @Synchronized
-    fun syncPlaylistItems(): List<SyncPlaylistItem> =
+    fun syncPlaylistItems(): List<SyncPlaylistItem> = syncPlaylistItems(dirtyOnly = false)
+
+    @Synchronized
+    fun dirtyPlaylistItems(): List<SyncPlaylistItem> = syncPlaylistItems(dirtyOnly = true)
+
+    private fun syncPlaylistItems(dirtyOnly: Boolean): List<SyncPlaylistItem> =
         conn.createStatement().use { st ->
             st.executeQuery(
-                "select playlist_id, id, position, updated_at, deleted, remote_item_id from playlist_item"
+                "select playlist_id, id, position, updated_at, deleted, remote_item_id from playlist_item" +
+                    if (dirtyOnly) " where dirty=1" else ""
             ).use { rs ->
                 buildList {
                     while (rs.next()) {
@@ -503,9 +551,16 @@ class Db(file: Path) : AutoCloseable {
         }
 
     @Synchronized
-    fun syncLikes(): List<SyncLike> =
+    fun syncLikes(): List<SyncLike> = syncLikes(dirtyOnly = false)
+
+    @Synchronized
+    fun dirtyLikes(): List<SyncLike> = syncLikes(dirtyOnly = true)
+
+    private fun syncLikes(dirtyOnly: Boolean): List<SyncLike> =
         conn.createStatement().use { st ->
-            st.executeQuery("select id, updated_at, deleted from liked").use { rs ->
+            st.executeQuery(
+                "select id, updated_at, deleted from liked" + if (dirtyOnly) " where dirty=1" else ""
+            ).use { rs ->
                 buildList {
                     while (rs.next()) {
                         add(
@@ -534,13 +589,14 @@ class Db(file: Path) : AutoCloseable {
     fun mergeRemotePlaylist(remote: SyncPlaylist) {
         conn.prepareStatement(
             """
-            insert into playlist(id, name, created_at, cover, cover_url, updated_at, deleted)
-            values(?,?,?,'',?,?,?)
+            insert into playlist(id, name, created_at, cover, cover_url, updated_at, deleted, dirty)
+            values(?,?,?,'',?,?,?,0)
             on conflict(id) do update set
                 name=excluded.name,
                 cover_url=excluded.cover_url,
                 updated_at=excluded.updated_at,
-                deleted=excluded.deleted
+                deleted=excluded.deleted,
+                dirty=0
             where excluded.updated_at > playlist.updated_at
             """.trimIndent()
         ).use { ps ->
@@ -560,13 +616,14 @@ class Db(file: Path) : AutoCloseable {
         conn.prepareStatement(
             """
             insert into playlist_item(
-                playlist_id, id, position, updated_at, deleted, remote_item_id
-            ) values(?,?,?,?,?,?)
+                playlist_id, id, position, updated_at, deleted, remote_item_id, dirty
+            ) values(?,?,?,?,?,?,0)
             on conflict(playlist_id, id) do update set
                 position=excluded.position,
                 updated_at=excluded.updated_at,
                 deleted=excluded.deleted,
-                remote_item_id=coalesce(excluded.remote_item_id, playlist_item.remote_item_id)
+                remote_item_id=coalesce(excluded.remote_item_id, playlist_item.remote_item_id),
+                dirty=0
             where excluded.updated_at > playlist_item.updated_at
             """.trimIndent()
         ).use { ps ->
@@ -584,10 +641,11 @@ class Db(file: Path) : AutoCloseable {
     fun mergeRemoteLike(remote: SyncLike) {
         conn.prepareStatement(
             """
-            insert into liked(id, at, updated_at, deleted) values(?,?,?,?)
+            insert into liked(id, at, updated_at, deleted, dirty) values(?,?,?,?,0)
             on conflict(id) do update set
                 updated_at=excluded.updated_at,
-                deleted=excluded.deleted
+                deleted=excluded.deleted,
+                dirty=0
             where excluded.updated_at > liked.updated_at
             """.trimIndent()
         ).use { ps ->
@@ -597,6 +655,90 @@ class Db(file: Path) : AutoCloseable {
             ps.setInt(4, if (remote.deleted) 1 else 0)
             ps.executeUpdate()
         }
+    }
+
+    /** Limpa a marca local só se a linha não mudou durante o push. */
+    @Synchronized
+    fun clearPlaylistDirty(id: String, updatedAt: Long) {
+        conn.prepareStatement(
+            "update playlist set dirty=0 where id=? and updated_at<=?"
+        ).use { ps -> ps.setString(1, id); ps.setLong(2, updatedAt); ps.executeUpdate() }
+    }
+
+    @Synchronized
+    fun clearPlaylistItemDirty(playlistId: String, trackId: String, updatedAt: Long) {
+        conn.prepareStatement(
+            "update playlist_item set dirty=0 where playlist_id=? and id=? and updated_at<=?"
+        ).use { ps ->
+            ps.setString(1, playlistId); ps.setString(2, trackId)
+            ps.setLong(3, updatedAt); ps.executeUpdate()
+        }
+    }
+
+    @Synchronized
+    fun clearLikeDirty(trackId: String, updatedAt: Long) {
+        conn.prepareStatement("update liked set dirty=0 where id=? and updated_at<=?").use { ps ->
+            ps.setString(1, trackId); ps.setLong(2, updatedAt); ps.executeUpdate()
+        }
+    }
+
+    /** Grava um evento que veio da nuvem sem marcá-lo para subir de novo. */
+    @Synchronized
+    fun mergeRemotePlayEvent(remote: RemotePlayEventRow) {
+        if (remote.deleted) {
+            conn.prepareStatement("delete from play_event where event_id=?").use { ps ->
+                ps.setString(1, remote.eventId); ps.executeUpdate()
+            }
+            return
+        }
+        conn.prepareStatement(
+            "insert into play_event(event_id, id, at, played_ms, duration_ms, completed, skipped, " +
+                "source, origin, context_id, context_title, finished, synced) " +
+                "values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 1, 1) " +
+                "on conflict(event_id) do update set " +
+                "played_ms=excluded.played_ms, duration_ms=excluded.duration_ms, " +
+                "completed=excluded.completed, skipped=excluded.skipped, " +
+                "source=excluded.source, origin=excluded.origin, context_id=excluded.context_id, " +
+                "finished=1, synced=1 " +
+                "where play_event.finished=0"
+        ).use { ps ->
+            ps.setString(1, remote.eventId)
+            ps.setString(2, remote.trackId)
+            ps.setLong(3, remote.startedAt)
+            ps.setInt(4, remote.playedMs)
+            ps.setInt(5, remote.durationMs)
+            ps.setInt(6, if (remote.completed) 1 else 0)
+            ps.setInt(7, if (remote.skipped) 1 else 0)
+            ps.setString(8, remote.origin)
+            ps.setString(9, remote.origin)
+            ps.setString(10, remote.contextId)
+            ps.executeUpdate()
+        }
+    }
+
+    /** Zera a biblioteca local ao trocar de conta; cache e downloads ficam. */
+    @Synchronized
+    fun resetLibrary() {
+        conn.createStatement().use { st ->
+            st.executeUpdate("delete from playlist_item")
+            st.executeUpdate("delete from playlist")
+            st.executeUpdate("delete from liked")
+            st.executeUpdate("delete from play_event")
+            st.executeUpdate("delete from sync_outbox")
+            st.executeUpdate("delete from sync_state")
+            st.executeUpdate(
+                "delete from setting where k like 'sync.%' or k='account.lastSync'"
+            )
+        }
+    }
+
+    /** Dono da biblioteca local. Vazio em bancos antigos, que são adotados no 1º login. */
+    @Synchronized
+    fun libraryOwner(): String = get("account.owner").orEmpty()
+
+    @Synchronized
+    fun setLibraryOwner(userId: String) {
+        put("account.owner", userId)
     }
 
     /** Guarda o UUID que o servidor deu a um item local recém-enviado. */
@@ -969,8 +1111,8 @@ class Db(file: Path) : AutoCloseable {
     fun like(id: String) {
         val now = System.currentTimeMillis()
         conn.prepareStatement(
-            "insert into liked(id, at, updated_at, deleted) values(?,?,?,0) " +
-                "on conflict(id) do update set deleted=0, updated_at=excluded.updated_at"
+            "insert into liked(id, at, updated_at, deleted, dirty) values(?,?,?,0,1) " +
+                "on conflict(id) do update set deleted=0, updated_at=excluded.updated_at, dirty=1"
         ).use { ps ->
             ps.setString(1, id); ps.setLong(2, now); ps.setLong(3, now); ps.executeUpdate()
         }

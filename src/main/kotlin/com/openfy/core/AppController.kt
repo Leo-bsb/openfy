@@ -194,6 +194,33 @@ class AppController(
             refreshLibrary()
             openPlaylist.value?.id?.let { loadPlaylist(it) }
         }
+        account.playbackProvider = {
+            PlaybackSnapshot(
+                trackId = player.current.value?.id,
+                queue = player.queue.value,
+                queueIndex = player.index.value,
+                positionMs = (player.position.value * 1000).toInt(),
+                playing = player.playing.value,
+                shuffle = player.shuffle.value,
+                repeat = player.repeat.value.name,
+            )
+        }
+        account.settingsProvider = {
+            SyncedSettings(
+                palette = palette.value.id,
+                playerLayout = playerLayout.value.id,
+                coverGradient = coverGradient.value,
+                autoDownload = autoDownload.value,
+                audioQuality = audioQuality.value,
+                crossfadeSeconds = player.crossfadeSeconds.value,
+                eqEnabled = player.eqEnabled.value,
+                eqGains = player.eqGains.value,
+                autoplayRadio = true,
+                updatedAt = db.get(SETTINGS_UPDATED_KEY)?.toLongOrNull() ?: 0L,
+            )
+        }
+        account.settingsApplier = { settings -> applySyncedSettings(settings) }
+        player.onSessionChanged = { account.requestPlaybackSync() }
         autoDownload.value = runCatching { db.get("download.auto")?.toBooleanStrict() }.getOrNull() ?: true
         audioQuality.value = db.get("audio.quality") ?: "HIGH"
         yt.setQuality(audioQuality.value)
@@ -942,6 +969,33 @@ class AppController(
         message.value = "Aleatório: ${tracks.size} faixas."
     }
 
+    /** Retoma a fila, a faixa e a posição que estão no outro aparelho. */
+    fun continueOnOtherDevice() {
+        val remote = account.state.value.remotePlayback ?: return
+        if (remote.queue.isEmpty()) {
+            account.clearRemotePlayback()
+            return
+        }
+        val start = remote.queueIndex.coerceIn(0, remote.queue.lastIndex)
+        val mode = runCatching { RepeatMode.valueOf(remote.repeat) }.getOrDefault(RepeatMode.OFF)
+        player.adoptSession(
+            tracks = remote.queue,
+            startIndex = start,
+            startAtMs = remote.positionMs.toLong(),
+            shuffleOn = remote.shuffle,
+            repeatMode = mode,
+            autoplay = true,
+            title = "Do outro aparelho",
+        )
+        player.setQueueContext("Do outro aparelho", "handoff", remote.trackId)
+        account.clearRemotePlayback()
+        message.value = "Retomando do outro aparelho."
+    }
+
+    fun dismissRemotePlayback() {
+        account.clearRemotePlayback()
+    }
+
     private fun playbackContext(title: String? = null): Pair<String, String> {
         if (title != null) return title to "manual"
         return when (screen.value) {
@@ -1079,6 +1133,7 @@ class AppController(
     fun setAutoDownload(enabled: Boolean) {
         autoDownload.value = enabled
         scope.launch(Dispatchers.IO) { db.put("download.auto", enabled.toString()) }
+        markSettingsChanged()
         if (enabled) scope.launch { runAutoDownload() }
     }
 
@@ -1612,6 +1667,65 @@ class AppController(
         audioQuality.value = value
         yt.setQuality(value)
         scope.launch(Dispatchers.IO) { db.put("audio.quality", value) }
+        markSettingsChanged()
+    }
+
+    /** Crossfade do player, com o mesmo valor salvo/sincronizado dos ajustes. */
+    fun setCrossfadeSeconds(seconds: Int) {
+        player.setCrossfade(seconds)
+        markSettingsChanged()
+    }
+
+    fun setEqEnabled(enabled: Boolean) {
+        player.setEqEnabled(enabled)
+        markSettingsChanged()
+    }
+
+    fun setEqGain(index: Int, gainDb: Int) {
+        player.setEqGain(index, gainDb)
+        markSettingsChanged()
+    }
+
+    fun applyEqPreset(name: String) {
+        player.applyPreset(name)
+        markSettingsChanged()
+    }
+
+    /** Marca o relógio local e agenda o envio dos ajustes para a conta. */
+    private fun markSettingsChanged() {
+        scope.launch(Dispatchers.IO) {
+            db.put(SETTINGS_UPDATED_KEY, System.currentTimeMillis().toString())
+        }
+        account.requestSettingsSync()
+    }
+
+    /**
+     * Aplica ajustes que vieram do celular. Os valores são gravados direto no
+     * banco local para o próximo boot abrir igual.
+     */
+    private fun applySyncedSettings(settings: SyncedSettings) {
+        val selectedPalette = ColorPalette.fromId(settings.palette)
+        val layout = PlayerLayout.fromId(settings.playerLayout)
+        val quality = if (settings.audioQuality == "LOW") "LOW" else "HIGH"
+        val crossfade = settings.crossfadeSeconds.coerceIn(0, 15)
+        val gains = settings.eqGains
+            .takeIf { it.size == Player.EQ_FREQS.size }
+            ?: List(Player.EQ_FREQS.size) { 0 }
+        db.put(SETTINGS_UPDATED_KEY, settings.updatedAt.toString())
+        db.put("ui.palette", selectedPalette.id)
+        palette.value = selectedPalette
+        db.put("ui.player.layout", layout.id)
+        playerLayout.value = layout
+        db.put("ui.player.coverGradient", settings.coverGradient.toString())
+        coverGradient.value = settings.coverGradient
+        db.put("download.auto", settings.autoDownload.toString())
+        autoDownload.value = settings.autoDownload
+        db.put("audio.quality", quality)
+        audioQuality.value = quality
+        yt.setQuality(quality)
+        player.setCrossfade(crossfade)
+        player.setEqEnabled(settings.eqEnabled)
+        gains.forEachIndexed { index, gain -> player.setEqGain(index, gain) }
     }
 
     fun setCloseToTray(enabled: Boolean) {
@@ -1622,16 +1736,19 @@ class AppController(
     fun setPalette(value: ColorPalette) {
         palette.value = value
         scope.launch(Dispatchers.IO) { db.put("ui.palette", value.id) }
+        markSettingsChanged()
     }
 
     fun setPlayerLayout(value: PlayerLayout) {
         playerLayout.value = value
         scope.launch(Dispatchers.IO) { db.put("ui.player.layout", value.id) }
+        markSettingsChanged()
     }
 
     fun setCoverGradient(enabled: Boolean) {
         coverGradient.value = enabled
         scope.launch(Dispatchers.IO) { db.put("ui.player.coverGradient", enabled.toString()) }
+        markSettingsChanged()
     }
 
     // ------------------------------------------------------------------ Discord
@@ -1820,5 +1937,6 @@ class AppController(
         const val AUTO_SIMILAR = 6
         const val AUTO_MAX_DOWNLOADS = 250
         const val AUTO_INTERVAL_MS = 2 * 60 * 60 * 1000L
+        const val SETTINGS_UPDATED_KEY = "settings.updatedAt"
     }
 }

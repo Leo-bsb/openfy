@@ -1133,6 +1133,8 @@ private fun HomeScreen(c: AppController) {
     val liked by c.liked.collectAsState()
     val playlists by c.playlists.collectAsState()
     val topPlayed by c.topPlayed.collectAsState()
+    val account by c.account.state.collectAsState()
+    val remotePlayback = account.remotePlayback
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
         item {
@@ -1143,6 +1145,61 @@ private fun HomeScreen(c: AppController) {
                 color = Tokens.textHigh,
                 modifier = Modifier.padding(top = 8.dp, bottom = 18.dp),
             )
+        }
+        if (remotePlayback != null && remotePlayback.queue.isNotEmpty()) {
+            val remoteTrack = remotePlayback.queue.getOrNull(
+                remotePlayback.queueIndex.coerceIn(0, remotePlayback.queue.lastIndex)
+            )
+            item {
+                Row(
+                    Modifier.fillMaxWidth().padding(bottom = 22.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Tokens.panel)
+                        .clickable { c.continueOnOtherDevice() }
+                        .padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.QueueMusic,
+                        null,
+                        tint = Tokens.accent,
+                        modifier = Modifier.size(28.dp),
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "CONTINUAR NO OUTRO APARELHO",
+                            color = Tokens.accent,
+                            fontSize = 11.sp,
+                            letterSpacing = 1.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            remoteTrack?.title ?: "Fila do celular",
+                            color = Tokens.textHigh,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                        )
+                        Text(
+                            "${remoteTrack?.artist.orEmpty()} · " +
+                                if (remotePlayback.playing) "tocando agora" else "pausado",
+                            color = Tokens.textLow,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                        )
+                    }
+                    IconButton(onClick = { c.dismissRemotePlayback() }) {
+                        Icon(Icons.Filled.Close, "Dispensar", tint = Tokens.textLow)
+                    }
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowForward,
+                        null,
+                        tint = Tokens.textLow,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+            }
         }
         if (recent.isNotEmpty() || liked.isNotEmpty()) {
             item {
@@ -3744,9 +3801,9 @@ private fun SettingsScreen(c: AppController) {
             ) {
                 Slider(
                     value = crossfade.toFloat(),
-                    onValueChange = { c.player.setCrossfade(it.roundToInt()) },
-                    valueRange = 0f..12f,
-                    steps = 11,
+                    onValueChange = { c.setCrossfadeSeconds(it.roundToInt()) },
+                    valueRange = 0f..15f,
+                    steps = 14,
                     colors = openfySliderColors(),
                     modifier = Modifier.width(220.dp),
                 )
@@ -5189,7 +5246,7 @@ private fun EqualizerDialog(c: AppController, onClose: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Ativar", color = Tokens.textHigh, fontSize = 13.sp)
                     Spacer(Modifier.weight(1f))
-                    Switch(checked = enabled, onCheckedChange = { c.player.setEqEnabled(it) }, colors = openfySwitchColors())
+                    Switch(checked = enabled, onCheckedChange = { c.setEqEnabled(it) }, colors = openfySwitchColors())
                 }
                 Spacer(Modifier.height(6.dp))
                 Player.EQ_FREQS.forEachIndexed { index, freq ->
@@ -5198,7 +5255,7 @@ private fun EqualizerDialog(c: AppController, onClose: () -> Unit) {
                         Text(label, color = Tokens.textLow, fontSize = 11.sp, modifier = Modifier.width(56.dp))
                         Slider(
                             value = gains.getOrElse(index) { 0 }.toFloat(),
-                            onValueChange = { c.player.setEqGain(index, it.roundToInt()) },
+                            onValueChange = { c.setEqGain(index, it.roundToInt()) },
                             valueRange = -12f..12f,
                             colors = openfySliderColors(),
                             modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -5218,7 +5275,7 @@ private fun EqualizerDialog(c: AppController, onClose: () -> Unit) {
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     Player.EQ_PRESETS.keys.forEach { name ->
-                        TextButton(onClick = { c.player.applyPreset(name) }) {
+                        TextButton(onClick = { c.applyEqPreset(name) }) {
                             Text(name, color = Tokens.accent, fontSize = 12.sp)
                         }
                     }

@@ -20,21 +20,29 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import com.openfy.android.data.AuthSession
-import com.openfy.android.data.AudioDownloader
 import com.openfy.android.data.CachedPlaylist
+import com.openfy.android.data.DownloadEngine
 import com.openfy.android.data.DownloadEntry
 import com.openfy.android.data.DownloadResult
-import com.openfy.android.data.DownloadStore
+import com.openfy.android.data.HistoryEntry
+import com.openfy.android.data.HistoryStore
 import com.openfy.android.data.HomeCache
 import com.openfy.android.data.HomeSnapshot
 import com.openfy.android.data.LyricLine
 import com.openfy.android.data.LyricsClient
+import com.openfy.android.data.PendingEvent
+import com.openfy.android.data.PendingItem
+import com.openfy.android.data.PendingPlaylist
 import com.openfy.android.data.PlaylistCache
 import com.openfy.android.data.MonthlyArtistRow
 import com.openfy.android.data.MonthlyListeningRow
 import com.openfy.android.data.PlaylistDto
 import com.openfy.android.data.Profile
 import com.openfy.android.data.PushPlayEvent
+import com.openfy.android.data.PushPlaybackState
+import com.openfy.android.data.PushPlaylist
+import com.openfy.android.data.PushPlaylistItem
+import com.openfy.android.data.PlaybackStateDto
 import com.openfy.android.data.RemotePlaylistItem
 import com.openfy.android.data.RemoteTrack
 import com.openfy.android.data.SessionStore
@@ -42,13 +50,18 @@ import com.openfy.android.data.SpotifyClient
 import com.openfy.android.data.StoredSession
 import com.openfy.android.data.SupabaseApi
 import com.openfy.android.data.SupabaseException
+import com.openfy.android.data.SyncStore
+import com.openfy.android.data.SyncedSettings
 import com.openfy.android.playback.EqualizerController
 import com.openfy.android.playback.PlaybackBridge
 import com.openfy.android.playback.PlaybackService
 import com.openfy.core.ColorPalette
 import com.openfy.core.Artist
 import com.openfy.core.ArtistPage
+import com.openfy.core.ExploreFeed
 import com.openfy.core.Importer
+import com.openfy.core.MediaCard
+import com.openfy.core.MediaKind
 import com.openfy.core.PlayerLayout
 import com.openfy.core.ProfileArtistStat
 import com.openfy.core.ProfileExtras
@@ -80,8 +93,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import java.io.File
 import java.time.Instant
 import java.time.YearMonth
@@ -95,6 +112,17 @@ data class RecapData(
     val topTracks: List<Track>,
     val artists: List<MonthlyArtistRow>,
 )
+
+enum class LibraryPage(val title: String) {
+    HISTORY("Histórico"),
+    TOP_PLAYED("Mais ouvidas"),
+    EXPLORE("Explorar"),
+    DOWNLOADS("Downloads"),
+    MIX("Seu mix"),
+}
+
+/** Snapshot da fila antes de "limpar próximas", para desfazer. */
+data class QueueUndoState(val queue: List<Track>, val index: Int)
 
 data class AuthUiState(
     val loading: Boolean = true,
@@ -114,7 +142,11 @@ data class AuthUiState(
     val searching: Boolean = false,
     val searchResults: List<Track> = emptyList(),
     val searchArtists: List<Artist> = emptyList(),
+    val searchCards: List<MediaCard> = emptyList(),
     val searchError: String? = null,
+    val searchMode: SearchMode = SearchMode.SONGS,
+    val searchHasMore: Boolean = false,
+    val searchLoadingMore: Boolean = false,
     val track: Track? = null,
     val queue: List<Track> = emptyList(),
     val queueIndex: Int = -1,
@@ -135,6 +167,20 @@ data class AuthUiState(
     val coverGradient: Boolean = true,
     val recentTracks: List<Track> = emptyList(),
     val topTracks: List<Track> = emptyList(),
+    val history: List<Track> = emptyList(),
+    val topPlayed: List<Track> = emptyList(),
+    val libraryPage: LibraryPage? = null,
+    val exploreFeed: ExploreFeed? = null,
+    val charts: List<Track> = emptyList(),
+    val exploreLoading: Boolean = false,
+    val exploreError: String? = null,
+    val mixLoading: Boolean = false,
+    val audioQuality: String = "HIGH",
+    val autoDownload: Boolean = false,
+    val playbackRemote: PlaybackStateDto? = null,
+    val settingsSyncedAt: Long = 0,
+    val queueUndo: QueueUndoState? = null,
+    val pendingSyncCount: Int = 0,
     val lyrics: List<LyricLine> = emptyList(),
     val lyricsLoading: Boolean = false,
     val lyricsError: String? = null,
@@ -177,7 +223,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val youtube = YouTubeEngine()
     private val homeCache = HomeCache(File(application.filesDir, "offline"))
     private val playlistCache = PlaylistCache(File(application.filesDir, "offline"))
-    private val downloadStore = DownloadStore(File(application.filesDir, "downloads"))
+    private val syncStore = SyncStore(File(application.filesDir, "offline"))
+    private val historyStore = HistoryStore(File(application.filesDir, "offline"))
+    private val downloadStore = DownloadEngine.storeFor(application)
 
     private val _state = MutableStateFlow(
         AuthUiState(
@@ -188,10 +236,16 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             palette = store.palette(),
             playerLayout = store.playerLayout(),
             coverGradient = store.coverGradient(),
-            recentTracks = store.recentTracks(),
+            recentTracks = historyStore.recentTracks(24).ifEmpty { store.recentTracks() },
+            history = historyStore.historyTracks(200),
+            topPlayed = historyStore.topPlayed(emptySet(), 100),
             eqEnabled = store.eqEnabled(),
             eqGains = store.eqGains(),
             downloadLimitMb = store.downloadLimitMb(),
+            audioQuality = store.audioQuality(),
+            autoDownload = store.autoDownload(),
+            settingsSyncedAt = store.settingsUpdatedAt(),
+            pendingSyncCount = syncStore.pendingCount(),
         ),
     )
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
@@ -221,7 +275,15 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (p === activePlayer) {
+                    if (!isPlaying) {
+                        // Troca de faixa: o player antigo reporta pausa antes do
+                        // novo começar. Não deixa a UI/notificação piscarem
+                        // "pausado" com o áudio novo a caminho.
+                        val now = System.currentTimeMillis()
+                        if (_state.value.busy || (playRequested && now < suppressPauseUntil)) return
+                    }
                     _state.update { it.copy(playing = isPlaying) }
+                    requestPlaybackPush()
                 }
             }
 
@@ -269,6 +331,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private var searchJob: Job? = null
+    private var searchContinuation: String? = null
     private var artistJob: Job? = null
     private var collectionJob: Job? = null
     private var eventStartedAt: Long = 0
@@ -291,11 +354,14 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var radioContinuation: String? = null
     private var radioLoading = false
     private var radioSeed: Track? = null
+    private var playlistContextId: String? = null
     private var radioJob: Job? = null
     private var radioEpoch = 0
     private val homeMutex = Mutex()
     private var lastHomeLoad = 0L
     private var playJob: Job? = null
+    private var playRequested = true
+    private var suppressPauseUntil = 0L
     private var radioAdvancePending = false
     private var lyricsJob: Job? = null
     private var sleepJob: Job? = null
@@ -308,20 +374,44 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         encodeDefaults = true
     }
     private var prefsSaveJob: Job? = null
+    private var settingsSaveJob: Job? = null
+    private var playbackPushJob: Job? = null
+    private var playlistSyncJob: Job? = null
     private var profileStatsJob: Job? = null
     private var prefsActivityId: String? = null
-    private val downloader = AudioDownloader(downloadStore) {
-        _state.value.downloadLimitMb.toLong() * BYTES_PER_MB
-    }
-    private val downloadJobs = mutableMapOf<String, Job>()
     private var playlistDownloadJob: Job? = null
-    private val downloadMutex = Mutex()
-
-    @Volatile
-    private var activeDownloadId: String? = null
 
     init {
         activePlayer = playerA
+        DownloadEngine.init(getApplication())
+        DownloadEngine.setLimitBytes(_state.value.downloadLimitMb.toLong() * BYTES_PER_MB)
+        viewModelScope.launch {
+            DownloadEngine.progress.collect { progress ->
+                _state.update { it.copy(downloadProgress = progress) }
+            }
+        }
+        viewModelScope.launch {
+            DownloadEngine.events.collect { event ->
+                when (val result = event.result) {
+                    is DownloadResult.Success -> {
+                        refreshDownloads()
+                        _state.update { it.copy(message = "Baixada: ${event.track.title}") }
+                    }
+                    is DownloadResult.Failed -> {
+                        _state.update {
+                            it.copy(
+                                error = if (result.expired) {
+                                    "O link do áudio expirou. Tente baixar de novo."
+                                } else {
+                                    result.reason
+                                },
+                            )
+                        }
+                    }
+                    DownloadResult.Cancelled -> Unit
+                }
+            }
+        }
         equalizer.applySaved(_state.value.eqEnabled, _state.value.eqGains)
         PlaybackBridge.onToggle = { togglePlay() }
         PlaybackBridge.onPlay = {
@@ -333,6 +423,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
         PlaybackBridge.onNext = { next() }
         PlaybackBridge.onPrevious = { previous() }
+        PlaybackBridge.onSeek = { position -> seekTo(position) }
         PlaybackBridge.onStop = {
             runCatching {
                 cancelCrossfade()
@@ -346,6 +437,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     current.track,
                     current.playing,
                     current.durationMs,
+                    current.positionMs,
                     current.hasPrevious,
                     current.hasNext,
                 )
@@ -657,52 +749,518 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 api.memberPlaylistIds(session.accessToken, session.userId)
             ).toSet()
         val playlists = api.playlists(session.accessToken, playlistIds)
-        val likedIds = runCatching { api.likes(session.accessToken) }.getOrNull()
-        val likedTracks = likedIds?.let { ids ->
-            runCatching {
-                ids.chunked(80).flatMap { api.tracks(session.accessToken, it) }.map { it.toTrack() }
-            }.getOrNull()
+        val remoteItems = runCatching {
+            api.allPlaylistItems(session.accessToken, playlistIds)
+        }.getOrDefault(emptyList())
+        val remoteLikes = runCatching { api.likeRows(session.accessToken) }
+            .getOrDefault(emptyList())
+
+        // O que ainda não subiu vence o remoto; o flush tenta logo abaixo.
+        runCatching { flushOutbox(session) }
+        val pendingPlaylists = syncStore.pendingPlaylists().associateBy { it.id }
+        val pendingItems = syncStore.pendingItems()
+            .associateBy { it.playlistId to it.trackId }
+        val pendingLikes = syncStore.pendingLikes().associateBy { it.track.id }
+
+        val trackIds = (
+            remoteItems.filter { !it.deleted }.map { it.trackId } +
+                pendingItems.values.filter { !it.deleted }.map { it.trackId } +
+                remoteLikes.filter { !it.deleted }.map { it.trackId } +
+                pendingLikes.values.filter { it.liked }.map { it.track.id }
+            ).distinct()
+        val trackMap = trackIds.chunked(80)
+            .flatMap { api.tracks(session.accessToken, it) }
+            .associateTo(mutableMapOf()) { it.id to it.toTrack() }
+        historyStore.all().forEach { trackMap.putIfAbsent(it.track.id, it.track) }
+        pendingItems.values.forEach { item -> item.track?.let { trackMap[it.id] = it } }
+        pendingLikes.values.forEach { like -> trackMap[like.track.id] = like.track }
+
+        val mergedPlaylists = mergePlaylists(playlists, pendingPlaylists)
+        val mergedItems = mergeItems(remoteItems, pendingItems)
+        val mergedLikes = mergeLikes(remoteLikes, pendingLikes, trackMap)
+
+        val itemsByPlaylist = mergedItems.groupBy { it.playlistId }
+        withContext(Dispatchers.IO) {
+            mergedPlaylists.forEach { playlist ->
+                val items = itemsByPlaylist[playlist.id].orEmpty()
+                val tracks = items.mapNotNull { trackMap[it.trackId] }
+                if (items.isNotEmpty() || playlistCache.get(playlist.id) != null) {
+                    playlistCache.put(
+                        CachedPlaylist(
+                            id = playlist.id,
+                            tracks = tracks,
+                            items = items,
+                            savedAtMs = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+            }
         }
-        val topTracks = loadTopTracks(session)
+
+        pullPlayEvents(session, trackMap)
+        val likedSet = mergedLikes.mapTo(HashSet()) { it.id }
+        val topPlayed = historyStore.topPlayed(likedSet, 100)
+        val history = historyStore.historyTracks(200)
+        val recent = historyStore.recentTracks(24)
+        val fallbackTop = if (topPlayed.isEmpty()) loadTopTracks(session) else null
         loadProfileExtras(session)
+        pullSettings(session)
+        pullPlaybackState(session)
         if (_state.value.session?.userId != session.userId) return
         _state.update {
             it.copy(
                 loading = false,
                 busy = false,
                 profile = profile,
-                playlists = playlists,
-                likedIds = likedIds ?: it.likedIds,
-                likedTracks = likedTracks ?: it.likedTracks,
-                topTracks = topTracks ?: it.topTracks,
+                playlists = mergedPlaylists,
+                likedIds = likedSet,
+                likedTracks = mergedLikes,
+                topTracks = topPlayed.ifEmpty { fallbackTop ?: it.topTracks },
+                topPlayed = topPlayed,
+                history = history,
+                recentTracks = recent.ifEmpty { it.recentTracks },
                 deviceName = store.deviceName(),
                 crossfadeSeconds = store.crossfadeSeconds(),
+                audioQuality = store.audioQuality(),
+                autoDownload = store.autoDownload(),
                 offline = false,
                 offlineSavedAtMs = 0,
                 error = null,
+                pendingSyncCount = syncStore.pendingCount(),
             )
         }
+        store.setRecentTracks(recent)
         lastHomeLoad = System.currentTimeMillis()
-        // Salva o snapshot para uso offline. Nunca bloqueia a UI nem apaga cache em falha.
-        val snapshot = HomeSnapshot(
-            userId = session.userId,
-            savedAtMs = System.currentTimeMillis(),
-            profile = profile,
-            playlists = playlists,
-            likedIds = _state.value.likedIds.toList(),
-            likedTracks = _state.value.likedTracks,
-            topTracks = _state.value.topTracks,
-            recentTracks = store.recentTracks(),
-        )
-        viewModelScope.launch(Dispatchers.IO) { homeCache.save(snapshot) }
+        saveCurrentSnapshot()
+        if (store.autoDownload()) runAutoDownload()
         val open = _state.value.openPlaylist
         if (open != null) {
-            val fresh = playlists.firstOrNull { it.id == open.id }
+            val fresh = mergedPlaylists.firstOrNull { it.id == open.id }
             if (fresh == null) {
                 closePlaylist()
-            } else if (fresh != open) {
-                openPlaylist(fresh)
+            } else {
+                val items = itemsByPlaylist[fresh.id].orEmpty()
+                val tracks = items.mapNotNull { trackMap[it.trackId] }
+                _state.update { current ->
+                    if (current.openPlaylist?.id != fresh.id) {
+                        current
+                    } else {
+                        current.copy(
+                            openPlaylist = fresh,
+                            playlistTracks = tracks,
+                            playlistItems = items,
+                            playlistLoading = false,
+                        )
+                    }
+                }
             }
+        }
+    }
+
+    /** Junta playlists remotas com criações/renomeações/exclusões ainda na fila. */
+    private fun mergePlaylists(
+        remote: List<PlaylistDto>,
+        pending: Map<String, PendingPlaylist>,
+    ): List<PlaylistDto> {
+        val out = LinkedHashMap<String, PlaylistDto>()
+        remote.filter { !it.deleted }.forEach { out[it.id] = it }
+        pending.values.forEach { entry ->
+            if (entry.deleted) {
+                out.remove(entry.id)
+            } else {
+                out[entry.id] = PlaylistDto(
+                    id = entry.id,
+                    name = entry.name,
+                    updatedAt = Instant.ofEpochMilli(entry.updatedAt).toString(),
+                    coverUrl = entry.coverUrl,
+                    deleted = false,
+                )
+            }
+        }
+        return out.values.toList()
+    }
+
+    /** Aplica inclusões, remoções e posições que ainda estão no outbox. */
+    private fun mergeItems(
+        remote: List<RemotePlaylistItem>,
+        pending: Map<Pair<String, String>, PendingItem>,
+    ): List<RemotePlaylistItem> {
+        val out = LinkedHashMap<Pair<String, String>, RemotePlaylistItem>()
+        remote.filter { !it.deleted }.forEach { out[it.playlistId to it.trackId] = it }
+        pending.values.forEach { entry ->
+            val key = entry.playlistId to entry.trackId
+            if (entry.deleted) {
+                out.remove(key)
+            } else {
+                out[key] = RemotePlaylistItem(
+                    id = entry.itemId ?: deterministicItemId(entry.playlistId, entry.trackId),
+                    playlistId = entry.playlistId,
+                    trackId = entry.trackId,
+                    rank = rankFor(entry.position),
+                    deleted = false,
+                    updatedAt = Instant.ofEpochMilli(entry.updatedAt).toString(),
+                )
+            }
+        }
+        return out.values.sortedWith(compareBy({ it.playlistId }, { it.rank }, { it.id }))
+    }
+
+    private fun mergeLikes(
+        remote: List<com.openfy.android.data.RemoteLikeDto>,
+        pending: Map<String, com.openfy.android.data.PendingLike>,
+        tracks: Map<String, Track>,
+    ): List<Track> {
+        val out = LinkedHashMap<String, Track>()
+        remote.filter { !it.deleted }.forEach { row ->
+            tracks[row.trackId]?.let { out[row.trackId] = it }
+        }
+        pending.values.forEach { like ->
+            if (like.liked) out[like.track.id] = like.track else out.remove(like.track.id)
+        }
+        return out.values.toList()
+    }
+
+    /** Envia o outbox em ordem: faixas, playlists, itens, curtidas e escutas. */
+    private suspend fun flushOutbox(session: StoredSession) {
+        val token = session.accessToken
+        val events = syncStore.pendingEvents()
+        val likes = syncStore.pendingLikes()
+        val playlists = syncStore.pendingPlaylists()
+        val items = syncStore.pendingItems()
+
+        val tracks = (
+            events.map { it.track } +
+                likes.map { it.track } +
+                items.mapNotNull { it.track }
+            ).distinctBy { it.id }
+        if (tracks.isNotEmpty()) api.pushTracks(token, tracks)
+
+        if (playlists.isNotEmpty()) {
+            api.upsertPlaylists(
+                token,
+                playlists.map { PushPlaylist(it.id, it.name, it.coverUrl, it.deleted) },
+            )
+            syncStore.removePlaylists(playlists.map { it.id })
+        }
+
+        if (items.isNotEmpty()) {
+            val pushed = items.map { item ->
+                val itemId = item.itemId ?: deterministicItemId(item.playlistId, item.trackId)
+                PushPlaylistItem(
+                    id = itemId,
+                    playlistId = item.playlistId,
+                    trackId = item.trackId,
+                    rank = rankFor(item.position),
+                    deleted = item.deleted,
+                )
+            }
+            api.upsertPlaylistItems(token, pushed)
+            syncStore.removeItems(items.map { it.playlistId to it.trackId })
+        }
+
+        if (likes.isNotEmpty()) {
+            likes.forEach { api.setLike(token, session.userId, it.track, it.liked) }
+            syncStore.removeLikes(likes.map { it.track.id })
+        }
+
+        if (events.isNotEmpty()) {
+            events.forEach { event ->
+                api.pushPlayEvent(
+                    token,
+                    PushPlayEvent(
+                        id = event.id,
+                        userId = session.userId,
+                        deviceId = store.deviceId(),
+                        trackId = event.track.id,
+                        startedAt = Instant.ofEpochMilli(event.startedAtMs).toString(),
+                        playedMs = event.playedMs,
+                        durationMs = event.durationMs,
+                        completed = event.completed,
+                        skipped = event.skipped,
+                        source = event.source,
+                        contextId = event.contextId,
+                    ),
+                )
+            }
+            syncStore.removeEvents(events.map { it.id })
+        }
+        _state.update { it.copy(pendingSyncCount = syncStore.pendingCount()) }
+    }
+
+    /**
+     * Puxa as escutas da conta. O cursor é `updated_at`, então eventos que o
+     * PC enviou depois (ou que este celular mandou offline) entram na próxima
+     * página mesmo com started_at antigo.
+     */
+    private suspend fun pullPlayEvents(
+        session: StoredSession,
+        tracks: MutableMap<String, Track>,
+    ) {
+        val cursor = syncStore.eventCursor()
+        val rows = runCatching {
+            api.playEvents(session.accessToken, cursor, limit = 1000)
+        }.getOrNull() ?: return
+        if (rows.isEmpty()) return
+        val missing = rows.filter { !it.deleted && it.trackId !in tracks }
+            .map { it.trackId }
+            .distinct()
+        if (missing.isNotEmpty()) {
+            runCatching {
+                missing.chunked(80)
+                    .flatMap { api.tracks(session.accessToken, it) }
+                    .forEach { tracks[it.id] = it.toTrack() }
+            }
+        }
+        val deleted = rows.filter { it.deleted }.map { it.id }.filter { it.isNotBlank() }
+        if (deleted.isNotEmpty()) historyStore.remove(deleted)
+        val entries = rows.filter { !it.deleted }.mapNotNull { row ->
+            val track = tracks[row.trackId] ?: return@mapNotNull null
+            HistoryEntry(
+                id = row.id.ifBlank { "evt:${row.trackId}:${row.startedAt}" },
+                track = track,
+                at = parseTimestamp(row.startedAt) ?: System.currentTimeMillis(),
+                playedMs = row.playedMs,
+                durationMs = row.durationMs,
+                completed = row.completed,
+                skipped = row.skipped,
+                source = row.source.ifBlank { "android" },
+            )
+        }
+        historyStore.merge(entries)
+        rows.mapNotNull { it.updatedAt }.maxOrNull()?.let { syncStore.setEventCursor(it) }
+    }
+
+    /** Snapshot usado quando o app abre sem rede. */
+    private fun saveCurrentSnapshot() {
+        val current = _state.value
+        val userId = current.session?.userId ?: return
+        val snapshot = HomeSnapshot(
+            userId = userId,
+            savedAtMs = System.currentTimeMillis(),
+            profile = current.profile,
+            playlists = current.playlists,
+            likedIds = current.likedIds.toList(),
+            likedTracks = current.likedTracks,
+            topTracks = current.topPlayed.ifEmpty { current.topTracks },
+            recentTracks = current.recentTracks,
+        )
+        viewModelScope.launch(Dispatchers.IO) { homeCache.save(snapshot) }
+    }
+
+    private fun deterministicItemId(playlistId: String, trackId: String): String =
+        java.util.UUID.nameUUIDFromBytes(
+            "openfy:$playlistId:$trackId".toByteArray(Charsets.UTF_8),
+        ).toString()
+
+    private fun rankFor(position: Int): String =
+        String.format(java.util.Locale.ROOT, "%08d", position)
+
+    private fun parseTimestamp(value: String?): Long? {
+        if (value.isNullOrBlank()) return null
+        return runCatching { Instant.parse(value).toEpochMilli() }
+            .recoverCatching { java.time.OffsetDateTime.parse(value).toInstant().toEpochMilli() }
+            .getOrNull()
+    }
+
+    // ------------------------------------------------------------------ ajustes/fila da conta
+
+    private val settingsJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    /**
+     * Ajustes convergem como no desktop: o maior updatedAt vence. Quando este
+     * aparelho é o mais novo, envia; quando o PC mudou algo, aplica aqui.
+     */
+    private suspend fun pullSettings(session: StoredSession) {
+        val remote = runCatching { api.settingsPrefs(session.accessToken, session.userId) }.getOrNull()
+        val remoteSettings = remote?.let { activity ->
+            runCatching {
+                settingsJson.decodeFromJsonElement<SyncedSettings>(activity.payload)
+            }.getOrNull()
+        }
+        val remoteUpdated = remoteSettings?.updatedAt
+            ?: parseTimestamp(remote?.createdAt)
+            ?: 0L
+        val localUpdated = store.settingsUpdatedAt()
+        if (remoteSettings != null && remoteUpdated > localUpdated) {
+            applySettings(remoteSettings)
+            store.setSettingsUpdatedAt(remoteUpdated)
+            store.setSettingsActivityId(remote?.id)
+            _state.update { it.copy(settingsSyncedAt = remoteUpdated) }
+        } else if (localUpdated > remoteUpdated || remote == null) {
+            runCatching { pushSettingsNow(session) }
+        }
+    }
+
+    private fun currentSettings(): SyncedSettings {
+        val current = _state.value
+        return SyncedSettings(
+            palette = current.palette.id,
+            playerLayout = current.playerLayout.id,
+            coverGradient = current.coverGradient,
+            autoDownload = current.autoDownload,
+            audioQuality = current.audioQuality,
+            crossfadeSeconds = current.crossfadeSeconds,
+            eqEnabled = current.eqEnabled,
+            eqGains = current.eqGains,
+            autoplayRadio = true,
+            updatedAt = store.settingsUpdatedAt(),
+        )
+    }
+
+    private fun applySettings(settings: SyncedSettings) {
+        val palette = ColorPalette.fromId(settings.palette)
+        val layout = PlayerLayout.fromId(settings.playerLayout)
+        val quality = if (settings.audioQuality == "LOW") "LOW" else "HIGH"
+        val crossfade = settings.crossfadeSeconds.coerceIn(0, 15)
+        val gains = settings.eqGains.takeIf { it.size == 5 } ?: listOf(0, 0, 0, 0, 0)
+        store.setPalette(palette)
+        store.setPlayerLayout(layout)
+        store.setCoverGradient(settings.coverGradient)
+        store.setAutoDownload(settings.autoDownload)
+        store.setAudioQuality(quality)
+        store.setCrossfadeSeconds(crossfade)
+        store.setEqEnabled(settings.eqEnabled)
+        store.setEqGains(gains)
+        crossfadeSeconds = crossfade
+        youtube.setQuality(quality)
+        equalizer.setEnabled(settings.eqEnabled)
+        gains.forEachIndexed { index, gain -> equalizer.setGain(index, gain) }
+        _state.update {
+            it.copy(
+                palette = palette,
+                playerLayout = layout,
+                coverGradient = settings.coverGradient,
+                autoDownload = settings.autoDownload,
+                audioQuality = quality,
+                crossfadeSeconds = crossfade,
+                eqEnabled = settings.eqEnabled,
+                eqGains = gains,
+                settingsSyncedAt = settings.updatedAt,
+            )
+        }
+        if (settings.autoDownload) runAutoDownload()
+    }
+
+    private suspend fun pushSettingsNow(session: StoredSession) {
+        val payload = currentSettings().copy(updatedAt = System.currentTimeMillis())
+        val previous = store.settingsActivityId()
+        val json = settingsJson.encodeToJsonElement(payload)
+        val id = api.saveSettingsPrefs(session.accessToken, session.userId, json)
+        if (!previous.isNullOrBlank() && previous != id) {
+            runCatching { api.deleteActivity(session.accessToken, previous) }
+        }
+        store.setSettingsActivityId(id)
+        store.setSettingsUpdatedAt(payload.updatedAt)
+        _state.update { it.copy(settingsSyncedAt = payload.updatedAt) }
+    }
+
+    /** Mudança local de ajuste: marca o relógio e envia com debounce. */
+    private fun markSettingsChanged() {
+        val now = System.currentTimeMillis()
+        store.setSettingsUpdatedAt(now)
+        _state.update { it.copy(settingsSyncedAt = now) }
+        requestSettingsPush()
+    }
+
+    private fun requestSettingsPush() {
+        if (_state.value.session == null) return
+        settingsSaveJob?.cancel()
+        settingsSaveJob = viewModelScope.launch {
+            delay(4_000)
+            runCatching { withSession { session -> pushSettingsNow(session) } }
+        }
+    }
+
+    /** Puxa a fila do outro aparelho e devolve a deste para a conta. */
+    private suspend fun pullPlaybackState(session: StoredSession) {
+        val remote = runCatching { api.playbackState(session.accessToken) }.getOrNull() ?: return
+        val localDevice = store.deviceId()
+        val remoteMs = parseTimestamp(remote.updatedAt) ?: 0L
+        val lastPush = store.playbackLastPushMs()
+        val foreign = !remote.deviceId.isNullOrBlank() && remote.deviceId != localDevice
+        val show = foreign && remoteMs > lastPush && remote.queue.isNotEmpty()
+        _state.update { it.copy(playbackRemote = if (show) remote else null) }
+        if (!show) pushPlaybackState(session)
+    }
+
+    private suspend fun pushPlaybackState(session: StoredSession) {
+        val current = _state.value
+        val track = current.track ?: return
+        if (current.queue.isEmpty()) return
+        val signature = listOf(
+            track.id,
+            current.queueIndex.toString(),
+            current.queue.joinToString("|") { it.id },
+            current.shuffle.toString(),
+            current.repeatMode.name,
+            current.playing.toString(),
+        ).joinToString(";")
+        if (signature == store.playbackSignature() && !current.playing) return
+        api.pushPlaybackState(
+            session.accessToken,
+            PushPlaybackState(
+                userId = session.userId,
+                deviceId = store.deviceId(),
+                trackId = track.id,
+                queue = current.queue,
+                queueIndex = current.queueIndex,
+                positionMs = current.positionMs.coerceAtLeast(0L).toInt(),
+                playing = current.playing,
+                shuffle = current.shuffle,
+                repeat = current.repeatMode.name,
+            ),
+        )
+        store.setPlaybackSignature(signature)
+        store.setPlaybackLastPushMs(System.currentTimeMillis())
+    }
+
+    /** Envia só a fila/posição, com debounce, depois de uma mudança no player. */
+    private fun requestPlaybackPush() {
+        if (_state.value.session == null) return
+        playbackPushJob?.cancel()
+        playbackPushJob = viewModelScope.launch {
+            delay(2_500)
+            runCatching { withSession { session -> pushPlaybackState(session) } }
+        }
+    }
+
+    /** Descarta o convite de handoff sem tocar nada. */
+    fun dismissRemotePlayback() {
+        _state.update { it.copy(playbackRemote = null) }
+    }
+
+    /** Adota fila, faixa e posição que estavam no desktop. */
+    fun continueOnOtherDevice() {
+        val remote = _state.value.playbackRemote ?: return
+        if (remote.queue.isEmpty()) {
+            dismissRemotePlayback()
+            return
+        }
+        val index = remote.queueIndex.coerceIn(0, remote.queue.lastIndex)
+        val track = remote.queue[index]
+        play(
+            track = track,
+            queue = remote.queue,
+            source = "handoff",
+            queueIndex = index,
+            startAtMs = remote.positionMs.toLong(),
+        )
+        if (remote.shuffle && !_state.value.shuffle) toggleShuffle()
+        if (remote.repeat != _state.value.repeatMode.name) {
+            val mode = runCatching { RepeatMode.valueOf(remote.repeat) }.getOrDefault(RepeatMode.OFF)
+            store.setRepeatMode(mode)
+            _state.update { it.copy(repeatMode = mode) }
+        }
+        dismissRemotePlayback()
+        _state.update { it.copy(message = "Retomando do outro aparelho.") }
+    }
+
+    /** Dispara o outbox sem bloquear a UI. */
+    private fun requestFlush() {
+        val session = _state.value.session ?: return
+        viewModelScope.launch {
+            runCatching { flushOutbox(session) }
+            _state.update { it.copy(pendingSyncCount = syncStore.pendingCount()) }
         }
     }
 
@@ -1079,49 +1637,66 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     fun createPlaylist(name: String, track: Track? = null) {
         val clean = name.trim()
         if (clean.isBlank()) return
-        viewModelScope.launch {
-            _state.update { it.copy(busy = true, error = null, message = null) }
-            var created: PlaylistDto? = null
-            runCatching {
-                val playlist = withSession { session ->
-                    api.createPlaylist(session.accessToken, clean)
-                        ?: throw SupabaseException("O servidor não devolveu a playlist criada.")
-                }
-                created = playlist
-                if (track != null) {
-                    withSession { session ->
-                        api.addPlaylistItem(session.accessToken, playlist.id, track)
-                    }
-                }
-                playlist
-            }.onSuccess { playlist ->
-                _state.value.session?.let { loadHome(it) }
-                _state.update {
-                    it.copy(
-                        busy = false,
-                        message = if (track != null) {
-                            "\"${track.title}\" adicionada a \"${playlist.name}\"."
-                        } else {
-                            "Playlist \"${playlist.name}\" criada."
-                        },
-                    )
-                }
-            }.onFailure { error ->
-                val partial = created
-                if (partial != null) {
-                    _state.value.session?.let { loadHome(it) }
-                    _state.update {
-                        it.copy(
-                            busy = false,
-                            error = "Playlist \"${partial.name}\" criada, mas a faixa não foi adicionada: ${error.message}",
-                        )
-                    }
+        if (_state.value.session == null) return
+        val now = System.currentTimeMillis()
+        val id = java.util.UUID.randomUUID().toString()
+        val playlist = PlaylistDto(
+            id = id,
+            name = clean,
+            updatedAt = Instant.ofEpochMilli(now).toString(),
+            coverUrl = "",
+            deleted = false,
+        )
+        syncStore.queuePlaylist(id, clean, updatedAt = now)
+        if (track != null) {
+            syncStore.queueItem(
+                playlistId = id,
+                trackId = track.id,
+                itemId = deterministicItemId(id, track.id),
+                position = 0,
+                updatedAt = now,
+                track = track,
+            )
+        }
+        _state.update {
+            it.copy(
+                playlists = it.playlists + playlist,
+                pendingSyncCount = syncStore.pendingCount(),
+                message = if (track != null) {
+                    "\"${track.title}\" adicionada a \"$clean\"."
                 } else {
-                    _state.update {
-                        it.copy(busy = false, error = error.message ?: "Não foi possível criar a playlist.")
-                    }
-                }
-            }
+                    "Playlist \"$clean\" criada."
+                },
+                error = null,
+            )
+        }
+        if (track != null) {
+            cacheNewPlaylist(playlist, listOf(track))
+        }
+        if (isOnline()) requestFlush() else _state.update {
+            it.copy(message = "Playlist salva no aparelho; sincroniza quando voltar a rede.")
+        }
+    }
+
+    /** Atualiza o cache de uma playlist recém-criada para abrir sem rede. */
+    private fun cacheNewPlaylist(playlist: PlaylistDto, tracks: List<Track>) {
+        val item = RemotePlaylistItem(
+            id = deterministicItemId(playlist.id, tracks.first().id),
+            playlistId = playlist.id,
+            trackId = tracks.first().id,
+            rank = rankFor(0),
+            deleted = false,
+            updatedAt = playlist.updatedAt,
+        )
+        viewModelScope.launch(Dispatchers.IO) {
+            playlistCache.put(
+                CachedPlaylist(
+                    id = playlist.id,
+                    tracks = tracks,
+                    items = listOf(item),
+                    savedAtMs = System.currentTimeMillis(),
+                ),
+            )
         }
     }
 
@@ -1130,24 +1705,41 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val clean = query.trim()
         _state.update { it.copy(searchQuery = clean, searchError = null) }
         searchJob?.cancel()
+        searchContinuation = null
         if (clean.isBlank()) {
             _state.update {
-                it.copy(searchResults = emptyList(), searchArtists = emptyList(), searching = false)
+                it.copy(
+                    searchResults = emptyList(),
+                    searchArtists = emptyList(),
+                    searchCards = emptyList(),
+                    searching = false,
+                    searchHasMore = false,
+                )
             }
             return
         }
+        val mode = _state.value.searchMode
         searchJob = viewModelScope.launch {
             _state.update {
-                it.copy(searching = true, searchResults = emptyList(), searchArtists = emptyList())
+                it.copy(
+                    searching = true,
+                    searchResults = emptyList(),
+                    searchArtists = emptyList(),
+                    searchCards = emptyList(),
+                    searchHasMore = false,
+                )
             }
             delay(300)
-            runCatching { youtube.search(clean, SearchMode.SONGS) }
+            runCatching { youtube.search(clean, mode) }
                 .onSuccess { result ->
+                    searchContinuation = result.continuation
                     _state.update {
                         it.copy(
                             searching = false,
                             searchResults = result.tracks,
                             searchArtists = result.artists,
+                            searchCards = result.cards,
+                            searchHasMore = result.continuation != null,
                             searchError = null,
                         )
                     }
@@ -1158,6 +1750,141 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
         }
+    }
+
+    /** Troca a aba da busca (músicas, artistas, álbuns, playlists, vídeos). */
+    fun setSearchMode(mode: SearchMode) {
+        if (_state.value.searchMode == mode) return
+        _state.update { it.copy(searchMode = mode) }
+        if (_state.value.searchQuery.isNotBlank()) search(_state.value.searchQuery)
+    }
+
+    /** Carrega a próxima página da busca atual. */
+    fun loadMoreSearch() {
+        val query = _state.value.searchQuery
+        val continuation = searchContinuation ?: return
+        if (query.isBlank() || _state.value.searchLoadingMore) return
+        val mode = _state.value.searchMode
+        searchJob = viewModelScope.launch {
+            _state.update { it.copy(searchLoadingMore = true, searchError = null) }
+            runCatching { youtube.searchNext(mode, continuation) }
+                .onSuccess { page ->
+                    searchContinuation = page.continuation
+                    _state.update {
+                        it.copy(
+                            searching = false,
+                            searchLoadingMore = false,
+                            searchResults = (it.searchResults + page.tracks).distinctBy { row -> row.id },
+                            searchArtists = (it.searchArtists + page.artists).distinctBy { row -> row.id },
+                            searchCards = (it.searchCards + page.cards).distinctBy { row -> row.id },
+                            searchHasMore = page.continuation != null,
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _state.update {
+                        it.copy(
+                            searchLoadingMore = false,
+                            searchError = error.message ?: "Não foi possível carregar mais.",
+                        )
+                    }
+                }
+        }
+    }
+
+    // ------------------------------------------------------------------ biblioteca
+
+    fun openLibraryPage(page: LibraryPage) {
+        _state.update { it.copy(libraryPage = page, exploreError = null) }
+        if (page == LibraryPage.EXPLORE && _state.value.exploreFeed == null) loadExplore()
+        if (page == LibraryPage.DOWNLOADS) viewModelScope.launch { refreshDownloads() }
+    }
+
+    fun closeLibraryPage() {
+        _state.update { it.copy(libraryPage = null) }
+    }
+
+    /** Explorar + Em alta, com cache no estado para não buscar duas vezes. */
+    fun loadExplore(force: Boolean = false) {
+        if (_state.value.exploreLoading) return
+        if (!force && _state.value.exploreFeed != null && _state.value.charts.isNotEmpty()) return
+        viewModelScope.launch {
+            _state.update { it.copy(exploreLoading = true, exploreError = null) }
+            val feed = runCatching { withContext(Dispatchers.IO) { youtube.explore() } }.getOrNull()
+            val charts = runCatching { withContext(Dispatchers.IO) { youtube.charts() } }
+                .getOrDefault(emptyList())
+            _state.update {
+                it.copy(
+                    exploreLoading = false,
+                    exploreFeed = feed ?: it.exploreFeed,
+                    charts = charts.ifEmpty { it.charts },
+                    exploreError = if (feed == null && it.exploreFeed == null) {
+                        "Não foi possível carregar o Explorar."
+                    } else {
+                        null
+                    },
+                )
+            }
+        }
+    }
+
+    /**
+     * "Seu mix": junta mais ouvidas, curtidas e recentes e intercala com
+     * diversidade — tudo local, então funciona offline.
+     */
+    fun startPersonalMix() {
+        val current = _state.value
+        val top = current.topPlayed.ifEmpty { current.topTracks }
+        val liked = current.likedTracks
+        val recent = current.recentTracks
+        val pages = listOf(top.take(40), liked.take(30), recent.take(30))
+            .filter { it.isNotEmpty() }
+        if (pages.isEmpty()) {
+            _state.update { it.copy(error = "Ouça algumas faixas para o mix aprender seu gosto.") }
+            return
+        }
+        _state.update { it.copy(mixLoading = true) }
+        val recommender = com.openfy.core.Recommender(
+            signals = historyStore.signals(),
+            likedIds = current.likedIds,
+        )
+        val mix = recommender.interleave(pages, limit = 60)
+        _state.update { it.copy(mixLoading = false) }
+        val first = mix.firstOrNull() ?: return
+        play(first, mix, "mix")
+        _state.update { it.copy(message = "Seu mix: ${mix.size} faixas.") }
+    }
+
+    /** Remove as próximas faixas, mantendo a atual e guardando para desfazer. */
+    fun clearUpcoming() {
+        val current = _state.value
+        val index = current.queueIndex
+        if (index !in current.queue.indices || index == current.queue.lastIndex) {
+            _state.update { it.copy(message = "Não há próximas faixas para limpar.") }
+            return
+        }
+        val keep = current.queue.take(index + 1)
+        _state.update {
+            it.copy(
+                queue = keep,
+                queueUndo = QueueUndoState(current.queue, index),
+                message = "Próximas removidas.",
+            )
+        }
+        requestPlaybackPush()
+    }
+
+    fun undoClearUpcoming() {
+        val undo = _state.value.queueUndo ?: return
+        _state.update {
+            it.copy(
+                queue = undo.queue,
+                queueIndex = undo.index.coerceIn(0, undo.queue.lastIndex.coerceAtLeast(0)),
+                queueUndo = null,
+                message = "Fila restaurada.",
+            )
+        }
+        requestPlaybackPush()
     }
 
     fun openArtistById(id: String) {
@@ -1329,9 +2056,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         radioAdvancePending = false
     }
 
-    private fun startRadio(seed: Track, playlistId: String? = null) {
+    private fun startRadio(seed: Track, playlistId: String? = null, advanceAtEnd: Boolean = false) {
         resetRadio()
         radioSeed = seed
+        radioAdvancePending = advanceAtEnd
         val epoch = radioEpoch
         radioLoading = true
         radioJob = viewModelScope.launch {
@@ -1342,10 +2070,24 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }.getOrNull()
             if (epoch != radioEpoch) return@launch
             radioLoading = false
-            if (page == null || page.tracks.isEmpty() || _state.value.track?.id != seed.id) return@launch
+            val stillCurrent = _state.value.track?.id == seed.id
+            if (page == null || page.tracks.isEmpty() || !stillCurrent) {
+                if (advanceAtEnd && stillCurrent) {
+                    runCatching { player.pause() }
+                    _state.update { it.copy(playing = false) }
+                }
+                return@launch
+            }
             radioContinuation = page.continuation
             appendRadio(page.tracks.take(60), seed)
         }
+    }
+
+    /** Rádio a partir da faixa atual (botão do player). */
+    fun startTrackRadio() {
+        val track = _state.value.track ?: return
+        startRadio(track, null)
+        _state.update { it.copy(message = "Rádio a partir de ${track.title}.") }
     }
 
     private fun maybeAppendRadio() {
@@ -1416,6 +2158,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             .trim()
 
     fun playPlaylist(playlistId: String) {
+        playlistContextId = playlistId
         viewModelScope.launch {
             _state.update { it.copy(busy = true, error = null, message = "Carregando playlist…") }
             runCatching {
@@ -1458,13 +2201,27 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         session: StoredSession,
         playlistId: String,
     ): Pair<List<Track>, List<RemotePlaylistItem>> {
-        val items = api.playlistItems(session.accessToken, playlistId)
+        val remoteItems = api.playlistItems(session.accessToken, playlistId)
+        val pending = syncStore.pendingItems()
+            .filter { it.playlistId == playlistId }
+            .associateBy { it.playlistId to it.trackId }
+        val items = mergeItems(remoteItems, pending)
         val ids = items.map { it.trackId }.distinct()
         val remoteTracks = ids.chunked(80).flatMap { api.tracks(session.accessToken, it) }
-        val byId = remoteTracks.associateBy { it.id }
+        val byId = remoteTracks.associateBy { it.id }.toMutableMap()
+        pending.values.forEach { item -> item.track?.let { byId.putIfAbsent(it.id, it.toRemoteTrack()) } }
         val tracks = items.sortedBy { it.rank }.mapNotNull { item -> byId[item.trackId]?.toTrack() }
         return tracks to items
     }
+
+    private fun Track.toRemoteTrack(): RemoteTrack = RemoteTrack(
+        id = id,
+        title = title,
+        artist = artist,
+        album = album,
+        thumbnail = thumbnail,
+        duration = durationSec,
+    )
 
     fun openPlaylist(playlist: PlaylistDto) {
         _state.update {
@@ -1505,13 +2262,20 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }.onFailure { error ->
                 val cached = withContext(Dispatchers.IO) { playlistCache.get(playlist.id) }
                 if (cached != null) {
+                    val pending = syncStore.pendingItems()
+                        .filter { it.playlistId == playlist.id }
+                        .associateBy { it.playlistId to it.trackId }
+                    val items = mergeItems(cached.items, pending)
+                    val byId = cached.tracks.associateBy { it.id }.toMutableMap()
+                    pending.values.forEach { item -> item.track?.let { byId.putIfAbsent(it.id, it) } }
+                    val tracks = items.sortedBy { it.rank }.mapNotNull { row -> byId[row.trackId] }
                     _state.update {
                         if (it.openPlaylist?.id != playlist.id) {
                             it
                         } else {
                             it.copy(
-                                playlistTracks = cached.tracks,
-                                playlistItems = cached.items,
+                                playlistTracks = tracks,
+                                playlistItems = items,
                                 playlistLoading = false,
                                 offline = true,
                                 offlineSavedAtMs = cached.savedAtMs,
@@ -1550,12 +2314,14 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     fun playOpenedPlaylist() {
         val tracks = _state.value.playlistTracks
         val first = tracks.firstOrNull() ?: return
+        playlistContextId = _state.value.openPlaylist?.id
         play(first, tracks, "playlist")
     }
 
     fun playPlaylistTrack(track: Track) {
         val tracks = _state.value.playlistTracks
         if (tracks.isEmpty()) return
+        playlistContextId = _state.value.openPlaylist?.id
         play(track, tracks, "playlist")
     }
 
@@ -1576,6 +2342,41 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         play(tracks[index], tracks, source, queueIndex = index)
     }
 
+    /** Histórico local inteiro vira fila, como em "Ouvir de novo" no desktop. */
+    fun playHistory(track: Track) {
+        val tracks = _state.value.history
+        val queue = if (tracks.any { it.id == track.id }) tracks else listOf(track)
+        play(track, queue, "history")
+    }
+
+    /** Mais ouvidas locais (com fallback para as do mês na conta). */
+    fun playTopPlayed(track: Track) {
+        val tracks = _state.value.topPlayed.ifEmpty { _state.value.topTracks }
+        val queue = if (tracks.any { it.id == track.id }) tracks else listOf(track)
+        play(track, queue, "top")
+    }
+
+    fun playChart(track: Track) {
+        val tracks = _state.value.charts
+        val queue = if (tracks.any { it.id == track.id }) tracks else listOf(track)
+        play(track, queue, "charts")
+    }
+
+    /** Faixa já baixada: toca do arquivo local, sem radio/rede. */
+    fun playDownloaded(entry: DownloadEntry) {
+        val tracks = _state.value.downloads.map { it.track }
+        val queue = if (tracks.any { it.id == entry.track.id }) tracks else listOf(entry.track)
+        play(entry.track, queue, "downloads")
+    }
+
+    /** Abre um card de prateleira (álbum/playlist/artista/vídeo) na tela certa. */
+    fun openMediaCard(card: MediaCard) {
+        when (card.kind) {
+            MediaKind.ARTIST -> openArtistById(card.id)
+            else -> openCollection(card.id)
+        }
+    }
+
     fun toggleLike(track: Track) {
         val current = _state.value
         if (current.session == null) return
@@ -1591,23 +2392,24 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 error = null,
             )
         }
-        viewModelScope.launch {
-            runCatching {
-                withSession { fresh -> api.setLike(fresh.accessToken, fresh.userId, track, liked) }
-            }.onFailure { error ->
-                _state.update {
-                    it.copy(
-                        likedIds = if (liked) it.likedIds - track.id else it.likedIds + track.id,
-                        likedTracks = if (liked) {
-                            it.likedTracks.filter { item -> item.id != track.id }
-                        } else {
-                            listOf(track) + it.likedTracks.filter { item -> item.id != track.id }
-                        },
-                        error = "Curtida não sincronizou: ${error.message}",
-                    )
-                }
-            }
+        // Curtida otimista: entra no outbox mesmo sem rede e sobe no próximo flush.
+        syncStore.queueLike(track, liked)
+        _state.update {
+            it.copy(
+                pendingSyncCount = syncStore.pendingCount(),
+                topPlayed = historyStore.topPlayed(
+                    if (liked) it.likedIds + track.id else it.likedIds - track.id,
+                    100,
+                ),
+            )
         }
+        if (!isOnline()) {
+            _state.update {
+                it.copy(message = if (liked) "Curtida salva; sincroniza quando voltar a rede." else "Curtida removida; sincroniza depois.")
+            }
+            return
+        }
+        requestFlush()
     }
 
     fun addToPlaylist(playlist: PlaylistDto, track: Track) {
@@ -1620,17 +2422,208 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }
             return
         }
-        viewModelScope.launch {
-            runCatching {
-                withSession { session -> api.addPlaylistItem(session.accessToken, playlist.id, track) }
-            }.onSuccess {
-                _state.update { it.copy(message = "\"${track.title}\" adicionada a ${playlist.name}.") }
-                val opened = _state.value.openPlaylist
-                if (opened?.id == playlist.id) openPlaylist(opened)
-            }.onFailure { error ->
-                _state.update { it.copy(error = error.message ?: "Não foi possível adicionar.") }
-            }
+        val now = System.currentTimeMillis()
+        val position = nextPlaylistPosition(playlist.id)
+        syncStore.queueItem(
+            playlistId = playlist.id,
+            trackId = track.id,
+            itemId = deterministicItemId(playlist.id, track.id),
+            position = position,
+            updatedAt = now,
+            track = track,
+        )
+        _state.update {
+            val isOpen = it.openPlaylist?.id == playlist.id
+            val item = RemotePlaylistItem(
+                id = deterministicItemId(playlist.id, track.id),
+                playlistId = playlist.id,
+                trackId = track.id,
+                rank = rankFor(position),
+                deleted = false,
+                updatedAt = Instant.ofEpochMilli(now).toString(),
+            )
+            it.copy(
+                playlistItems = if (isOpen) it.playlistItems + item else it.playlistItems,
+                playlistTracks = if (isOpen && it.playlistTracks.none { row -> row.id == track.id }) {
+                    it.playlistTracks + track
+                } else {
+                    it.playlistTracks
+                },
+                pendingSyncCount = syncStore.pendingCount(),
+                message = "\"${track.title}\" adicionada a ${playlist.name}.",
+                error = null,
+            )
         }
+        if (isOnline()) requestFlush() else _state.update {
+            it.copy(message = "Adicionada offline; sincroniza depois.")
+        }
+    }
+
+    private fun nextPlaylistPosition(playlistId: String): Int {
+        val opened = _state.value.openPlaylist
+        if (opened?.id == playlistId) return _state.value.playlistItems.size
+        val cached = runCatching { playlistCache.get(playlistId) }.getOrNull()
+        return cached?.items?.size ?: 0
+    }
+
+    fun renamePlaylist(playlistId: String, name: String) {
+        val clean = name.trim()
+        if (clean.isBlank()) return
+        val current = _state.value.playlists.firstOrNull { it.id == playlistId } ?: return
+        val now = System.currentTimeMillis()
+        syncStore.queuePlaylist(
+            id = playlistId,
+            name = clean,
+            coverUrl = current.coverUrl,
+            updatedAt = now,
+        )
+        _state.update {
+            it.copy(
+                playlists = it.playlists.map { row ->
+                    if (row.id == playlistId) {
+                        row.copy(name = clean, updatedAt = Instant.ofEpochMilli(now).toString())
+                    } else {
+                        row
+                    }
+                },
+                openPlaylist = it.openPlaylist?.let { row ->
+                    if (row.id == playlistId) row.copy(name = clean) else row
+                },
+                pendingSyncCount = syncStore.pendingCount(),
+                message = "Playlist renomeada.",
+                error = null,
+            )
+        }
+        if (isOnline()) requestFlush()
+    }
+
+    /** Exclusão otimista; tombstones impedem que o pull ressuscite a playlist. */
+    fun deletePlaylist(playlistId: String) {
+        val current = _state.value.playlists.firstOrNull { it.id == playlistId } ?: return
+        val now = System.currentTimeMillis()
+        syncStore.queuePlaylist(
+            id = playlistId,
+            name = current.name,
+            coverUrl = current.coverUrl,
+            updatedAt = now,
+            deleted = true,
+        )
+        _state.update {
+            it.copy(
+                playlists = it.playlists.filterNot { row -> row.id == playlistId },
+                openPlaylist = if (it.openPlaylist?.id == playlistId) null else it.openPlaylist,
+                playlistTracks = if (it.openPlaylist?.id == playlistId) emptyList() else it.playlistTracks,
+                playlistItems = if (it.openPlaylist?.id == playlistId) emptyList() else it.playlistItems,
+                pendingSyncCount = syncStore.pendingCount(),
+                message = "Playlist \"${current.name}\" excluída.",
+                error = null,
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) { playlistCache.remove(playlistId) }
+        if (isOnline()) requestFlush() else _state.update {
+            it.copy(message = "Exclusão salva no aparelho; sincroniza depois.")
+        }
+    }
+
+    /** Move uma faixa uma posição para cima/baixo e reescreve os ranks. */
+    fun movePlaylistTrack(item: RemotePlaylistItem, delta: Int) {
+        val items = _state.value.playlistItems.sortedBy { it.rank }
+        val index = items.indexOfFirst { it.id == item.id }
+        if (index < 0) return
+        movePlaylistTrackTo(item, index + delta)
+    }
+
+    fun movePlaylistTrackTo(item: RemotePlaylistItem, targetIndex: Int) {
+        val current = _state.value
+        if (current.openPlaylist?.id != item.playlistId) return
+        val items = current.playlistItems.sortedBy { it.rank }.toMutableList()
+        val index = items.indexOfFirst { it.id == item.id }
+        if (index < 0) return
+        val target = targetIndex.coerceIn(0, items.lastIndex)
+        if (target == index) return
+        val moved = items.removeAt(index)
+        items.add(target, moved)
+        val now = System.currentTimeMillis()
+        val byTrack = current.playlistTracks.associateBy { it.id }
+        items.forEachIndexed { position, row ->
+            syncStore.queueItem(
+                playlistId = row.playlistId,
+                trackId = row.trackId,
+                itemId = row.id,
+                position = position,
+                updatedAt = now,
+                track = byTrack[row.trackId],
+            )
+        }
+        val reordered = items.mapIndexed { position, row -> row.copy(rank = rankFor(position)) }
+        _state.update {
+            it.copy(
+                playlistItems = reordered,
+                playlistTracks = reordered.mapNotNull { row -> byTrack[row.trackId] },
+                pendingSyncCount = syncStore.pendingCount(),
+                message = "Ordem atualizada.",
+                error = null,
+            )
+        }
+        if (isOnline()) requestFlush()
+    }
+
+    /** Salva a fila atual como playlist (mesma ideia do "Salvar fila" do desktop). */
+    fun saveQueueAsPlaylist(name: String) {
+        val clean = name.trim()
+        if (clean.isBlank()) return
+        val tracks = _state.value.queue
+        if (tracks.isEmpty()) {
+            _state.update { it.copy(error = "A fila está vazia.") }
+            return
+        }
+        if (_state.value.session == null) return
+        val now = System.currentTimeMillis()
+        val id = java.util.UUID.randomUUID().toString()
+        syncStore.queuePlaylist(id, clean, updatedAt = now)
+        tracks.forEachIndexed { position, track ->
+            syncStore.queueItem(
+                playlistId = id,
+                trackId = track.id,
+                itemId = deterministicItemId(id, track.id),
+                position = position,
+                updatedAt = now,
+                track = track,
+            )
+        }
+        val playlist = PlaylistDto(
+            id = id,
+            name = clean,
+            updatedAt = Instant.ofEpochMilli(now).toString(),
+        )
+        _state.update {
+            it.copy(
+                playlists = it.playlists + playlist,
+                pendingSyncCount = syncStore.pendingCount(),
+                message = "Fila salva em \"$clean\" (${tracks.size} faixas).",
+                error = null,
+            )
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            playlistCache.put(
+                CachedPlaylist(
+                    id = id,
+                    tracks = tracks,
+                    items = tracks.mapIndexed { position, track ->
+                        RemotePlaylistItem(
+                            id = deterministicItemId(id, track.id),
+                            playlistId = id,
+                            trackId = track.id,
+                            rank = rankFor(position),
+                            deleted = false,
+                            updatedAt = playlist.updatedAt,
+                        )
+                    },
+                    savedAtMs = now,
+                ),
+            )
+        }
+        if (isOnline()) requestFlush()
     }
 
     fun setPlaylistCover(playlistId: String, uri: Uri) {
@@ -1692,44 +2685,111 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     fun removeFromPlaylist(item: RemotePlaylistItem) {
         val playlist = _state.value.openPlaylist ?: return
-        viewModelScope.launch {
-            runCatching {
-                withSession { session -> api.removePlaylistItem(session.accessToken, item.id) }
-            }.onSuccess {
-                _state.update {
-                    it.copy(
-                        playlistItems = it.playlistItems.filter { entry -> entry.id != item.id },
-                        playlistTracks = it.playlistTracks.filter { track -> track.id != item.trackId },
-                        message = "Faixa removida da playlist.",
-                    )
-                }
-            }.onFailure { error ->
-                _state.update { it.copy(error = error.message ?: "Não foi possível remover.") }
+        val index = _state.value.playlistItems.indexOfFirst { it.id == item.id }
+        val track = _state.value.playlistTracks.firstOrNull { it.id == item.trackId }
+        syncStore.queueItem(
+            playlistId = playlist.id,
+            trackId = item.trackId,
+            itemId = item.id,
+            position = if (index >= 0) index else 0,
+            updatedAt = System.currentTimeMillis(),
+            deleted = true,
+            track = track,
+        )
+        _state.update {
+            it.copy(
+                playlistItems = it.playlistItems.filterNot { entry -> entry.id == item.id },
+                playlistTracks = it.playlistTracks.filterNot { row -> row.id == item.trackId },
+                pendingSyncCount = syncStore.pendingCount(),
+                message = "Faixa removida da playlist.",
+                error = null,
+            )
+        }
+        val cached = runCatching { playlistCache.get(playlist.id) }.getOrNull()
+        if (cached != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                playlistCache.put(
+                    cached.copy(
+                        tracks = cached.tracks.filterNot { it.id == item.trackId },
+                        items = cached.items.filterNot { it.id == item.id },
+                        savedAtMs = System.currentTimeMillis(),
+                    ),
+                )
             }
         }
+        if (isOnline()) requestFlush()
     }
 
     fun setCrossfadeSeconds(seconds: Int) {
-        val value = seconds.coerceIn(0, 12)
+        val value = seconds.coerceIn(0, 15)
         crossfadeSeconds = value
         store.setCrossfadeSeconds(value)
         _state.update { it.copy(crossfadeSeconds = value) }
         if (value == 0) cancelCrossfade()
+        markSettingsChanged()
     }
 
     fun setPalette(value: ColorPalette) {
         store.setPalette(value)
         _state.update { it.copy(palette = value) }
+        markSettingsChanged()
     }
 
     fun setPlayerLayout(value: PlayerLayout) {
         store.setPlayerLayout(value)
         _state.update { it.copy(playerLayout = value) }
+        markSettingsChanged()
     }
 
     fun setCoverGradient(enabled: Boolean) {
         store.setCoverGradient(enabled)
         _state.update { it.copy(coverGradient = enabled) }
+        markSettingsChanged()
+    }
+
+    fun setAudioQuality(value: String) {
+        val quality = if (value == "LOW") "LOW" else "HIGH"
+        store.setAudioQuality(quality)
+        youtube.setQuality(quality)
+        _state.update { it.copy(audioQuality = quality) }
+        markSettingsChanged()
+        _state.update {
+            it.copy(message = if (quality == "LOW") "Qualidade baixa (economiza dados)." else "Qualidade alta.")
+        }
+    }
+
+    fun setAutoDownload(enabled: Boolean) {
+        store.setAutoDownload(enabled)
+        _state.update { it.copy(autoDownload = enabled) }
+        markSettingsChanged()
+        if (enabled) {
+            runAutoDownload()
+        } else {
+            _state.update { it.copy(message = "Download automático desligado.") }
+        }
+    }
+
+    /**
+     * Baixa em segundo plano as mais ouvidas e curtidas que ainda não estão
+     * no aparelho, respeitando o limite de espaço.
+     */
+    private fun runAutoDownload() {
+        if (!_state.value.autoDownload || !isOnline()) return
+        val limitBytes = _state.value.downloadLimitMb.toLong() * BYTES_PER_MB
+        val wanted = (_state.value.topPlayed + _state.value.likedTracks + _state.value.recentTracks)
+            .distinctBy { it.id }
+            .filterNot {
+                it.id in _state.value.downloadedIds ||
+                    downloadStore.entry(it.id) != null ||
+                    DownloadEngine.isQueued(it.id)
+            }
+            .take(20)
+        if (wanted.isEmpty()) return
+        if (downloadStore.usedBytes() >= limitBytes) {
+            _state.update { it.copy(message = "Limite de downloads atingido; ajuste em Ajustes.") }
+            return
+        }
+        downloadPlaylist(wanted)
     }
 
     fun loadLyrics(track: Track?) {
@@ -1783,6 +2843,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         store.setEqEnabled(enabled)
         equalizer.setEnabled(enabled)
         _state.update { it.copy(eqEnabled = enabled) }
+        markSettingsChanged()
     }
 
     fun setEqGain(index: Int, gainDb: Int) {
@@ -1794,6 +2855,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         store.setEqEnabled(true)
         store.setEqGains(gains)
         _state.update { it.copy(eqEnabled = true, eqGains = gains) }
+        markSettingsChanged()
     }
 
     fun applyEqPreset(name: String) {
@@ -1802,6 +2864,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         store.setEqEnabled(true)
         store.setEqGains(preset)
         _state.update { it.copy(eqEnabled = true, eqGains = preset) }
+        markSettingsChanged()
     }
 
     fun selectRecapMonth(month: String) {
@@ -2121,6 +3184,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
         cancelCrossfade()
         invalidatePreload()
+        requestPlaybackPush()
     }
 
     /** Off -> repetir tudo -> repetir uma -> off. */
@@ -2142,6 +3206,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         invalidatePreload()
+        requestPlaybackPush()
     }
 
     /** Reordena a fila; se a faixa atual for movida, o índice acompanha. */
@@ -2154,6 +3219,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val newIndex = if (trackIndex >= 0) trackIndex else current.queueIndex.coerceIn(0, queue.lastIndex)
         _state.update { it.copy(queue = queue, queueIndex = newIndex) }
         invalidatePreload()
+        requestPlaybackPush()
     }
 
     fun playQueueIndex(index: Int) {
@@ -2179,6 +3245,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
         _state.update { it.copy(queue = queue, queueIndex = newIndex) }
         invalidatePreload()
+        requestPlaybackPush()
         if (wasCurrent) {
             if (newIndex < 0) {
                 cancelCrossfade()
@@ -2215,12 +3282,14 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         source: String,
         keepRadio: Boolean = false,
         queueIndex: Int? = null,
+        startAtMs: Long = 0L,
     ) {
         val session = _state.value.session
         if (session == null) {
             _state.update { it.copy(error = "Entre na conta para tocar.") }
             return
         }
+        if (source != "playlist") playlistContextId = null
         cancelCrossfade()
         playJob?.cancel()
         PlaybackService.ensureStarted(getApplication())
@@ -2260,18 +3329,23 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         eventStartedAt = System.currentTimeMillis()
         eventTrack = track
         eventSource = source
+        playRequested = true
+        suppressPauseUntil = System.currentTimeMillis() + 1_500
         _state.update {
             it.copy(
                 track = track,
                 queue = queueToUse,
                 queueIndex = index,
-                playing = false,
+                // Mantém "tocando" enquanto o áudio novo é preparado; sem isso
+                // a notificação e o player mostravam pausa com som no ar.
+                playing = true,
                 busy = true,
-                positionMs = 0,
+                positionMs = startAtMs.coerceAtLeast(0L),
                 durationMs = track.durationSec * 1000L,
                 error = null,
             )
         }
+        requestPlaybackPush()
         playJob = viewModelScope.launch {
             val local = withContext(Dispatchers.IO) { downloadStore.fileFor(track.id) }
             if (local != null) {
@@ -2283,7 +3357,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 activePlayer.volume = 1f
                 activePlayer.setMediaSource(mediaSourceLocal(track, local))
                 activePlayer.prepare()
-                activePlayer.playWhenReady = true
+                if (startAtMs > 0) activePlayer.seekTo(startAtMs)
+                activePlayer.playWhenReady = playRequested
                 _state.update { it.copy(busy = false) }
                 rememberRecent(track)
                 return@launch
@@ -2291,6 +3366,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             val media = withContext(Dispatchers.IO) { youtube.media(track.id) } as? Media.Remote
             if (_state.value.track?.id != track.id) return@launch
             if (media == null) {
+                // Nada foi preparado: silencia o player anterior para não ficar
+                // tocando a faixa velha com a tela dizendo "nada tocando".
+                runCatching {
+                    activePlayer.stop()
+                    activePlayer.clearMediaItems()
+                }
                 _state.update {
                     it.copy(
                         busy = false,
@@ -2312,7 +3393,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             activePlayer.volume = 1f
             activePlayer.setMediaSource(mediaSource(track, media))
             activePlayer.prepare()
-            activePlayer.playWhenReady = true
+            if (startAtMs > 0) activePlayer.seekTo(startAtMs)
+            activePlayer.playWhenReady = playRequested
             _state.update { it.copy(busy = false) }
             rememberRecent(track)
         }
@@ -2486,10 +3568,33 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun togglePlay() {
-        if (_state.value.track == null) return
+        val current = _state.value
+        val track = current.track ?: return
         PlaybackService.ensureStarted(getApplication())
         if (crossfading) cancelCrossfade()
-        if (player.isPlaying) player.pause() else player.play()
+        if (player.isPlaying) {
+            playRequested = false
+            player.pause()
+            _state.update { it.copy(playing = false) }
+        } else {
+            playRequested = true
+            val idle = player.playbackState == Player.STATE_IDLE || player.mediaItemCount == 0
+            if (idle) {
+                // Player sem mídia (erro/restauração): remonta a faixa atual.
+                play(
+                    track,
+                    current.queue.ifEmpty { listOf(track) },
+                    eventSource,
+                    keepRadio = true,
+                    queueIndex = current.queueIndex,
+                    startAtMs = current.positionMs,
+                )
+            } else {
+                player.play()
+                _state.update { it.copy(playing = true) }
+            }
+        }
+        requestPlaybackPush()
     }
 
     fun next() {
@@ -2505,6 +3610,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             if (radioContinuation != null) {
                 radioAdvancePending = true
                 maybeAppendRadio()
+                return
+            }
+            // Fim da playlist: continua no embalo com uma rádio baseada nela,
+            // em vez de parar o som.
+            val seed = current.track ?: current.queue.lastOrNull()
+            if (seed != null && current.queue.size > 1) {
+                startRadio(seed, playlistContextId, advanceAtEnd = true)
                 return
             }
             player.pause()
@@ -2540,6 +3652,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val target = positionMs.coerceIn(0, _state.value.durationMs.coerceAtLeast(0))
         player.seekTo(target)
         _state.update { it.copy(positionMs = target) }
+        requestPlaybackPush()
     }
 
     fun clearPlayerError() {
@@ -2562,28 +3675,51 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         eventTrack = null
         eventStartedAt = 0
         if (played < 1_000) return
+        val eventId = java.util.UUID.randomUUID().toString()
+        val durationMs = (track.durationSec * 1000).coerceAtLeast(0)
+        val entry = HistoryEntry(
+            id = eventId,
+            track = track,
+            at = startedAt,
+            playedMs = played.toInt(),
+            durationMs = durationMs,
+            completed = completed,
+            skipped = skipped,
+            source = eventSource,
+        )
+        historyStore.add(entry)
+        val history = historyStore.historyTracks(200)
+        val recent = historyStore.recentTracks(24)
+        val top = historyStore.topPlayed(_state.value.likedIds, 100)
+        _state.update {
+            it.copy(
+                history = history,
+                recentTracks = recent,
+                topPlayed = top,
+                topTracks = top.ifEmpty { it.topTracks },
+            )
+        }
+        store.setRecentTracks(recent)
+        // A escuta entra no outbox na hora: sem rede, sobe depois sem perder.
+        syncStore.addEvent(
+            PendingEvent(
+                id = eventId,
+                track = track,
+                startedAtMs = startedAt,
+                playedMs = played.toInt(),
+                durationMs = durationMs,
+                completed = completed,
+                skipped = skipped,
+                source = eventSource,
+                contextId = null,
+            ),
+        )
+        _state.update { it.copy(pendingSyncCount = syncStore.pendingCount()) }
         viewModelScope.launch {
-            runCatching {
-                api.pushTrack(session.accessToken, track)
-                api.pushPlayEvent(
-                    session.accessToken,
-                    PushPlayEvent(
-                        userId = session.userId,
-                        deviceId = store.deviceId(),
-                        trackId = track.id,
-                        startedAt = Instant.ofEpochMilli(startedAt).toString(),
-                        playedMs = played.toInt(),
-                        durationMs = track.durationSec * 1000,
-                        completed = completed,
-                        skipped = skipped,
-                        source = eventSource,
-                        contextId = null,
-                    ),
-                )
-            }
+            runCatching { flushOutbox(session) }
+            _state.update { it.copy(pendingSyncCount = syncStore.pendingCount()) }
         }
     }
-
     fun signOut() {
         val session = _state.value.session
         viewModelScope.launch {
@@ -2591,13 +3727,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             resetRadio()
             cancelCrossfade()
             playlistDownloadJob?.cancel()
-            downloadJobs.values.forEach { it.cancel() }
-            downloadJobs.clear()
-            downloader.cancelCurrent()
+            DownloadEngine.cancelAllAndWait()
             playerA.stop()
             playerB.stop()
             playerA.clearMediaItems()
             playerB.clearMediaItems()
+            if (session != null) runCatching { flushOutbox(session) }
             session?.let { api.logout(it.accessToken) }
             lyricsJob?.cancel()
             sleepJob?.cancel()
@@ -2609,6 +3744,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             store.clear()
             homeCache.clear()
             playlistCache.clear()
+            syncStore.clear()
+            historyStore.clear()
+            searchContinuation = null
             shuffleSnapshotQueue = null
             shuffleSnapshotIndex = -1
             lastHomeLoad = 0L
@@ -2649,24 +3787,32 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(message = "Esta faixa já está baixada.") }
             return
         }
-        if (downloadJobs[track.id]?.isActive == true) {
+        if (DownloadEngine.isQueued(track.id)) {
             _state.update { it.copy(message = "Esta faixa já está na fila de downloads.") }
             return
         }
-        launchDownload(track)
+        if (!isOnline()) {
+            _state.update { it.copy(error = "Sem conexão para baixar esta faixa.") }
+            return
+        }
+        val limitBytes = _state.value.downloadLimitMb.toLong() * BYTES_PER_MB
+        val estimate = track.durationSec.coerceAtLeast(60).toLong() * ESTIMATED_AUDIO_BYTES_PER_SECOND
+        if (downloadStore.usedBytes() + estimate > limitBytes) {
+            _state.update {
+                it.copy(error = "Limite de ${_state.value.downloadLimitMb} MB de downloads atingido. Ajuste em Ajustes › Downloads.")
+            }
+            return
+        }
+        DownloadEngine.enqueue(track)
     }
 
     fun cancelDownload(trackId: String) {
-        downloadJobs[trackId]?.cancel()
-        if (activeDownloadId == trackId) downloader.cancelCurrent()
+        DownloadEngine.cancel(trackId)
     }
 
     fun removeDownload(trackId: String) {
-        val job = downloadJobs[trackId]
-        job?.cancel()
-        if (activeDownloadId == trackId) downloader.cancelCurrent()
+        DownloadEngine.cancel(trackId)
         viewModelScope.launch {
-            job?.cancelAndJoin()
             val removed = withContext(Dispatchers.IO) { downloadStore.remove(trackId) }
             refreshDownloads()
             if (removed != null) {
@@ -2680,7 +3826,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val pending = tracks.filterNot {
             it.id in _state.value.downloadedIds ||
                 downloadStore.entry(it.id) != null ||
-                downloadJobs[it.id]?.isActive == true
+                DownloadEngine.isQueued(it.id)
         }
         if (pending.isEmpty()) {
             _state.update { it.copy(message = "Todas as faixas desta playlist já estão baixadas.") }
@@ -2691,25 +3837,21 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(message = "Baixando ${pending.size} faixas…") }
             var done = 0
             var failures = 0
-            coroutineScope {
-                for (track in pending) {
-                    if (!isActive) break
-                    val job = async { runDownload(track) }
-                    downloadJobs[track.id] = job
-                    val ok = runCatching { job.await() }.getOrDefault(false)
-                    if (job.isCancelled) continue
-                    if (ok) {
-                        done++
-                    } else {
-                        failures++
-                        if (!isOnline()) break
+            for (track in pending) {
+                if (!isActive) break
+                val result = runCatching { DownloadEngine.download(track) }.getOrNull()
+                if (!isActive) break
+                if (result is DownloadResult.Success) {
+                    done++
+                } else {
+                    failures++
+                    if (!isOnline()) break
+                }
+                if (failures >= 3) {
+                    _state.update {
+                        it.copy(error = "Parei a fila de downloads após várias falhas. Verifique a conexão.")
                     }
-                    if (failures >= 3) {
-                        _state.update {
-                            it.copy(error = "Parei a fila de downloads após várias falhas. Verifique a conexão.")
-                        }
-                        break
-                    }
+                    break
                 }
             }
             playlistDownloadJob = null
@@ -2720,14 +3862,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     fun clearDownloads() {
         val playlistJob = playlistDownloadJob
         playlistDownloadJob = null
-        val jobs = downloadJobs.values.toList()
-        downloadJobs.clear()
         playlistJob?.cancel()
-        jobs.forEach { it.cancel() }
-        downloader.cancelCurrent()
         viewModelScope.launch {
-            playlistJob?.cancelAndJoin()
-            jobs.forEach { it.cancelAndJoin() }
+            runCatching { playlistJob?.cancelAndJoin() }
+            DownloadEngine.cancelAllAndWait()
             val count = withContext(Dispatchers.IO) { downloadStore.clearAll() }
             _state.update { it.copy(downloadProgress = emptyMap()) }
             refreshDownloads()
@@ -2740,16 +3878,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     fun setDownloadLimitMb(mb: Int) {
         val value = mb.coerceIn(128, 20_480)
         store.setDownloadLimitMb(value)
+        DownloadEngine.setLimitBytes(value.toLong() * BYTES_PER_MB)
         _state.update { it.copy(downloadLimitMb = value) }
         if (_state.value.downloadUsedBytes > value.toLong() * BYTES_PER_MB) {
             _state.update { it.copy(message = "Limite abaixo do espaço usado. Apague downloads se precisar.") }
         }
-    }
-
-    private fun launchDownload(track: Track): Job {
-        val job = viewModelScope.launch { runDownload(track) }
-        downloadJobs[track.id] = job
-        return job
     }
 
     private suspend fun refreshDownloads() {
@@ -2759,97 +3892,6 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 downloads = entries,
                 downloadedIds = entries.mapTo(HashSet()) { entry -> entry.track.id },
             )
-        }
-    }
-
-    private suspend fun runDownload(track: Track): Boolean {
-        // Fica visível/cancelável já na fila, antes de esperar o mutex.
-        _state.update { it.copy(downloadProgress = it.downloadProgress + (track.id to 0f)) }
-        return try {
-            downloadMutex.withLock { runDownloadLocked(track) }
-        } finally {
-            val self = coroutineContext[Job]
-            if (self != null && downloadJobs[track.id] === self) downloadJobs.remove(track.id)
-            _state.update { it.copy(downloadProgress = it.downloadProgress - track.id) }
-        }
-    }
-
-    /** Um download por vez: o saldo do limite não é lido por duas conexões ao mesmo tempo. */
-    private suspend fun runDownloadLocked(track: Track): Boolean {
-        val self = coroutineContext[Job] ?: return false
-        if (downloadStore.entry(track.id) != null || track.id in _state.value.downloadedIds) {
-            _state.update { it.copy(message = "Esta faixa já está baixada.") }
-            return false
-        }
-        if (downloadJobs[track.id]?.isActive == true && downloadJobs[track.id] !== self) return false
-        val limitBytes = _state.value.downloadLimitMb.toLong() * BYTES_PER_MB
-        val estimate = track.durationSec.coerceAtLeast(60).toLong() * ESTIMATED_AUDIO_BYTES_PER_SECOND
-        if (downloadStore.usedBytes() + estimate > limitBytes) {
-            _state.update {
-                it.copy(error = "Limite de ${_state.value.downloadLimitMb} MB de downloads atingido. Ajuste em Ajustes › Downloads.")
-            }
-            return false
-        }
-        if (!isOnline()) {
-            _state.update { it.copy(error = "Sem conexão para baixar esta faixa.") }
-            return false
-        }
-        downloadJobs[track.id] = self
-        try {
-            var outcome = attemptDownload(track, self)
-            if ((outcome as? DownloadResult.Failed)?.expired == true) {
-                // URL expirada (401/403): descarta o stream em cache e reextrai uma vez.
-                withContext(Dispatchers.IO) { youtube.forgetStream(track.id) }
-                outcome = attemptDownload(track, self)
-            }
-            return when (outcome) {
-                is DownloadResult.Success -> {
-                    refreshDownloads()
-                    _state.update { it.copy(message = "Baixada: ${track.title}") }
-                    true
-                }
-                is DownloadResult.Failed -> {
-                    _state.update {
-                        it.copy(
-                            error = if (outcome.expired) {
-                                "O link do áudio expirou. Tente baixar de novo."
-                            } else {
-                                outcome.reason
-                            },
-                        )
-                    }
-                    false
-                }
-                DownloadResult.Cancelled -> false
-            }
-        } finally {
-            if (downloadJobs[track.id] === self) downloadJobs.remove(track.id)
-        }
-    }
-
-    private suspend fun attemptDownload(track: Track, job: Job): DownloadResult {
-        val media = withContext(Dispatchers.IO) { youtube.media(track.id) } as? Media.Remote
-            ?: return DownloadResult.Failed("Não foi possível obter o áudio desta faixa.")
-        var lastUpdate = 0L
-        activeDownloadId = track.id
-        return try {
-            withContext(Dispatchers.IO) {
-                downloader.download(
-                    track = track,
-                    url = media.url,
-                    headers = media.headers,
-                    onProgress = { fraction ->
-                        val now = System.currentTimeMillis()
-                        if (now - lastUpdate >= 150 || fraction < 0f) {
-                            lastUpdate = now
-                            _state.update { it.copy(downloadProgress = it.downloadProgress + (track.id to fraction)) }
-                        }
-                    },
-                    isCancelled = { !job.isActive },
-                )
-            }
-        } finally {
-            if (activeDownloadId == track.id) activeDownloadId = null
         }
     }
 

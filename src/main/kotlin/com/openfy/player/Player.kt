@@ -60,6 +60,9 @@ class Player(
     var radioStarter: (suspend (String) -> RadioPage?)? = null
     private var radioContinuation: String? = null
 
+    /** Avisa que fila/posição mudaram; o AppController empurra o handoff. */
+    var onSessionChanged: (() -> Unit)? = null
+
     @Volatile private var active: Mpv = mpvA
     private fun standby(): Mpv = if (active === mpvA) mpvB else mpvA
 
@@ -96,7 +99,7 @@ class Player(
     init {
         scope.launch { observeMpv() }
         restoreEq()
-        crossfadeSeconds.value = db.get("playback.crossfade")?.toIntOrNull()?.coerceIn(0, 12) ?: 0
+        crossfadeSeconds.value = db.get("playback.crossfade")?.toIntOrNull()?.coerceIn(0, 15) ?: 0
         autoplayRadio.value = runCatching {
             db.get("playback.autoplayRadio")?.toBooleanStrict()
         }.getOrNull() ?: true
@@ -735,10 +738,60 @@ class Player(
         com.openfy.core.Log.write("player: sessao restaurada (fila=${q.size}, faixa=${track.id})")
     }
 
+    /**
+     * Continua a sessão de outro aparelho: mesma fila, faixa, posição e modos.
+     * Entra tocando ou pausado, conforme o snapshot remoto.
+     */
+    fun adoptSession(
+        tracks: List<Track>,
+        startIndex: Int,
+        startAtMs: Long,
+        shuffleOn: Boolean,
+        repeatMode: RepeatMode,
+        autoplay: Boolean,
+        title: String = "",
+    ) {
+        if (tracks.isEmpty()) return
+        cancelCrossfade()
+        cancelPrep()
+        stopRadio()
+        autoplaySuppressed = false
+        queue.value = tracks
+        index.value = startIndex.coerceIn(0, tracks.lastIndex)
+        val track = tracks[index.value]
+        val seconds = (startAtMs / 1000.0)
+            .coerceAtLeast(0.0)
+            .let { if (track.durationSec > 0) it.coerceAtMost(track.durationSec.toDouble()) else it }
+        current.value = track
+        position.value = seconds
+        duration.value = track.durationSec.toDouble()
+        shuffle.value = shuffleOn
+        shuffleSnapshotQueue = null
+        shuffleSnapshotIndex = -1
+        repeat.value = repeatMode
+        if (title.isNotBlank()) {
+            queueContextTitle = title
+            queueTitle.value = title
+        }
+        error.value = null
+        busy.value = true
+        playing.value = autoplay
+        pendingPause = !autoplay
+        active.start()
+        active.volume(volume.value)
+        active.load(stream.urlFor(track.id), startAt = seconds)
+        if (autoplay) startActiveEvent(track)
+        save()
+        com.openfy.core.Log.write(
+            "player: sessao adotada do outro aparelho (fila=${tracks.size}, faixa=${track.id})"
+        )
+    }
+
     private var saveJob: Job? = null
 
     /** Salva em segundo plano e junta mudancas proximas (volume, faixa, posicao). */
     private fun save() {
+        onSessionChanged?.invoke()
         saveJob?.cancel()
         saveJob = scope.launch(Dispatchers.IO) {
             delay(250)
@@ -920,7 +973,7 @@ class Player(
 
     // ------------------------------------------------------------------ crossfade (2 players)
     fun setCrossfade(seconds: Int) {
-        val value = seconds.coerceIn(0, 12)
+        val value = seconds.coerceIn(0, 15)
         crossfadeSeconds.value = value
         if (value == 0) cancelCrossfade()
         scope.launch(Dispatchers.IO) { db.put("playback.crossfade", value.toString()) }

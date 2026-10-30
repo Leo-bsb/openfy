@@ -1,7 +1,9 @@
 package com.openfy.core
 
 import com.openfy.data.Db
+import com.openfy.data.PushPlaybackState
 import com.openfy.data.RemoteAuthSession
+import com.openfy.data.RemotePlaybackState
 import com.openfy.data.RemoteProfile
 import com.openfy.data.SupabaseApi
 import com.openfy.data.SupabaseException
@@ -20,6 +22,9 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.util.UUID
 
 @Serializable
 data class StoredSession(
@@ -45,6 +50,18 @@ data class AccountState(
     val status: String? = null,
     val error: String? = null,
     val lastSync: String? = null,
+    val remotePlayback: RemotePlaybackState? = null,
+)
+
+/** Snapshot local de fila/posição; a conta completa com usuário e device. */
+data class PlaybackSnapshot(
+    val trackId: String?,
+    val queue: List<Track>,
+    val queueIndex: Int,
+    val positionMs: Int,
+    val playing: Boolean,
+    val shuffle: Boolean,
+    val repeat: String,
 )
 
 data class AccountRecap(
@@ -77,10 +94,22 @@ class AccountManager(
     /** Chamado quando um sync termina; o AppController atualiza a biblioteca. */
     var onSynced: (() -> Unit)? = null
 
+    /** Snapshot da fila/posição do desktop, fornecido pelo AppController. */
+    var playbackProvider: (() -> PlaybackSnapshot?)? = null
+
+    /** Ajustes locais do desktop, fornecidos pelo AppController. */
+    var settingsProvider: (() -> SyncedSettings?)? = null
+
+    /** Aplica ajustes que chegaram do Android. */
+    var settingsApplier: ((SyncedSettings) -> Unit)? = null
+
     private var requestJob: Job? = null
+    private var playbackJob: Job? = null
     private var pendingSync = false
     private var prefsActivityId: String? = null
     private var prefsSaveJob: Job? = null
+    private var settingsActivityId: String? = null
+    private var settingsSaveJob: Job? = null
     private var profileStatsJob: Job? = null
 
     init {
@@ -104,6 +133,72 @@ class AccountManager(
             if (_state.value.busy) delay(3_000)
             syncNow()
         }
+    }
+
+    /** Empurra só a fila/posição depois de uma mudança no player. */
+    fun requestPlaybackSync() {
+        if (_state.value.session == null) return
+        playbackJob?.cancel()
+        playbackJob = scope.launch {
+            delay(3_000)
+            val session = ensureSession() ?: return@launch
+            runCatching { pushPlaybackState(session) }
+        }
+    }
+
+    /**
+     * Agenda o envio dos ajustes depois de uma mudança local. O pull acontece
+     * junto: se o celular mudou algo mais recente, ele vence e é aplicado aqui.
+     */
+    fun requestSettingsSync() {
+        if (_state.value.session == null) return
+        settingsSaveJob?.cancel()
+        settingsSaveJob = scope.launch {
+            delay(1_500)
+            val session = ensureSession() ?: return@launch
+            runCatching { syncSettings(session) }
+        }
+    }
+
+    private suspend fun syncSettings(session: StoredSession) {
+        val local = settingsProvider?.invoke()
+        val remoteRow = runCatching {
+            api.settingsPrefs(session.accessToken, session.userId)
+        }.getOrNull()
+        if (remoteRow != null) settingsActivityId = remoteRow.id
+        val remote = remoteRow?.payload?.let { payload ->
+            runCatching { json.decodeFromJsonElement<SyncedSettings>(payload) }.getOrNull()
+        }
+        val remoteUpdated = remote?.updatedAt?.takeIf { it > 0 } ?: epoch(remoteRow?.createdAt)
+        val localUpdated = local?.updatedAt ?: 0L
+        when {
+            remote != null && remoteUpdated > localUpdated -> {
+                runCatching { settingsApplier?.invoke(remote) }
+            }
+            local != null && (remote == null || localUpdated > remoteUpdated) -> {
+                runCatching { pushSettings(session, local) }
+            }
+        }
+    }
+
+    private suspend fun pushSettings(session: StoredSession, settings: SyncedSettings) {
+        val payloadSettings = settings.copy(updatedAt = System.currentTimeMillis())
+        val newId = api.saveSettingsPrefs(
+            session.accessToken,
+            session.userId,
+            json.encodeToJsonElement(payloadSettings),
+        )
+        val oldId = settingsActivityId
+        settingsActivityId = newId
+        runCatching { settingsApplier?.invoke(payloadSettings) }
+        if (oldId != null && oldId != newId) {
+            runCatching { api.deleteActivity(session.accessToken, oldId) }
+        }
+    }
+
+    /** Some com o banner de "continuar do outro aparelho" sem alterar o remoto. */
+    fun clearRemotePlayback() {
+        _state.update { it.copy(remotePlayback = null) }
     }
 
     private fun loadSession(): StoredSession? =
@@ -132,7 +227,23 @@ class AccountManager(
             expiresAt = expiresAt,
         )
         db.put("account.session", json.encodeToString(stored))
+        ensureLibraryOwner(userId)
         return stored
+    }
+
+    /**
+     * O desktop é local-first, mas a biblioteca local pertence a uma conta.
+     * No primeiro login de um banco antigo ele é adotado; se outra conta entrar
+     * no mesmo PC, a biblioteca local é limpa e repovoada pela nuvem.
+     */
+    private fun ensureLibraryOwner(userId: String) {
+        val owner = db.libraryOwner()
+        if (owner.isBlank()) {
+            db.setLibraryOwner(userId)
+        } else if (owner != userId) {
+            db.resetLibrary()
+            db.setLibraryOwner(userId)
+        }
     }
 
     private fun clearSession() {
@@ -518,6 +629,8 @@ class AccountManager(
             runCatching {
                 SyncEngine(db, api).sync(session)
             }.onSuccess { result ->
+                runCatching { syncPlaybackState(session) }
+                runCatching { syncSettings(session) }
                 if (_state.value.session?.userId != session.userId) {
                     _state.update { it.copy(busy = false, status = null) }
                 } else {
@@ -554,6 +667,87 @@ class AccountManager(
         if (!pendingSync) return
         pendingSync = false
         syncNow()
+    }
+
+    private fun deviceId(): String {
+        val current = db.get("device.id")?.takeIf { it.isNotBlank() }
+        if (current != null) return current
+        val created = UUID.randomUUID().toString()
+        db.put("device.id", created)
+        return created
+    }
+
+    private fun epoch(value: String?): Long =
+        runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }
+            .recoverCatching { Instant.parse(value).toEpochMilli() }
+            .getOrDefault(0L)
+
+    private fun snapshotSignature(state: PlaybackSnapshot): String =
+        listOf(
+            state.trackId.orEmpty(),
+            state.queueIndex.toString(),
+            state.queue.joinToString("|") { it.id },
+            state.shuffle.toString(),
+            state.repeat,
+            state.playing.toString(),
+        ).joinToString(";")
+
+    /** Envia a fila/posição local com upsert por usuário. */
+    private suspend fun pushPlaybackState(session: StoredSession) {
+        val local = playbackProvider?.invoke() ?: return
+        val signature = snapshotSignature(local)
+        val changed = signature != db.get("playback.lastPush")
+        // Tocando, a posição anda mesmo com a assinatura igual; vale atualizar.
+        if (!changed && !local.playing) return
+        api.pushPlaybackState(
+            session.accessToken,
+            PushPlaybackState(
+                userId = session.userId,
+                deviceId = deviceId(),
+                trackId = local.trackId,
+                queue = local.queue,
+                queueIndex = local.queueIndex,
+                positionMs = local.positionMs,
+                playing = local.playing,
+                shuffle = local.shuffle,
+                repeat = local.repeat,
+            ),
+        )
+        db.put("playback.lastPush", signature)
+        db.put("playback.lastPushMs", System.currentTimeMillis().toString())
+    }
+
+    /**
+     * Handoff de fila/posição. O pull acontece antes do push; se o outro
+     * aparelho tem um snapshot mais novo, ele é oferecido na Home em vez de ser
+     * sobrescrito por uma sessão antiga e pausada deste PC.
+     */
+    private suspend fun syncPlaybackState(session: StoredSession) {
+        val localDevice = deviceId()
+        runCatching {
+            api.registerDevice(
+                session.accessToken,
+                localDevice,
+                "Openfy Desktop · ${System.getProperty("user.name") ?: "PC"}",
+            )
+        }
+        val remote = runCatching { api.playbackState(session.accessToken) }.getOrNull()
+        val remoteMs = epoch(remote?.updatedAt)
+        val lastPushMs = db.get("playback.lastPushMs")?.toLongOrNull() ?: 0L
+        val foreign = remote?.deviceId?.isNotBlank() == true && remote.deviceId != localDevice
+        if (remote != null && foreign && remoteMs > lastPushMs) {
+            _state.update { it.copy(remotePlayback = remote) }
+        } else {
+            _state.update { it.copy(remotePlayback = null) }
+        }
+        val local = playbackProvider?.invoke() ?: return
+        val changed = snapshotSignature(local) != db.get("playback.lastPush")
+        val remoteIsNewer = foreign && remoteMs > lastPushMs
+        // Tocando, este PC é a sessão atual. Pausado, não sobrescreve uma fila
+        // mais nova que acabou de vir do celular.
+        if (changed && (local.playing || !remoteIsNewer)) {
+            pushPlaybackState(session)
+        }
     }
 
     fun signOut() {

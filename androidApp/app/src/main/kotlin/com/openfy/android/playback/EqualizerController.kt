@@ -1,15 +1,22 @@
 package com.openfy.android.playback
 
 import android.media.audiofx.Equalizer
+import android.media.audiofx.LoudnessEnhancer
 import kotlin.math.abs
 
 /**
  * Equalizador de 5 bandas sobre o AudioEffect do Android. Cada ExoPlayer
  * (A/B do crossfade) tem seu próprio efeito, mas os ganhos são compartilhados.
+ *
+ * O AudioEffect do sistema costuma baixar o volume geral quando entra em ação
+ * (proteção contra clipping do SoundAlive/Samsung). Para compensar, um
+ * LoudnessEnhancer na mesma sessão devolve parte do nível. Com a curva flat o
+ * efeito fica desligado, então ligar o EQ sem mexer em nada não muda o som.
  */
 class EqualizerController {
 
     private val effects = mutableMapOf<Any, Equalizer>()
+    private val enhancers = mutableMapOf<Any, LoudnessEnhancer>()
     private var enabled = false
     private var gains = DEFAULT_GAINS
 
@@ -18,9 +25,12 @@ class EqualizerController {
         if (sessionId <= 0) return
         val effect = runCatching { Equalizer(0, sessionId) }.getOrNull() ?: return
         effects[key] = effect
-        runCatching {
-            effect.enabled = enabled
-            if (enabled) apply(effect)
+        runCatching { effect.enabled = enabled && !isFlat() }
+        if (enabled && !isFlat()) apply(effect)
+        val enhancer = runCatching { LoudnessEnhancer(sessionId) }.getOrNull()
+        if (enhancer != null) {
+            enhancers[key] = enhancer
+            applyCompensation(enhancer)
         }
     }
 
@@ -28,10 +38,11 @@ class EqualizerController {
         enabled = value
         effects.values.forEach { effect ->
             runCatching {
-                effect.enabled = value
+                effect.enabled = value && !isFlat()
                 if (value) apply(effect)
             }
         }
+        enhanceAll()
     }
 
     fun setGain(index: Int, db: Int) {
@@ -42,10 +53,11 @@ class EqualizerController {
         enabled = true
         effects.values.forEach { effect ->
             runCatching {
-                effect.enabled = true
+                effect.enabled = !isFlat()
                 apply(effect)
             }
         }
+        enhanceAll()
     }
 
     fun applyPreset(name: String) {
@@ -54,10 +66,11 @@ class EqualizerController {
         enabled = true
         effects.values.forEach { effect ->
             runCatching {
-                effect.enabled = true
+                effect.enabled = !isFlat()
                 apply(effect)
             }
         }
+        enhanceAll()
     }
 
     fun applySaved(enabled: Boolean, gains: List<Int>) {
@@ -65,19 +78,42 @@ class EqualizerController {
         if (gains.size == BANDS) this.gains = gains.map { it.coerceIn(-12, 12) }
         effects.values.forEach { effect ->
             runCatching {
-                effect.enabled = enabled
+                effect.enabled = enabled && !isFlat()
                 if (enabled) apply(effect)
             }
         }
+        enhanceAll()
     }
 
     fun release(key: Any) {
         effects.remove(key)?.let { runCatching { it.release() } }
+        enhancers.remove(key)?.let { runCatching { it.release() } }
     }
 
     fun releaseAll() {
         effects.values.forEach { runCatching { it.release() } }
         effects.clear()
+        enhancers.values.forEach { runCatching { it.release() } }
+        enhancers.clear()
+    }
+
+    /** Curva toda em zero: não vale a pena ligar o processamento. */
+    private fun isFlat(): Boolean = gains.all { it == 0 }
+
+    /**
+     * Compensa a perda de nível típica do efeito. 3 dB fixos quando há curva
+     * ativa; sem curva, o LoudnessEnhancer fica desligado.
+     */
+    private fun applyCompensation(enhancer: LoudnessEnhancer) {
+        runCatching {
+            val active = enabled && !isFlat()
+            enhancer.setTargetGain(if (active) COMPENSATION_MB else 0)
+            enhancer.enabled = active
+        }
+    }
+
+    private fun enhanceAll() {
+        enhancers.values.forEach { enhancer -> applyCompensation(enhancer) }
     }
 
     private fun apply(effect: Equalizer) {
@@ -107,6 +143,9 @@ class EqualizerController {
             "Vocal" to listOf(-3, -1, 4, 4, 1),
         )
         private const val BANDS = 5
+
+        /** Compensação em milibéis (300 = +3 dB). */
+        private const val COMPENSATION_MB = 300
         private val DEFAULT_GAINS = List(BANDS) { 0 }
     }
 }
