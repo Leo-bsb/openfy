@@ -1,6 +1,12 @@
 package com.openfy.android.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode as AnimationRepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -79,6 +85,7 @@ import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -110,6 +117,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
@@ -177,6 +186,7 @@ import java.time.Instant
 import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -633,6 +643,37 @@ private fun HomeScreen(
             }
         }
 
+        item {
+            Column(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 4.dp)) {
+                Text(
+                    "Mix por vibes",
+                    color = OpenfyTextHigh,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                LazyRow(
+                    Modifier.fillMaxWidth().padding(top = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val vibes = listOf("⚡ Treino", "🎯 Foco", "🌙 Relax", "🎉 Festa", "🚗 Viagem", "🌧️ Noite")
+                    items(vibes) { vibe ->
+                        val cleanName = vibe.substringAfter(" ")
+                        Button(
+                            onClick = { viewModel.startVibeMix(cleanName) },
+                            shape = RoundedCornerShape(16.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = OpenfyPanelHigh,
+                                contentColor = OpenfyTextHigh,
+                            ),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        ) {
+                            Text(vibe, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+
         if (state.recentTracks.isNotEmpty()) {
             item {
                 Text(
@@ -654,6 +695,7 @@ private fun HomeScreen(
                             onPlayNext = { viewModel.playNext(track) },
                             onAddQueue = { viewModel.addToQueue(track) },
                             onAddPlaylist = { onAddToPlaylist(track) },
+                            onRadio = { viewModel.startRadioFor(track) },
                         ) { viewModel.playSearchResult(track) }
                     }
                 }
@@ -680,6 +722,7 @@ private fun HomeScreen(
                             onPlayNext = { viewModel.playNext(track) },
                             onAddQueue = { viewModel.addToQueue(track) },
                             onAddPlaylist = { onAddToPlaylist(track) },
+                            onRadio = { viewModel.startRadioFor(track) },
                         ) { viewModel.playTopTrack(track) }
                     }
                 }
@@ -929,6 +972,7 @@ private fun LibraryPageScreen(
                                 onPlayNext = { viewModel.playNext(track) },
                                 onAddQueue = { viewModel.addToQueue(track) },
                                 onAddPlaylist = { onAddToPlaylist(track) },
+                                onRadio = { viewModel.startRadioFor(track) },
                                 onArtist = viewModel::openArtistFromName,
                                 downloaded = track.id in state.downloadedIds,
                                 downloadProgress = state.downloadProgress[track.id],
@@ -969,6 +1013,7 @@ private fun LibraryPageScreen(
                                         onPlayNext = { viewModel.playNext(track) },
                                         onAddQueue = { viewModel.addToQueue(track) },
                                         onAddPlaylist = { onAddToPlaylist(track) },
+                                        onRadio = { viewModel.startRadioFor(track) },
                                         onArtist = viewModel::openArtistFromName,
                                         downloaded = track.id in state.downloadedIds,
                                         downloadProgress = state.downloadProgress[track.id],
@@ -1016,6 +1061,7 @@ private fun LibraryPageScreen(
                                             onPlayNext = { viewModel.playNext(track) },
                                             onAddQueue = { viewModel.addToQueue(track) },
                                             onAddPlaylist = { onAddToPlaylist(track) },
+                                            onRadio = { viewModel.startRadioFor(track) },
                                             onArtist = viewModel::openArtistFromName,
                                             downloaded = track.id in state.downloadedIds,
                                             downloadProgress = state.downloadProgress[track.id],
@@ -1080,6 +1126,7 @@ private fun LibraryPageScreen(
                                 onPlayNext = { viewModel.playNext(entry.track) },
                                 onAddQueue = { viewModel.addToQueue(entry.track) },
                                 onAddPlaylist = { onAddToPlaylist(entry.track) },
+                                onRadio = { viewModel.startRadioFor(entry.track) },
                                 onRemove = { viewModel.removeDownload(entry.track.id) },
                                 onArtist = { name -> viewModel.openArtistFromName(name) },
                             )
@@ -1159,6 +1206,7 @@ private fun LibraryPageScreen(
                                 onPlayNext = { viewModel.playNext(track) },
                                 onAddQueue = { viewModel.addToQueue(track) },
                                 onAddPlaylist = { onAddToPlaylist(track) },
+                                onRadio = { viewModel.startRadioFor(track) },
                                 onArtist = viewModel::openArtistFromName,
                                 downloaded = track.id in state.downloadedIds,
                                 downloadProgress = state.downloadProgress[track.id],
@@ -1210,6 +1258,7 @@ private fun DownloadRow(
     onAddPlaylist: () -> Unit,
     onRemove: () -> Unit,
     onArtist: (String) -> Unit,
+    onRadio: (() -> Unit)? = null,
 ) {
     val track = entry.track
     Card(
@@ -1288,6 +1337,16 @@ private fun DownloadRow(
                             onAddPlaylist()
                         },
                     )
+                    onRadio?.let { action ->
+                        DropdownMenuItem(
+                            text = { Text("Rádio desta música") },
+                            leadingIcon = { Icon(Icons.Filled.Radio, null) },
+                            onClick = {
+                                menuOpen = false
+                                action()
+                            },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Remover download") },
                         leadingIcon = { Icon(Icons.Filled.Delete, null) },
@@ -1412,6 +1471,7 @@ private fun TrackTile(
     onPlayNext: (() -> Unit)? = null,
     onAddQueue: (() -> Unit)? = null,
     onAddPlaylist: (() -> Unit)? = null,
+    onRadio: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -1493,6 +1553,16 @@ private fun TrackTile(
                 DropdownMenuItem(
                     text = { Text("Adicionar à playlist") },
                     leadingIcon = { Icon(Icons.Filled.PlaylistAdd, null) },
+                    onClick = {
+                        menuOpen = false
+                        action()
+                    },
+                )
+            }
+            onRadio?.let { action ->
+                DropdownMenuItem(
+                    text = { Text("Rádio desta música") },
+                    leadingIcon = { Icon(Icons.Filled.Radio, null) },
                     onClick = {
                         menuOpen = false
                         action()
@@ -1648,6 +1718,7 @@ private fun SearchScreen(
                     onPlayNext = { viewModel.playNext(track) },
                     onAddQueue = { viewModel.addToQueue(track) },
                     onAddPlaylist = { onAddToPlaylist(track) },
+                    onRadio = { viewModel.startRadioFor(track) },
                     onArtist = viewModel::openArtistFromName,
                     downloaded = track.id in state.downloadedIds,
                     downloadProgress = state.downloadProgress[track.id],
@@ -1738,6 +1809,7 @@ private fun LikedScreen(
                     onPlayNext = { viewModel.playNext(track) },
                     onAddQueue = { viewModel.addToQueue(track) },
                     onAddPlaylist = { onAddToPlaylist(track) },
+                    onRadio = { viewModel.startRadioFor(track) },
                     onArtist = viewModel::openArtistFromName,
                     downloaded = track.id in state.downloadedIds,
                     downloadProgress = state.downloadProgress[track.id],
@@ -1762,6 +1834,7 @@ private fun TrackRow(
     onAddPlaylist: () -> Unit,
     onRemove: (() -> Unit)? = null,
     onArtist: ((String) -> Unit)? = null,
+    onRadio: (() -> Unit)? = null,
     downloaded: Boolean = false,
     downloadProgress: Float? = null,
     onDownload: (() -> Unit)? = null,
@@ -1878,6 +1951,16 @@ private fun TrackRow(
                             onAddPlaylist()
                         },
                     )
+                    onRadio?.let { action ->
+                        DropdownMenuItem(
+                            text = { Text("Rádio desta música") },
+                            leadingIcon = { Icon(Icons.Filled.Radio, null) },
+                            onClick = {
+                                menuOpen = false
+                                action()
+                            },
+                        )
+                    }
                     if (downloaded) {
                         DropdownMenuItem(
                             text = { Text("Remover download") },
@@ -2023,6 +2106,15 @@ private fun PlaylistDetailScreen(
                         },
                     )
                     DropdownMenuItem(
+                        text = { Text("Rádio da playlist") },
+                        leadingIcon = { Icon(Icons.Filled.Radio, null) },
+                        enabled = state.playlistTracks.isNotEmpty(),
+                        onClick = {
+                            menuOpen = false
+                            viewModel.startPlaylistRadio()
+                        },
+                    )
+                    DropdownMenuItem(
                         text = { Text("Excluir playlist", color = MaterialTheme.colorScheme.error) },
                         leadingIcon = {
                             Icon(
@@ -2144,6 +2236,7 @@ private fun PlaylistDetailScreen(
                             onPlayNext = { viewModel.playNext(track) },
                             onAddQueue = { viewModel.addToQueue(track) },
                             onAddPlaylist = { onAddToPlaylist(track) },
+                            onRadio = { viewModel.startRadioFor(track) },
                             onRemove = { viewModel.removeFromPlaylist(item) },
                             onArtist = viewModel::openArtistFromName,
                             downloaded = track.id in state.downloadedIds,
@@ -2355,6 +2448,7 @@ private fun ArtistScreen(
                     onPlayNext = { viewModel.playNext(track) },
                     onAddQueue = { viewModel.addToQueue(track) },
                     onAddPlaylist = { onAddToPlaylist(track) },
+                    onRadio = { viewModel.startRadioFor(track) },
                     downloaded = track.id in state.downloadedIds,
                     downloadProgress = state.downloadProgress[track.id],
                     onDownload = { viewModel.toggleDownload(track) },
@@ -2509,6 +2603,7 @@ private fun RemoteCollectionScreen(
                     onPlayNext = { viewModel.playNext(track) },
                     onAddQueue = { viewModel.addToQueue(track) },
                     onAddPlaylist = { onAddToPlaylist(track) },
+                    onRadio = { viewModel.startRadioFor(track) },
                     onArtist = viewModel::openArtistFromName,
                     downloaded = track.id in state.downloadedIds,
                     downloadProgress = state.downloadProgress[track.id],
@@ -2641,6 +2736,7 @@ private fun RecapScreen(
                             onPlayNext = { viewModel.playNext(track) },
                             onAddQueue = { viewModel.addToQueue(track) },
                             onAddPlaylist = { onAddToPlaylist(track) },
+                            onRadio = { viewModel.startRadioFor(track) },
                             onArtist = viewModel::openArtistFromName,
                             downloaded = track.id in state.downloadedIds,
                             downloadProgress = state.downloadProgress[track.id],
@@ -2764,9 +2860,29 @@ private fun ProfileScreen(
     val extras = state.profileExtras
     val stats = state.profileStats
     val accent = profileAccent(extras.accent)
+    // Cores do tema capturadas na composição: o drawBehind da capa não é
+    // @Composable e não pode ler os getters de Theme.kt diretamente.
+    val themeInk = OpenfyInk
+    val themePanelHigh = OpenfyPanelHigh
     val displayName = profile?.displayName?.takeIf { it.isNotBlank() }
         ?: session.email.substringBefore("@").ifBlank { "Conta Openfy" }
     val handle = profile?.handle?.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
+    // T2: fase da animação da capa. O State só é lido na fase de desenho
+    // (drawBehind), então a animação não recompoõe a tela.
+    val coverMotionPhase = if (extras.style.motion) {
+        rememberInfiniteTransition(label = "profileCoverMotion").animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 7000, easing = LinearEasing),
+                repeatMode = AnimationRepeatMode.Reverse,
+            ),
+            label = "profileCoverPhase",
+        )
+    } else {
+        null
+    }
+    val profileRowHeightPx = with(LocalDensity.current) { 44.dp.toPx() }
 
     var editing by remember { mutableStateOf(false) }
     var name by remember(editing, profile?.displayName) {
@@ -2775,10 +2891,14 @@ private fun ProfileScreen(
     var bio by remember(editing, extras.bio) { mutableStateOf(extras.bio) }
     var avatarUri by remember { mutableStateOf<Uri?>(null) }
     var coverUri by remember { mutableStateOf<Uri?>(null) }
+    var removeAvatar by remember { mutableStateOf(false) }
     var pinPickerOpen by remember { mutableStateOf(false) }
 
     val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) avatarUri = uri
+        if (uri != null) {
+            removeAvatar = false
+            avatarUri = uri
+        }
     }
     val coverPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) coverUri = uri
@@ -2833,23 +2953,54 @@ private fun ProfileScreen(
         Box(
             Modifier.fillMaxWidth().height(176.dp)
                 .clip(RoundedCornerShape(18.dp))
-                .background(
-                    Brush.linearGradient(
-                        listOf(
-                            accent.copy(alpha = if (extras.style.glow) 0.55f else 0.32f),
-                            OpenfyPanelHigh,
-                            OpenfyInk,
-                        ),
-                    ),
-                ),
+                .background(OpenfyInk),
         ) {
             val coverModel = coverUri ?: extras.coverUrl.takeIf { it.isNotBlank() }
-            if (coverModel != null && (coverUri != null || !extras.style.coverGradient)) {
+            if (coverModel != null) {
                 AsyncImage(
                     model = coverModel,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
+                )
+            }
+            // T1: a capa aparece sempre que existir. coverGradient controla só o
+            // overlay de acento; sem imagem ele continua sendo o fundo.
+            // T2: motion anima o brush do gradiente lendo a fase apenas no draw.
+            if (coverModel == null || extras.style.coverGradient) {
+                Box(
+                    Modifier.fillMaxSize().drawBehind {
+                        val phase = coverMotionPhase?.value ?: 0f
+                        val accentAlpha = if (extras.style.glow) 0.55f else 0.35f
+                        val brush = if (coverModel == null) {
+                            val shift = size.width * 0.35f * phase
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    accent.copy(
+                                        alpha = if (extras.style.glow) 0.55f else 0.32f,
+                                    ),
+                                    themePanelHigh,
+                                    themeInk,
+                                ),
+                                start = Offset(-shift, 0f),
+                                end = Offset(size.width + shift, size.height),
+                            )
+                        } else {
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    accent.copy(alpha = accentAlpha),
+                                    accent.copy(alpha = accentAlpha * 0.4f),
+                                    Color.Transparent,
+                                ),
+                                start = Offset(0f, 0f),
+                                end = Offset(
+                                    size.width * (0.85f + 0.3f * phase),
+                                    size.height * (0.9f - 0.2f * phase),
+                                ),
+                            )
+                        }
+                        drawRect(brush = brush)
+                    },
                 )
             }
             Box(
@@ -3085,6 +3236,10 @@ private fun ProfileScreen(
                     },
                     onUp = { viewModel.moveProfilePin(pin.id, -1) },
                     onDown = { viewModel.moveProfilePin(pin.id, 1) },
+                    onDragSteps = { steps ->
+                        val delta = if (steps > 0) 1 else -1
+                        repeat(abs(steps)) { viewModel.moveProfilePin(pin.id, delta) }
+                    },
                     onRemove = { viewModel.removeProfilePin(pin.id) },
                 )
             }
@@ -3122,7 +3277,11 @@ private fun ProfileScreen(
                         Icon(Icons.Filled.Image, null, modifier = Modifier.size(15.dp))
                         Spacer(Modifier.width(4.dp))
                         Text(
-                            if (avatarUri == null) "Trocar foto" else "Foto escolhida",
+                            when {
+                                avatarUri != null -> "Foto escolhida"
+                                removeAvatar -> "Foto será removida"
+                                else -> "Trocar foto"
+                            },
                             color = accent,
                             fontSize = 11.sp,
                         )
@@ -3135,6 +3294,40 @@ private fun ProfileScreen(
                             color = accent,
                             fontSize = 11.sp,
                         )
+                    }
+                }
+                if (profile?.avatarUrl?.isNotBlank() == true || extras.coverUrl.isNotBlank()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (profile?.avatarUrl?.isNotBlank() == true && avatarUri == null) {
+                            TextButton(onClick = { removeAvatar = !removeAvatar }) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    null,
+                                    tint = OpenfyTextLow,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    if (removeAvatar) "Manter foto" else "Remover foto",
+                                    color = OpenfyTextLow,
+                                    fontSize = 11.sp,
+                                )
+                            }
+                        }
+                        if (extras.coverUrl.isNotBlank() && coverUri == null) {
+                            TextButton(onClick = {
+                                viewModel.updateProfileExtras { it.copy(coverUrl = "") }
+                            }) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    null,
+                                    tint = OpenfyTextLow,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text("Remover capa", color = OpenfyTextLow, fontSize = 11.sp)
+                            }
+                        }
                     }
                 }
                 if (avatarUri != null || coverUri != null) {
@@ -3210,6 +3403,38 @@ private fun ProfileScreen(
                         Modifier.fillMaxWidth().padding(vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        Box(
+                            Modifier.size(26.dp).pointerInput(id) {
+                                var accumulated = 0f
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = { accumulated = 0f },
+                                    onDrag = { change, amount ->
+                                        change.consume()
+                                        accumulated += amount.y
+                                    },
+                                    onDragEnd = {
+                                        val steps =
+                                            (accumulated / profileRowHeightPx).roundToInt()
+                                        if (steps != 0) {
+                                            val delta = if (steps > 0) 1 else -1
+                                            repeat(abs(steps)) {
+                                                viewModel.moveProfileCard(id, delta)
+                                            }
+                                        }
+                                        accumulated = 0f
+                                    },
+                                    onDragCancel = { accumulated = 0f },
+                                )
+                            },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Filled.DragHandle,
+                                "Arrastar para reordenar",
+                                tint = OpenfyTextLow,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
                         Text(
                             ProfileStatsCards.label(id),
                             color = OpenfyTextHigh,
@@ -3246,6 +3471,12 @@ private fun ProfileScreen(
                         )
                     }
                 }
+                Text(
+                    "Arraste pelo ícone ⠿ ou use as setas para mudar a ordem.",
+                    color = OpenfyTextLow,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
             }
 
             ProfileCard("Faixas fixadas") {
@@ -3257,7 +3488,7 @@ private fun ProfileScreen(
                 }
                 Text(
                     "${extras.pins.size}/${ProfileExtras.PIN_LIMIT} fixadas. " +
-                        "Use as setas para mudar a ordem.",
+                        "Arraste pelo ícone ⠿ ou use as setas para mudar a ordem.",
                     color = OpenfyTextLow,
                     fontSize = 10.sp,
                     modifier = Modifier.padding(top = 6.dp),
@@ -3275,7 +3506,11 @@ private fun ProfileScreen(
                             extras.copy(bio = bio),
                             avatarUri,
                             coverUri,
+                            removeAvatar,
                         )
+                        removeAvatar = false
+                        avatarUri = null
+                        coverUri = null
                     },
                     enabled = !state.profileBusy,
                 ) {
@@ -3414,8 +3649,10 @@ private fun ProfilePinRow(
     onPlay: () -> Unit,
     onUp: () -> Unit,
     onDown: () -> Unit,
+    onDragSteps: (Int) -> Unit,
     onRemove: () -> Unit,
 ) {
+    val rowHeightPx = with(LocalDensity.current) { 44.dp.toPx() }
     Row(
         Modifier.fillMaxWidth().padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -3445,6 +3682,32 @@ private fun ProfilePinRow(
             modifier = Modifier.padding(horizontal = 4.dp),
         )
         if (editing) {
+            Box(
+                Modifier.size(26.dp).pointerInput(pin.id) {
+                    var accumulated = 0f
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { accumulated = 0f },
+                        onDrag = { change, amount ->
+                            change.consume()
+                            accumulated += amount.y
+                        },
+                        onDragEnd = {
+                            val steps = (accumulated / rowHeightPx).roundToInt()
+                            if (steps != 0) onDragSteps(steps)
+                            accumulated = 0f
+                        },
+                        onDragCancel = { accumulated = 0f },
+                    )
+                },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.DragHandle,
+                    "Arrastar para reordenar",
+                    tint = OpenfyTextLow,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
             IconButton(onClick = onUp, modifier = Modifier.size(26.dp)) {
                 Icon(
                     Icons.Filled.KeyboardArrowUp,
@@ -3985,6 +4248,17 @@ private fun MiniPlayer(state: AuthUiState, viewModel: AuthViewModel, onOpen: () 
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    if (state.radioActive) {
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            Icons.Filled.Radio,
+                            "Rádio ativa",
+                            tint = OpenfyAccent,
+                            modifier = Modifier.size(11.dp),
+                        )
+                        Spacer(Modifier.width(2.dp))
+                        Text("Rádio", color = OpenfyAccent, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
             IconButton(onClick = { viewModel.togglePlay() }, enabled = !state.busy) {
@@ -4246,13 +4520,19 @@ private fun PlayerOverlay(
                     )
                 }
                 IconButton(
-                    onClick = { viewModel.startTrackRadio() },
+                    onClick = {
+                        if (state.radioActive) viewModel.stopRadio() else viewModel.startTrackRadio()
+                    },
                     enabled = track != null && !state.busy,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(if (state.radioActive) OpenfyAccent.copy(alpha = 0.22f) else Color.Transparent),
                 ) {
                     Icon(
                         Icons.Filled.Radio,
-                        "Rádio a partir desta faixa",
-                        tint = OpenfyTextLow,
+                        if (state.radioActive) "Desligar rádio (ativa)" else "Rádio a partir desta faixa",
+                        tint = if (state.radioActive) OpenfyAccent else OpenfyTextLow,
                         modifier = Modifier.size(24.dp),
                     )
                 }
@@ -4378,6 +4658,9 @@ private fun QueueDialog(
     onDismiss: () -> Unit,
 ) {
     var saveOpen by remember { mutableStateOf(false) }
+    var draggingIndex by remember { mutableStateOf<Int?>(null) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
+    val queueRowHeightPx = with(LocalDensity.current) { 54.dp.toPx() }
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = OpenfyPanelHigh,
@@ -4385,7 +4668,7 @@ private fun QueueDialog(
             Column {
                 Text("Fila · ${state.queue.size} faixas", color = OpenfyTextHigh)
                 Text(
-                    "Use as setas para reordenar. Para incluir outra faixa, use ⋮ › Tocar em seguida ou Adicionar ao fim da fila.",
+                    "Segure e arraste pelo ícone ⠿ para reordenar. Para incluir outra faixa, use ⋮ › Tocar em seguida ou Adicionar ao fim da fila.",
                     color = OpenfyTextLow,
                     fontSize = 10.sp,
                 )
@@ -4473,9 +4756,12 @@ private fun QueueDialog(
                     Text("A fila está vazia.", color = OpenfyTextLow, fontSize = 12.sp)
                 } else {
                     LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    itemsIndexed(state.queue) { index, track ->
+                    itemsIndexed(state.queue, key = { i, t -> "queue-$i-${t.id}" }) { index, track ->
+                        val dragging = draggingIndex == index
                         Row(
                             Modifier.fillMaxWidth()
+                                .zIndex(if (dragging) 1f else 0f)
+                                .offset { IntOffset(0, if (dragging) dragOffsetY.roundToInt() else 0) }
                                 .clickable {
                                     viewModel.playQueueIndex(index)
                                     onDismiss()
@@ -4518,31 +4804,41 @@ private fun QueueDialog(
                             }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Box(
-                                    Modifier.size(28.dp).clip(CircleShape)
-                                        .clickable(enabled = index > 0) {
-                                            viewModel.moveQueueIndex(index, index - 1)
+                                    Modifier.size(32.dp).clip(CircleShape)
+                                        .pointerInput(state.queue.size) {
+                                            detectDragGesturesAfterLongPress(
+                                                onDragStart = {
+                                                    draggingIndex = index
+                                                    dragOffsetY = 0f
+                                                },
+                                                onDrag = { change, amount ->
+                                                    change.consume()
+                                                    dragOffsetY += amount.y
+                                                },
+                                                onDragEnd = {
+                                                    val from = draggingIndex
+                                                    val steps = (dragOffsetY / queueRowHeightPx).roundToInt()
+                                                    if (from != null && steps != 0) {
+                                                        val to = (from + steps)
+                                                            .coerceIn(0, state.queue.lastIndex)
+                                                        viewModel.moveQueueIndex(from, to)
+                                                    }
+                                                    draggingIndex = null
+                                                    dragOffsetY = 0f
+                                                },
+                                                onDragCancel = {
+                                                    draggingIndex = null
+                                                    dragOffsetY = 0f
+                                                },
+                                            )
                                         },
                                     contentAlignment = Alignment.Center,
                                 ) {
                                     Icon(
-                                        Icons.Filled.KeyboardArrowUp,
-                                        "Mover para cima",
-                                        tint = if (index > 0) OpenfyTextLow else OpenfyLine,
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
-                                Box(
-                                    Modifier.size(28.dp).clip(CircleShape)
-                                        .clickable(enabled = index < state.queue.lastIndex) {
-                                            viewModel.moveQueueIndex(index, index + 1)
-                                        },
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        Icons.Filled.KeyboardArrowDown,
-                                        "Mover para baixo",
-                                        tint = if (index < state.queue.lastIndex) OpenfyTextLow else OpenfyLine,
-                                        modifier = Modifier.size(18.dp),
+                                        Icons.Filled.DragHandle,
+                                        "Arrastar para reordenar",
+                                        tint = OpenfyTextLow,
+                                        modifier = Modifier.size(20.dp),
                                     )
                                 }
                             }

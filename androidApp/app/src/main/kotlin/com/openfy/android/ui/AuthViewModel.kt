@@ -192,6 +192,7 @@ data class AuthUiState(
     val sleepUntil: Long? = null,
     val eqEnabled: Boolean = false,
     val eqGains: List<Int> = listOf(0, 0, 0, 0, 0),
+    val radioActive: Boolean = false,
     val recapMonth: String = YearMonth.now().atDay(1).toString(),
     val recapMonths: List<String> = emptyList(),
     val recap: RecapData? = null,
@@ -1366,6 +1367,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         extras: ProfileExtras,
         avatarUri: Uri? = null,
         coverUri: Uri? = null,
+        removeAvatar: Boolean = false,
     ) {
         val session = _state.value.session ?: return
         if (_state.value.profileBusy) return
@@ -1380,6 +1382,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             var coverUrl = extras.coverUrl
             val result = runCatching {
                 withSession { active ->
+                    if (removeAvatar && avatarUri == null) avatarUrl = ""
                     avatarUri?.let { uri ->
                         val (bytes, mime, ext) = readImage(uri)
                         avatarUrl = api.uploadProfileImage(
@@ -1864,6 +1867,25 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(message = "Seu mix: ${mix.size} faixas.") }
     }
 
+    /** Inicia um mix temático por vibe com rádio contínua. */
+    fun startVibeMix(vibe: String) {
+        viewModelScope.launch {
+            _state.update { it.copy(mixLoading = true, message = "Carregando vibe $vibe…") }
+            val tracks = runCatching {
+                youtube.search("$vibe mix", limit = 40)
+            }.getOrNull().orEmpty()
+            _state.update { it.copy(mixLoading = false) }
+            val first = tracks.firstOrNull()
+            if (first == null) {
+                _state.update { it.copy(error = "Nenhuma faixa encontrada para a vibe $vibe.") }
+                return@launch
+            }
+            play(first, tracks, "vibe", keepRadio = true)
+            startRadio(first, null)
+            _state.update { it.copy(message = "Vibe $vibe iniciada.") }
+        }
+    }
+
     /** Remove as próximas faixas, mantendo a atual e guardando para desfazer. */
     fun clearUpcoming() {
         val current = _state.value
@@ -2063,12 +2085,14 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         radioContinuation = null
         radioSeed = null
         radioAdvancePending = false
+        _state.update { it.copy(radioActive = false) }
     }
 
     private fun startRadio(seed: Track, playlistId: String? = null, advanceAtEnd: Boolean = false) {
         resetRadio()
         radioSeed = seed
         radioAdvancePending = advanceAtEnd
+        _state.update { it.copy(radioActive = true) }
         val epoch = radioEpoch
         radioLoading = true
         radioJob = viewModelScope.launch {
@@ -2081,6 +2105,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             radioLoading = false
             val stillCurrent = _state.value.track?.id == seed.id
             if (page == null || page.tracks.isEmpty() || !stillCurrent) {
+                _state.update { it.copy(radioActive = false) }
                 if (advanceAtEnd && stillCurrent) {
                     runCatching { player.pause() }
                     _state.update { it.copy(playing = false) }
@@ -2099,6 +2124,42 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(message = "Rádio a partir de ${track.title}.") }
     }
 
+    /** Rádio a partir de uma faixa qualquer (menus de três pontinhos). */
+    fun startRadioFor(track: Track) {
+        if (_state.value.track?.id != track.id) {
+            play(track, (_state.value.queue + track).distinctBy { it.id }, "radio", keepRadio = true)
+        }
+        startRadio(track, null)
+        _state.update { it.copy(message = "Rádio a partir de ${track.title}.") }
+    }
+
+    /** Rádio inspirada na playlist aberta. */
+    fun startPlaylistRadio() {
+        val s = _state.value
+        val tracks = s.playlistTracks
+        val seed = tracks.firstOrNull() ?: return
+        val name = s.openPlaylist?.name
+        play(seed, tracks, "playlist", keepRadio = true)
+        startRadio(seed, null)
+        _state.update {
+            it.copy(message = "Rádio da playlist${if (name != null) ": $name" else ""}.")
+        }
+    }
+
+    /** Rádio a partir de um contexto (curtidas, histórico, coleção). */
+    fun startContextRadio(tracks: List<Track>) {
+        val seed = tracks.firstOrNull() ?: return
+        play(seed, tracks, "radio", keepRadio = true)
+        startRadio(seed, null)
+        _state.update { it.copy(message = "Rádio a partir de ${seed.title}.") }
+    }
+
+    /** Desliga a continuação automática da rádio sem mexer na fila. */
+    fun stopRadio() {
+        resetRadio()
+        _state.update { it.copy(message = "Rádio desligada; a fila atual continua.") }
+    }
+
     private fun maybeAppendRadio() {
         val s = _state.value
         if (radioLoading || radioJob?.isActive == true) return
@@ -2113,6 +2174,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             radioLoading = false
             if (page == null || page.tracks.isEmpty()) {
                 radioContinuation = null
+                _state.update { it.copy(radioActive = false) }
                 return@launch
             }
             radioContinuation = page.continuation

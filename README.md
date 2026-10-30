@@ -35,6 +35,8 @@ parava de ler e a UI travava depois de alguns minutos de uso.
 - [x] Playlists e álbuns públicos, com carregamento das listas longas por continuação
 - [x] Explorar com playlists em destaque, lançamentos e playlists da comunidade
 - [x] Rádio por faixa e por artista, com autoplay e prefetch da próxima página
+- [x] Rádio da playlist (desktop e Android) e "Rádio desta música" nos menus de faixa
+- [x] Mix por vibes (Treino, Foco, Relax, Festa, Viagem, Noite) nos dois apps
 - [x] Extração de áudio via `innertubex-desktop:v0.11.0` (sem PoToken/WebView)
 - [x] Streaming com Range/seek através do servidor local
 - [x] Fila, aleatório, repetir (off/all/one), volume
@@ -43,7 +45,8 @@ parava de ler e a UI travava depois de alguns minutos de uso.
 - [x] Navegação voltar/avançar com pilha de telas (botões + `Alt+←`/`Alt+→`)
 - [x] Sessão retomada: fila, faixa, posição, volume, aleatório e repetir persistem
 - [x] Atalhos de teclado (espaço, setas, `Ctrl+←/→`, `L`, `S`, `R`, `Q`, `Ctrl+F`, `Esc`)
-- [x] Fila editável: remover, reordenar, limpar próximas, salvar como playlist e desfazer
+- [x] Fila editável: remover, reordenar por arrastar e soltar, limpar próximas, salvar como playlist e desfazer
+- [x] Ordenação por arrastar e soltar na fila, nas playlists e nos blocos do perfil (desktop e Android)
 - [x] Busca: recentes, sugestões (ao digitar), top result, carregar mais, retry e skeleton
 - [x] Banner offline e cache de capas em disco (com LRU em memória)
 - [x] "Em alta" (charts): as músicas em alta do YouTube Music
