@@ -1540,8 +1540,12 @@ private fun ReorderHandle(
     val drag by rememberUpdatedState(onDrag)
     val end by rememberUpdatedState(onDragEnd)
     val cancel by rememberUpdatedState(onDragCancel)
+    val noopInteraction = remember { MutableInteractionSource() }
     Box(
-        modifier.size(26.dp).clip(CircleShape).pointerInput(Unit) {
+        modifier.size(26.dp).clip(CircleShape)
+            // Consome o clique para não tocar a faixa ao encostar na alça.
+            .clickable(interactionSource = noopInteraction, indication = null, onClick = {})
+            .pointerInput(Unit) {
             detectDragGestures(
                 onDragStart = { start() },
                 onDrag = { change, amount ->
