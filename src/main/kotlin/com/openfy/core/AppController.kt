@@ -5,6 +5,7 @@ import com.openfy.data.Downloader
 import com.openfy.data.LyricLine
 import com.openfy.data.LyricsClient
 import com.openfy.data.UpdateChecker
+import com.openfy.data.UpdateInstaller
 import com.openfy.data.UpdateStatus
 import com.openfy.data.YouTubeEngine
 import com.openfy.player.Player
@@ -123,6 +124,12 @@ class AppController(
     // ------------------------------------------------------------------ updates
     val updateAutoCheck = MutableStateFlow(true)
     val updateStatus = MutableStateFlow<UpdateStatus?>(null)
+
+    /** Progresso do download do instalador do desktop. */
+    val updateInstall = MutableStateFlow<UpdateInstaller.Status?>(null)
+
+    /** Vira true quando o instalador foi preparado e o app deve fechar. */
+    val updateExitRequested = MutableStateFlow(false)
 
     // ------------------------------------------------------------------ import / lyrics / stats
     val importDialogOpen = MutableStateFlow(false)
@@ -1867,6 +1874,44 @@ class AppController(
     fun openInstaller() {
         val url = (updateStatus.value as? UpdateStatus.Available)?.release?.installerUrl ?: return
         browseUrl(url)
+    }
+
+    /**
+     * Baixa o instalador da release, prepara o auxiliar que roda depois que o
+     * app fecha e pede o encerramento. No Windows o app em execucao nao pode
+     * ser substituido, entao o auxiliar espera o PID atual sair.
+     */
+    fun downloadAndInstallUpdate() {
+        val release = (updateStatus.value as? UpdateStatus.Available)?.release ?: return
+        if (release.installerUrl == null) {
+            message.value = "Esta release nao tem instalador .exe."
+            return
+        }
+        if (updateInstall.value is UpdateInstaller.Status.Downloading) return
+        if (updateExitRequested.value) return
+        updateInstall.value = UpdateInstaller.Status.Downloading(0f)
+        scope.launch {
+            runCatching {
+                val installer = UpdateInstaller.download(release) { progress ->
+                    updateInstall.value = UpdateInstaller.Status.Downloading(progress)
+                }
+                updateInstall.value = UpdateInstaller.Status.Ready(installer)
+                if (UpdateInstaller.launchAfterExit(installer)) {
+                    message.value = "Instalador pronto: o Openfy vai fechar e atualizar."
+                    updateExitRequested.value = true
+                } else {
+                    updateInstall.value = UpdateInstaller.Status.Error(
+                        "Nao foi possivel abrir o instalador baixado.",
+                    )
+                }
+            }.onFailure { error ->
+                if (error is kotlinx.coroutines.CancellationException) throw error
+                Log.write("updates: falha no instalador: ${error.message}")
+                updateInstall.value = UpdateInstaller.Status.Error(
+                    error.message ?: "Falha ao baixar o instalador.",
+                )
+            }
+        }
     }
 
     /** Verificação ao abrir: respeita o toggle e no máximo 1x/dia; silenciosa offline. */

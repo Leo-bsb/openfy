@@ -80,6 +80,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -179,6 +180,10 @@ data class AuthUiState(
     val autoDownload: Boolean = false,
     val playbackRemote: PlaybackStateDto? = null,
     val settingsSyncedAt: Long = 0,
+    val appVersion: String = com.openfy.android.BuildConfig.VERSION_NAME,
+    val updateInfo: com.openfy.android.data.AppUpdater.UpdateInfo? = null,
+    val updateChecking: Boolean = false,
+    val updateDownloading: Float? = null,
     val queueUndo: QueueUndoState? = null,
     val pendingSyncCount: Int = 0,
     val lyrics: List<LyricLine> = emptyList(),
@@ -411,6 +416,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     DownloadResult.Cancelled -> Unit
                 }
             }
+        }
+        viewModelScope.launch {
+            delay(4_000)
+            if (isOnline()) checkForUpdates(silent = true)
         }
         equalizer.applySaved(_state.value.eqEnabled, _state.value.eqGains)
         PlaybackBridge.onToggle = { togglePlay() }
@@ -3772,6 +3781,50 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(error = null, message = null, searchError = null) }
     }
 
+    // ---------------------------------------------------------------- atualizações
+
+    fun checkForUpdates(silent: Boolean = false) {
+        if (_state.value.updateChecking || _state.value.updateDownloading != null) return
+        _state.update { it.copy(updateChecking = true) }
+        viewModelScope.launch {
+            val info = runCatching { com.openfy.android.data.AppUpdater.check() }.getOrNull()
+            _state.update {
+                it.copy(
+                    updateChecking = false,
+                    updateInfo = info,
+                    message = when {
+                        info != null -> "Atualização ${info.version} disponível."
+                        silent -> it.message
+                        else -> "Você já está na versão mais recente (${it.appVersion})."
+                    },
+                )
+            }
+        }
+    }
+
+    fun downloadAndInstallUpdate() {
+        val info = _state.value.updateInfo ?: return
+        if (_state.value.updateDownloading != null) return
+        _state.update { it.copy(updateDownloading = 0f) }
+        viewModelScope.launch {
+            val result = runCatching {
+                val file = com.openfy.android.data.AppUpdater.download(getApplication(), info) { progress ->
+                    _state.update { it.copy(updateDownloading = progress) }
+                }
+                com.openfy.android.data.AppUpdater.install(getApplication(), file)
+            }
+            _state.update {
+                it.copy(
+                    updateDownloading = null,
+                    message = if (result.isSuccess) "Instalador aberto: confirme para atualizar." else null,
+                    error = result.exceptionOrNull()?.let { error ->
+                        "Falha ao atualizar: ${error.message ?: error.javaClass.simpleName}"
+                    },
+                )
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ downloads
 
     fun toggleDownload(track: Track) {
@@ -3821,7 +3874,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Baixa as faixas ainda não baixadas de uma playlist, em fila. */
+    /** Baixa as faixas ainda não baixadas de uma playlist, em lotes paralelos. */
     fun downloadPlaylist(tracks: List<Track>) {
         val pending = tracks.filterNot {
             it.id in _state.value.downloadedIds ||
@@ -3837,21 +3890,22 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(message = "Baixando ${pending.size} faixas…") }
             var done = 0
             var failures = 0
-            for (track in pending) {
-                if (!isActive) break
-                val result = runCatching { DownloadEngine.download(track) }.getOrNull()
-                if (!isActive) break
-                if (result is DownloadResult.Success) {
-                    done++
-                } else {
-                    failures++
-                    if (!isOnline()) break
-                }
-                if (failures >= 3) {
-                    _state.update {
-                        it.copy(error = "Parei a fila de downloads após várias falhas. Verifique a conexão.")
+            coroutineScope {
+                for (batch in pending.chunked(DOWNLOAD_BATCH)) {
+                    if (!isActive) break
+                    val results = batch.map { track ->
+                        async { runCatching { DownloadEngine.download(track) }.getOrNull() }
+                    }.awaitAll()
+                    if (!isActive) break
+                    results.forEach { result ->
+                        if (result is DownloadResult.Success) done++ else failures++
                     }
-                    break
+                    if (failures >= 3 || !isOnline()) {
+                        _state.update {
+                            it.copy(error = "Parei a fila de downloads após várias falhas. Verifique a conexão.")
+                        }
+                        break
+                    }
                 }
             }
             playlistDownloadJob = null
@@ -3927,6 +3981,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val BYTES_PER_MB = 1024L * 1024L
+
+        /** Faixas por lote; o DownloadEngine limita as conexões simultâneas. */
+        const val DOWNLOAD_BATCH = 4
 
         /** Estimativa ~128 kbps para checar o limite antes de começar o download. */
         const val ESTIMATED_AUDIO_BYTES_PER_SECOND = 16_000L

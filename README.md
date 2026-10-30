@@ -254,7 +254,13 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 - Downloads no Android rodam no `DownloadEngine` (fora do ciclo de vida da tela)
   com `DownloadService` em primeiro plano (`dataSync`), então continuam ao abrir
   outro app e mostram progresso/cancelar na notificação. Os downloads usam uma
-  URL extraída só para eles (o Google limita a segunda conexão no link do player).
+  URL extraída só para eles (o Google limita a segunda conexão no link do player),
+  baixam até 2 faixas ao mesmo tempo e a playlist entra em lotes de 4.
+- Atualização dentro do app nos dois aparelhos: no Android, **Ajustes >
+  Atualizações** lê `update-android.json` no Pages (com fallback para as releases
+  do GitHub), baixa o APK e abre o instalador; no PC, **Ajustes > Atualizações >
+  Baixar e instalar** baixa o `.exe` para `%LOCALAPPDATA%\OpenfyData\updates` e
+  um `.bat` auxiliar espera o app fechar para rodar o instalador.
 - Sync offline no Android: alterações entram em outbox e exclusões viram
   tombstones, então nada volta ao sincronizar. Ajustes convergem pelo maior
   `updatedAt` e a fila/posição é passada entre aparelhos por `playback_state`.
@@ -266,20 +272,22 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.2.9.exe
-dist\Openfy-0.2.9.msi
-dist\Openfy-Android-0.6.0.apk
+dist\Openfy-0.3.0.exe
+dist\Openfy-0.3.0.msi
+dist\Openfy-Android-0.7.0.apk
 ```
 
 Páginas (GitHub Pages): https://leo-bsb.github.io/openfy/
+APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.7.0.apk
+Manifesto de atualização do Android: https://leo-bsb.github.io/openfy/update-android.json
 Convite de playlist: https://leo-bsb.github.io/openfy/join.html?code=CODIGO
 OAuth: https://leo-bsb.github.io/openfy/oauth/spotify.html ·
 https://leo-bsb.github.io/openfy/oauth/google.html ·
-Privacidade/termos: `/privacy.html` e `/terms.html`
+Privacidade/termos: seções `#privacidade` e `#termos` da página inicial
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.2.9: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.9
-Android 0.6.0: https://github.com/Leo-bsb/openfy/releases/tag/v0.6.0-android
+Desktop 0.2.9 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.2.9
+Android 0.7.0 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.7.0.apk
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -299,8 +307,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.2.9.exe`
-- `build\compose\binaries\main\msi\Openfy-0.2.9.msi`
+- `build\compose\binaries\main\exe\Openfy-0.3.0.exe`
+- `build\compose\binaries\main\msi\Openfy-0.3.0.msi`
 
 Rodar em desenvolvimento:
 

@@ -111,6 +111,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -176,6 +177,7 @@ import com.openfy.core.SearchMode
 import com.openfy.core.Track
 import com.openfy.core.formatTime
 import com.openfy.data.LyricLine
+import com.openfy.data.UpdateInstaller
 import com.openfy.data.UpdateStatus
 import com.openfy.player.Player
 import kotlinx.coroutines.Dispatchers
@@ -361,6 +363,15 @@ fun OpenfyApp(c: AppController, onExit: () -> Unit) {
     val offline by c.offline.collectAsState()
     val importOpen by c.importDialogOpen.collectAsState()
     val palette by c.palette.collectAsState()
+
+    // Instalador do desktop pronto: fecha o app para o auxiliar rodar o .exe.
+    val exitForUpdate by c.updateExitRequested.collectAsState()
+    LaunchedEffect(exitForUpdate) {
+        if (exitForUpdate) {
+            delay(1500)
+            onExit()
+        }
+    }
 
     LaunchedEffect(message) {
         if (message != null) {
@@ -4058,6 +4069,8 @@ private fun SettingsScreen(c: AppController) {
         SettingsSection("Atualizações") {
             val update by c.updateStatus.collectAsState()
             val autoUpdate by c.updateAutoCheck.collectAsState()
+            val install by c.updateInstall.collectAsState()
+            val exitRequested by c.updateExitRequested.collectAsState()
             SettingsRow(
                 "Verificar ao abrir",
                 "Procura versões novas no GitHub, no máximo 1x por dia.",
@@ -4086,23 +4099,42 @@ private fun SettingsScreen(c: AppController) {
                     fontSize = 11.sp,
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
-                is UpdateStatus.Available -> SettingsRow(
-                    "Openfy ${status.release.version} disponível",
-                    if (status.release.installerUrl != null) {
-                        "Baixe o instalador ou veja os detalhes na release."
-                    } else {
-                        "Veja os arquivos da release no GitHub."
-                    },
-                ) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        TextButton(onClick = { c.openReleasePage() }) {
-                            Text("Abrir release", color = Tokens.accent)
-                        }
-                        if (status.release.installerUrl != null) {
-                            TextButton(onClick = { c.openInstaller() }) {
-                                Text("Baixar instalador", color = Tokens.accent)
+                is UpdateStatus.Available -> {
+                    val downloading = install as? UpdateInstaller.Status.Downloading
+                    val ready = install is UpdateInstaller.Status.Ready || exitRequested
+                    SettingsRow(
+                        "Openfy ${status.release.version} disponível",
+                        when (val state = install) {
+                            is UpdateInstaller.Status.Error -> state.message
+                            else -> when {
+                                status.release.installerUrl == null ->
+                                    "Veja os arquivos da release no GitHub."
+                                downloading != null -> "Baixando o instalador…"
+                                ready -> "Instalador pronto. O Openfy fecha e abre o assistente."
+                                else -> "Baixe o instalador e o app fecha para atualizar."
+                            }
+                        },
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            TextButton(onClick = { c.openReleasePage() }) {
+                                Text("Abrir release", color = Tokens.accent)
+                            }
+                            if (status.release.installerUrl != null && downloading == null && !ready) {
+                                TextButton(onClick = { c.downloadAndInstallUpdate() }) {
+                                    Text(
+                                        if (install is UpdateInstaller.Status.Error) "Tentar de novo" else "Baixar e instalar",
+                                        color = Tokens.accent,
+                                    )
+                                }
                             }
                         }
+                    }
+                    if (downloading != null) {
+                        LinearProgressIndicator(
+                            progress = { downloading.progress },
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                            color = Tokens.accent,
+                        )
                     }
                 }
                 is UpdateStatus.Error -> Text(

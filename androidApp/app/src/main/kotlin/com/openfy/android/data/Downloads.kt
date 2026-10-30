@@ -209,12 +209,16 @@ class AudioDownloader(
     private val limitBytes: () -> Long,
 ) {
 
-    @Volatile
-    private var activeConnection: HttpURLConnection? = null
+    private val connections = java.util.concurrent.ConcurrentHashMap<String, HttpURLConnection>()
 
-    /** Interrompe a conexão em andamento (usado ao cancelar/remover um download). */
-    fun cancelCurrent() {
-        runCatching { activeConnection?.disconnect() }
+    /** Interrompe a conexão de uma faixa (ou todas, se `trackId` for nulo). */
+    fun cancel(trackId: String? = null) {
+        if (trackId == null) {
+            connections.values.forEach { runCatching { it.disconnect() } }
+            connections.clear()
+        } else {
+            connections.remove(trackId)?.let { runCatching { it.disconnect() } }
+        }
     }
 
     /** Executa em IO. `isCancelled` é checado a cada bloco lido. */
@@ -256,7 +260,7 @@ class AudioDownloader(
                     setRequestProperty("User-Agent", DEFAULT_USER_AGENT)
                 }
             }
-            activeConnection = connection
+            connections[track.id] = connection
             val code = connection.responseCode
             com.openfy.core.Log.write(
                 "download: ${track.id} resposta $code " +
@@ -344,7 +348,7 @@ class AudioDownloader(
                 DownloadResult.Failed(error.message ?: "Falha ao baixar o áudio.")
             }
         } finally {
-            activeConnection = null
+            connections.remove(track.id)
             runCatching { connection?.disconnect() }
             if (temp.exists()) temp.deleteQuietly()
         }

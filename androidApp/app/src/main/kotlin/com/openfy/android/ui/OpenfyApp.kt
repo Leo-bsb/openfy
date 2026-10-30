@@ -306,9 +306,6 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                     viewModel,
                     Modifier.padding(padding),
                 ) { profileOpen = false }
-                state.libraryPage != null -> LibraryPageScreen(state, viewModel, Modifier.padding(padding)) {
-                    addToPlaylistTrack = it
-                }
                 state.openPlaylist != null -> PlaylistDetailScreen(state, viewModel, Modifier.padding(padding)) {
                     addToPlaylistTrack = it
                 }
@@ -322,6 +319,9 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
                     viewModel,
                     Modifier.padding(padding),
                 ) { addToPlaylistTrack = it }
+                state.libraryPage != null -> LibraryPageScreen(state, viewModel, Modifier.padding(padding)) {
+                    addToPlaylistTrack = it
+                }
                 tab == 0 -> HomeScreen(
                     state,
                     viewModel,
@@ -3595,6 +3595,95 @@ private fun SettingsScreen(
                     }
                     TextButton(onClick = { viewModel.signOut() }) {
                         Text("Sair", color = OpenfyTextLow)
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card(
+            colors = CardDefaults.cardColors(containerColor = OpenfyPanel),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Atualizações",
+                        color = OpenfyTextHigh,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text("v${state.appVersion}", color = OpenfyTextLow, fontSize = 12.sp)
+                }
+                val info = state.updateInfo
+                val progress = state.updateDownloading
+                when {
+                    info != null -> {
+                        Text(
+                            "Versão ${info.version} disponível",
+                            color = OpenfyAccent,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                        if (info.notes.isNotBlank()) {
+                            Text(
+                                info.notes,
+                                color = OpenfyTextLow,
+                                fontSize = 11.sp,
+                                maxLines = 5,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        if (progress != null) {
+                            LinearProgressIndicator(
+                                progress = { progress },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = OpenfyAccent,
+                                trackColor = OpenfyLine,
+                            )
+                            Text(
+                                "Baixando ${(progress * 100).toInt()}%",
+                                color = OpenfyTextLow,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        } else {
+                            Button(onClick = { viewModel.downloadAndInstallUpdate() }) {
+                                Text("Baixar e instalar")
+                            }
+                            Text(
+                                "O Android pede confirmação e pode exigir permitir instalação por este app.",
+                                color = OpenfyTextLow,
+                                fontSize = 10.sp,
+                                modifier = Modifier.padding(top = 6.dp),
+                            )
+                        }
+                    }
+                    else -> {
+                        Text(
+                            "Procura releases novas no GitHub e instala o APK sem passar pela loja.",
+                            color = OpenfyTextLow,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        TextButton(
+                            onClick = { viewModel.checkForUpdates() },
+                            enabled = !state.updateChecking,
+                            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 4.dp),
+                        ) {
+                            if (state.updateChecking) {
+                                CircularProgressIndicator(
+                                    Modifier.size(12.dp),
+                                    strokeWidth = 2.dp,
+                                    color = OpenfyTextLow,
+                                )
+                            } else {
+                                Text("Verificar atualização", color = OpenfyAccent2)
+                            }
+                        }
                     }
                 }
             }

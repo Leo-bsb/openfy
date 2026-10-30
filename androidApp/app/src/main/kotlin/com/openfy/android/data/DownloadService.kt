@@ -111,7 +111,9 @@ class DownloadService : Service() {
     private fun build(progress: Map<String, Float>): Notification {
         val count = progress.size.coerceAtLeast(1)
         val single = progress.values.singleOrNull()
+        val average = progress.values.filter { it >= 0f }.takeIf { it.isNotEmpty() }?.average()
         val percent = single?.let { (it * 100).toInt().coerceIn(0, 100) }
+            ?: average?.let { (it * 100).toInt().coerceIn(0, 100) }
         val content = PendingIntent.getActivity(
             this,
             0,
@@ -128,7 +130,12 @@ class DownloadService : Service() {
         )
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(if (count == 1) "Baixando 1 faixa" else "Baixando $count faixas")
+            .setContentTitle(
+                when (count) {
+                    1 -> "Baixando 1 faixa"
+                    else -> "Baixando $count faixas"
+                },
+            )
             .setContentText(percent?.let { "$it% concluído" } ?: "Preparando o áudio…")
             .setContentIntent(content)
             .setOngoing(true)
