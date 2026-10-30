@@ -688,6 +688,37 @@ class AppController(
         message.value = "Rádio: ${track.title}"
     }
 
+    fun toggleCurrentTrackRadio() {
+        if (player.radioActive.value) {
+            stopRadio()
+        } else {
+            val curr = player.current.value ?: return
+            startTrackRadio(curr)
+        }
+    }
+
+    fun startPlaylistRadio(tracks: List<Track>, label: String) {
+        val seed = tracks.firstOrNull() ?: return
+        startRadio(seed.id, "RDAMVM${seed.id}", label)
+        message.value = "Rádio da playlist: $label"
+    }
+
+    fun startVibeMix(vibe: String) {
+        scope.launch {
+            message.value = "Carregando mix $vibe..."
+            val tracks = runCatching {
+                withContext(Dispatchers.IO) { yt.search("$vibe mix", limit = 40) }
+            }.getOrNull().orEmpty()
+            val first = tracks.firstOrNull()
+            if (first == null) {
+                message.value = "Não foram encontradas faixas para a vibe $vibe."
+                return@launch
+            }
+            startTrackRadio(first)
+            message.value = "Mix $vibe iniciado"
+        }
+    }
+
     fun startArtistRadio() {
         val page = artistPage.value ?: return
         val videoId = page.radioVideoId ?: page.topTracks.firstOrNull()?.id ?: return
@@ -872,6 +903,17 @@ class AppController(
     fun removeFromPlaylist(playlistId: String, trackId: String) {
         scope.launch {
             withContext(Dispatchers.IO) { db.removeFromPlaylist(playlistId, trackId) }
+            loadPlaylist(playlistId)
+            refreshLibrary()
+            account.requestSync()
+        }
+    }
+
+    /** Reordena por arrastar e soltar: move a faixa de [from] para [to]. */
+    fun moveInPlaylist(playlistId: String, from: Int, to: Int) {
+        if (from == to) return
+        scope.launch {
+            withContext(Dispatchers.IO) { db.movePlaylistItem(playlistId, from, to) }
             loadPlaylist(playlistId)
             refreshLibrary()
             account.requestSync()

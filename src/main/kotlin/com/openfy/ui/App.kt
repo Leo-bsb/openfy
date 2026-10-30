@@ -10,8 +10,14 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.TooltipPlacement
 import androidx.compose.foundation.background
@@ -33,6 +39,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -60,6 +67,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Explore
@@ -104,6 +112,7 @@ import androidx.compose.material.icons.filled.Snooze
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -127,6 +136,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -136,19 +146,25 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.openfy.core.AppController
 import com.openfy.core.Artist
 import com.openfy.core.ArtistPage
@@ -1254,6 +1270,37 @@ private fun HomeScreen(c: AppController) {
             }
         }
         item {
+            Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
+                Text(
+                    "VIBES & CLIMA",
+                    color = Tokens.accent,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    val vibes = listOf("⚡ Treino", "🎯 Foco", "🌙 Relax", "🎉 Festa", "🚗 Viagem")
+                    vibes.forEach { vibe ->
+                        val cleanName = vibe.substringAfter(" ")
+                        Button(
+                            onClick = { c.startVibeMix(cleanName) },
+                            shape = RoundedCornerShape(20.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Tokens.panel,
+                                contentColor = Tokens.textHigh,
+                            ),
+                        ) {
+                            Text(vibe, fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+        }
+        item {
             Row(
                 Modifier.fillMaxWidth().padding(bottom = 22.dp)
                     .clip(RoundedCornerShape(14.dp))
@@ -1326,7 +1373,16 @@ private fun HomeScreen(c: AppController) {
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     items(recent, key = { "r-${it.id}" }) { track ->
-                        CoverCard(track.title, track.artist, track.thumbnail) {
+                        CoverCard(
+                            track.title,
+                            track.artist,
+                            track.thumbnail,
+                            CoverCardMenu(
+                                onPlayNext = { c.playNext(track) },
+                                onQueue = { c.playLater(track) },
+                                onRadio = { c.startTrackRadio(track) },
+                            ),
+                        ) {
                             // Recentes são sementes: tocar uma faixa abre a rádio dela,
                             // não enfileira o histórico inteiro.
                             c.playSearchTrack(track)
@@ -1352,7 +1408,16 @@ private fun HomeScreen(c: AppController) {
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     items(topPlayed.take(10), key = { "tp-${it.id}" }) { track ->
-                        CoverCard(track.title, track.artist, track.thumbnail) {
+                        CoverCard(
+                            track.title,
+                            track.artist,
+                            track.thumbnail,
+                            CoverCardMenu(
+                                onPlayNext = { c.playNext(track) },
+                                onQueue = { c.playLater(track) },
+                                onRadio = { c.startTrackRadio(track) },
+                            ),
+                        ) {
                             c.playTracks(topPlayed, topPlayed.indexOf(track), "Mais ouvidas")
                         }
                     }
@@ -1366,7 +1431,16 @@ private fun HomeScreen(c: AppController) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     items(liked, key = { "l-${it.id}" }) { track ->
                         val index = liked.indexOf(track)
-                        CoverCard(track.title, track.artist, track.thumbnail) {
+                        CoverCard(
+                            track.title,
+                            track.artist,
+                            track.thumbnail,
+                            CoverCardMenu(
+                                onPlayNext = { c.playNext(track) },
+                                onQueue = { c.playLater(track) },
+                                onRadio = { c.startTrackRadio(track) },
+                            ),
+                        ) {
                             c.playTracks(liked, index)
                         }
                     }
@@ -1445,8 +1519,58 @@ private fun formatHours(seconds: Long): String {
     return if (hours > 0) "${hours}h ${minutes}min" else "${minutes}min"
 }
 
+/** Alça de arrastar reutilizável (fila, playlist, blocos do perfil). */
 @Composable
-private fun CoverCard(title: String, subtitle: String, art: String, onClick: () -> Unit) {
+private fun ReorderHandle(
+    onDragStart: () -> Unit,
+    onDrag: (Float) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+    iconSize: Dp = 16.dp,
+) {
+    val start by rememberUpdatedState(onDragStart)
+    val drag by rememberUpdatedState(onDrag)
+    val end by rememberUpdatedState(onDragEnd)
+    val cancel by rememberUpdatedState(onDragCancel)
+    Box(
+        modifier.size(26.dp).clip(CircleShape).pointerInput(Unit) {
+            detectDragGestures(
+                onDragStart = { start() },
+                onDrag = { change, amount ->
+                    change.consume()
+                    drag(amount.y)
+                },
+                onDragEnd = { end() },
+                onDragCancel = { cancel() },
+            )
+        },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.Filled.DragHandle,
+            "Arrastar para reordenar",
+            tint = Tokens.textLow,
+            modifier = Modifier.size(iconSize),
+        )
+    }
+}
+
+/** Ações rápidas dos cards da Home (sem abrir a faixa). */
+private data class CoverCardMenu(
+    val onPlayNext: () -> Unit,
+    val onQueue: () -> Unit,
+    val onRadio: () -> Unit,
+)
+
+@Composable
+private fun CoverCard(
+    title: String,
+    subtitle: String,
+    art: String,
+    menu: CoverCardMenu? = null,
+    onClick: () -> Unit,
+) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     Column(
@@ -1457,7 +1581,41 @@ private fun CoverCard(title: String, subtitle: String, art: String, onClick: () 
             .clickable(onClick = onClick)
             .padding(8.dp),
     ) {
-        Cover(art, 140.dp, 8.dp)
+        Box {
+            Cover(art, 140.dp, 8.dp)
+            if (menu != null) {
+                var open by remember { mutableStateOf(false) }
+                Box(Modifier.align(Alignment.TopEnd).padding(4.dp)) {
+                    IconButton(
+                        onClick = { open = true },
+                        modifier = Modifier.size(26.dp).clip(CircleShape)
+                            .background(Tokens.ink.copy(alpha = if (hovered) 0.8f else 0.45f)),
+                    ) {
+                        Icon(
+                            Icons.Filled.MoreVert,
+                            "Mais ações",
+                            tint = Tokens.textHigh,
+                            modifier = Modifier.size(15.dp),
+                        )
+                    }
+                    DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Tocar em seguida") },
+                            onClick = { open = false; menu.onPlayNext() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Adicionar ao fim da fila") },
+                            onClick = { open = false; menu.onQueue() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Rádio desta música") },
+                            leadingIcon = { Icon(Icons.Filled.Radio, null) },
+                            onClick = { open = false; menu.onRadio() },
+                        )
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         Text(
             title,
@@ -1623,7 +1781,14 @@ private fun SearchScreen(c: AppController) {
                     }
                     if (results.isNotEmpty()) {
                         item {
-                            TopResultCard(results.first()) { c.playSearchTrack(results.first()) }
+                            TopResultCard(
+                                results.first(),
+                                CoverCardMenu(
+                                    onPlayNext = { c.playNext(results.first()) },
+                                    onQueue = { c.playLater(results.first()) },
+                                    onRadio = { c.startTrackRadio(results.first()) },
+                                ),
+                            ) { c.playSearchTrack(results.first()) }
                         }
                     }
                     itemsIndexed(results.drop(1), key = { _, t -> t.id }) { index, track ->
@@ -1723,7 +1888,7 @@ private fun RecentSearchRow(term: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun TopResultCard(track: Track, onPlay: () -> Unit) {
+private fun TopResultCard(track: Track, menu: CoverCardMenu? = null, onPlay: () -> Unit) {
     Row(
         Modifier.fillMaxWidth()
             .padding(bottom = 16.dp)
@@ -1761,6 +1926,29 @@ private fun TopResultCard(track: Track, onPlay: () -> Unit) {
         }
         IconButton(onClick = onPlay, modifier = Modifier.size(44.dp)) {
             Icon(Icons.Filled.PlayArrow, "Tocar", tint = Tokens.textHigh, modifier = Modifier.size(26.dp))
+        }
+        if (menu != null) {
+            var open by remember { mutableStateOf(false) }
+            Box {
+                IconButton(onClick = { open = true }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Filled.MoreVert, "Mais ações", tint = Tokens.textLow, modifier = Modifier.size(20.dp))
+                }
+                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Tocar em seguida") },
+                        onClick = { open = false; menu.onPlayNext() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Adicionar ao fim da fila") },
+                        onClick = { open = false; menu.onQueue() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Rádio desta música") },
+                        leadingIcon = { Icon(Icons.Filled.Radio, null) },
+                        onClick = { open = false; menu.onRadio() },
+                    )
+                }
+            }
         }
     }
 }
@@ -2357,6 +2545,12 @@ private fun PlaylistScreen(c: AppController, id: String) {
     val downloadedIds by c.downloadedIds.collectAsState()
     val downloadingIds by c.downloadingIds.collectAsState()
 
+    var ordering by remember(id) { mutableStateOf(false) }
+    var dragIndex by remember { mutableStateOf<Int?>(null) }
+    var dragOffset by remember { mutableStateOf(0f) }
+    val density = LocalDensity.current
+    var rowHeightPx by remember { mutableStateOf(with(density) { 56.dp.toPx() }) }
+
     Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
         Row(Modifier.padding(top = 10.dp, bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             CoverSource(meta?.cover ?: "", 132.dp, 10.dp)
@@ -2388,6 +2582,15 @@ private fun PlaylistScreen(c: AppController, id: String) {
                         Icon(Icons.Filled.Shuffle, null, modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(6.dp))
                         Text("Aleatório")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(
+                        onClick = { c.startPlaylistRadio(tracks, meta?.name ?: "Playlist") },
+                        enabled = tracks.isNotEmpty(),
+                    ) {
+                        Icon(Icons.Filled.Radio, null, modifier = Modifier.size(16.dp), tint = Tokens.accent)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Rádio", color = Tokens.accent)
                     }
                     val allDownloaded = tracks.isNotEmpty() && tracks.all { it.id in downloadedIds }
                     val anyDownloading = tracks.any { it.id in downloadingIds }
@@ -2475,6 +2678,21 @@ private fun PlaylistScreen(c: AppController, id: String) {
                             )
                         }
                     }
+                    if (tracks.size > 1) {
+                        TextButton(onClick = { ordering = !ordering }) {
+                            Icon(
+                                Icons.Filled.DragHandle,
+                                null,
+                                modifier = Modifier.size(16.dp),
+                                tint = if (ordering) Tokens.accent else Tokens.textLow,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                if (ordering) "Concluir ordem" else "Ordenar",
+                                color = if (ordering) Tokens.accent else Tokens.textLow,
+                            )
+                        }
+                    }
                     TextButton(onClick = { meta?.let { c.askRenamePlaylist(it) } }, enabled = meta != null) {
                         Icon(Icons.Filled.Edit, null, modifier = Modifier.size(16.dp), tint = Tokens.textLow)
                         Spacer(Modifier.width(6.dp))
@@ -2489,22 +2707,67 @@ private fun PlaylistScreen(c: AppController, id: String) {
             }
         }
         HorizontalDivider(color = Tokens.line)
+        if (ordering) {
+            Text(
+                "Arraste pelo ícone ⠿ para mudar a ordem. A nova ordem sincroniza com o celular.",
+                color = Tokens.textLow,
+                fontSize = 11.sp,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
+            )
+        }
         LazyColumn(Modifier.weight(1f)) {
             itemsIndexed(tracks, key = { _, t -> t.id }) { index, track ->
-                TrackRow(
-                    c = c,
-                    track = track,
-                    index = index,
-                    liked = track.id in likedIds,
-                    onPlay = { c.playTracks(tracks, index) },
-                    onLike = { c.toggleLike(track) },
-                    onPlayNext = { c.playNext(track) },
-                    onQueue = { c.playLater(track) },
-                    onRadio = { c.startTrackRadio(track) },
-                    playlists = playlists,
-                    onAddTo = { playlistId -> c.addToPlaylist(playlistId, track) },
-                    onRemove = { c.removeFromPlaylist(id, track.id) },
-                )
+                val dragging = dragIndex == index
+                Row(
+                    Modifier.fillMaxWidth()
+                        .zIndex(if (dragging) 1f else 0f)
+                        .offset { IntOffset(0, if (dragging) dragOffset.roundToInt() else 0) }
+                        .background(if (dragging) Tokens.panelHigh else Color.Transparent)
+                        .onSizeChanged { rowHeightPx = it.height.toFloat() },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (ordering) {
+                        ReorderHandle(
+                            onDragStart = {
+                                dragIndex = index
+                                dragOffset = 0f
+                            },
+                            onDrag = { dragOffset += it },
+                            onDragEnd = {
+                                val steps = (dragOffset / rowHeightPx).roundToInt()
+                                if (steps != 0) {
+                                    c.moveInPlaylist(
+                                        id,
+                                        index,
+                                        (index + steps).coerceIn(0, tracks.lastIndex),
+                                    )
+                                }
+                                dragIndex = null
+                                dragOffset = 0f
+                            },
+                            onDragCancel = {
+                                dragIndex = null
+                                dragOffset = 0f
+                            },
+                        )
+                    }
+                    Box(Modifier.weight(1f)) {
+                        TrackRow(
+                            c = c,
+                            track = track,
+                            index = index,
+                            liked = track.id in likedIds,
+                            onPlay = { c.playTracks(tracks, index) },
+                            onLike = { c.toggleLike(track) },
+                            onPlayNext = { c.playNext(track) },
+                            onQueue = { c.playLater(track) },
+                            onRadio = { c.startTrackRadio(track) },
+                            playlists = playlists,
+                            onAddTo = { playlistId -> c.addToPlaylist(playlistId, track) },
+                            onRemove = { c.removeFromPlaylist(id, track.id) },
+                        )
+                    }
+                }
             }
             item { Spacer(Modifier.height(24.dp)) }
         }
@@ -2766,6 +3029,11 @@ private fun RecapScreen(c: AppController) {
                         entry.track.title,
                         "${entry.plays} plays · ${formatHours(entry.playedMs / 1000)}",
                         entry.track.thumbnail,
+                        CoverCardMenu(
+                            onPlayNext = { c.playNext(entry.track) },
+                            onQueue = { c.playLater(entry.track) },
+                            onRadio = { c.startTrackRadio(entry.track) },
+                        ),
                     ) {
                         c.playTracks(tracks.map { it.track }, tracks.indexOf(entry), "Recap · $label")
                     }
@@ -3029,6 +3297,13 @@ private fun ProfileScreen(c: AppController) {
     var avatarFile by remember { mutableStateOf<File?>(null) }
     var coverFile by remember { mutableStateOf<File?>(null) }
     var pinMenuOpen by remember { mutableStateOf(false) }
+    var pinDragIndex by remember { mutableStateOf<Int?>(null) }
+    var pinDragOffset by remember { mutableStateOf(0f) }
+    val profileDensity = LocalDensity.current
+    var pinRowHeightPx by remember { mutableStateOf(with(profileDensity) { 52.dp.toPx() }) }
+    var cardDragIndex by remember { mutableStateOf<Int?>(null) }
+    var cardDragOffset by remember { mutableStateOf(0f) }
+    var cardRowHeightPx by remember { mutableStateOf(with(profileDensity) { 44.dp.toPx() }) }
 
     LaunchedEffect(Unit) { c.account.loadProfileStats() }
 
@@ -3068,6 +3343,7 @@ private fun ProfileScreen(c: AppController) {
                 gradient = extras.style.coverGradient,
                 accent = accent,
                 glow = extras.style.glow,
+                motion = extras.style.motion,
             )
             Row(
                 Modifier.align(Alignment.BottomStart).padding(16.dp),
@@ -3205,17 +3481,52 @@ private fun ProfileScreen(c: AppController) {
                 modifier = Modifier.padding(top = 18.dp, bottom = 4.dp),
             )
             extras.pins.forEachIndexed { index, pin ->
-                ProfilePinRow(
-                    pin = pin,
-                    editing = editing,
-                    accent = accent,
-                    onPlay = {
-                        c.playTracks(extras.pins.map { it.toTrack() }, index, "Faixas fixadas")
-                    },
-                    onUp = { c.moveProfilePin(pin.id, -1) },
-                    onDown = { c.moveProfilePin(pin.id, 1) },
-                    onRemove = { c.removeProfilePin(pin.id) },
-                )
+                val dragging = pinDragIndex == index
+                Box(
+                    Modifier.fillMaxWidth()
+                        .zIndex(if (dragging) 1f else 0f)
+                        .offset { IntOffset(0, if (dragging) pinDragOffset.roundToInt() else 0) }
+                        .background(if (dragging) Tokens.panelHigh else Color.Transparent)
+                        .onSizeChanged { pinRowHeightPx = it.height.toFloat() },
+                ) {
+                    ProfilePinRow(
+                        pin = pin,
+                        editing = editing,
+                        accent = accent,
+                        onPlay = {
+                            c.playTracks(extras.pins.map { it.toTrack() }, index, "Faixas fixadas")
+                        },
+                        dragModifier = Modifier.pointerInput(extras.pins.size, index) {
+                            detectDragGestures(
+                                onDragStart = {
+                                    pinDragIndex = index
+                                    pinDragOffset = 0f
+                                },
+                                onDrag = { change, amount ->
+                                    change.consume()
+                                    pinDragOffset += amount.y
+                                },
+                                onDragEnd = {
+                                    val steps = (pinDragOffset / pinRowHeightPx).roundToInt()
+                                    var moved = 0
+                                    while (moved < kotlin.math.abs(steps)) {
+                                        c.moveProfilePin(pin.id, if (steps > 0) 1 else -1)
+                                        moved++
+                                    }
+                                    pinDragIndex = null
+                                    pinDragOffset = 0f
+                                },
+                                onDragCancel = {
+                                    pinDragIndex = null
+                                    pinDragOffset = 0f
+                                },
+                            )
+                        },
+                        onUp = { c.moveProfilePin(pin.id, -1) },
+                        onDown = { c.moveProfilePin(pin.id, 1) },
+                        onRemove = { c.removeProfilePin(pin.id) },
+                    )
+                }
             }
         }
 
@@ -3334,10 +3645,37 @@ private fun ProfileScreen(c: AppController) {
             SettingsSection("Cartões de estatística") {
                 Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                     order.forEachIndexed { index, id ->
+                        val dragging = cardDragIndex == index
                         Row(
-                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            Modifier.fillMaxWidth()
+                                .zIndex(if (dragging) 1f else 0f)
+                                .offset { IntOffset(0, if (dragging) cardDragOffset.roundToInt() else 0) }
+                                .background(if (dragging) Tokens.panelHigh else Color.Transparent)
+                                .onSizeChanged { cardRowHeightPx = it.height.toFloat() }
+                                .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            ReorderHandle(
+                                onDragStart = {
+                                    cardDragIndex = index
+                                    cardDragOffset = 0f
+                                },
+                                onDrag = { cardDragOffset += it },
+                                onDragEnd = {
+                                    val steps = (cardDragOffset / cardRowHeightPx).roundToInt()
+                                    var moved = 0
+                                    while (moved < kotlin.math.abs(steps)) {
+                                        c.moveProfileCard(id, if (steps > 0) 1 else -1)
+                                        moved++
+                                    }
+                                    cardDragIndex = null
+                                    cardDragOffset = 0f
+                                },
+                                onDragCancel = {
+                                    cardDragIndex = null
+                                    cardDragOffset = 0f
+                                },
+                            )
                             Text(
                                 ProfileStatsCards.label(id),
                                 color = Tokens.textHigh,
@@ -3437,7 +3775,7 @@ private fun ProfileScreen(c: AppController) {
                     }
                     Text(
                         "${extras.pins.size}/${ProfileExtras.PIN_LIMIT} fixadas. " +
-                            "Use as setas para mudar a ordem.",
+                            "Arraste pelo ícone ⠿ ou use as setas para mudar a ordem.",
                         color = Tokens.textLow,
                         fontSize = 10.sp,
                         modifier = Modifier.padding(top = 6.dp),
@@ -3498,30 +3836,72 @@ private fun nameOrFallback(name: String?, email: String): String =
         ?: email.substringBefore("@").ifBlank { "Conta Openfy" }
 
 @Composable
-private fun ProfileCover(url: String, gradient: Boolean, accent: Color, glow: Boolean) {
+private fun ProfileCover(
+    url: String,
+    gradient: Boolean,
+    accent: Color,
+    glow: Boolean,
+    motion: Boolean = false,
+) {
     var bitmap by remember(url) { mutableStateOf(ArtworkCache.peek(url)) }
     LaunchedEffect(url) {
         if (url.isBlank() || bitmap != null) return@LaunchedEffect
         bitmap = ArtworkCache.get(url)
     }
+    val image = bitmap
+    val animatedGradient = if (motion) {
+        val transition = rememberInfiniteTransition(label = "profile-cover")
+        val phase by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(9000, easing = LinearEasing),
+                repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
+            ),
+            label = "cover-phase",
+        )
+        Brush.linearGradient(
+            colors = listOf(
+                accent.copy(alpha = if (glow) 0.6f else 0.4f),
+                Tokens.panelHigh,
+                Tokens.ink,
+            ),
+            start = Offset(phase * 640f, 0f),
+            end = Offset(640f + phase * 640f, 960f),
+        )
+    } else {
+        Brush.linearGradient(
+            listOf(
+                accent.copy(alpha = if (glow) 0.55f else 0.35f),
+                Tokens.panelHigh,
+                Tokens.ink,
+            ),
+        )
+    }
     Box(
         Modifier.fillMaxSize().background(
-            if (gradient || url.isBlank()) {
-                Brush.linearGradient(
-                    listOf(
-                        accent.copy(alpha = if (glow) 0.55f else 0.35f),
-                        Tokens.panelHigh,
-                        Tokens.ink,
-                    ),
-                )
+            if (gradient || image == null) {
+                animatedGradient
             } else {
                 Brush.verticalGradient(listOf(Tokens.panelHigh, Tokens.ink))
             },
         ),
     ) {
-        val image = bitmap
         if (image != null) {
             Image(image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            if (gradient) {
+                Box(
+                    Modifier.fillMaxSize().background(
+                        Brush.linearGradient(
+                            listOf(
+                                accent.copy(alpha = if (glow) 0.42f else 0.28f),
+                                Color.Transparent,
+                                Tokens.ink.copy(alpha = 0.35f),
+                            ),
+                        ),
+                    ),
+                )
+            }
         }
         Box(
             Modifier.fillMaxSize().background(
@@ -3688,11 +4068,25 @@ private fun ProfilePinRow(
     onUp: () -> Unit,
     onDown: () -> Unit,
     onRemove: () -> Unit,
+    dragModifier: Modifier = Modifier,
 ) {
     Row(
         Modifier.fillMaxWidth().padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (editing) {
+            Box(
+                Modifier.size(26.dp).clip(CircleShape).then(dragModifier),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Filled.DragHandle,
+                    "Arrastar para reordenar",
+                    tint = Tokens.textLow,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+        }
         Cover(pin.thumbnail, 42.dp, radius = 8.dp)
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
@@ -4382,6 +4776,10 @@ private fun QueuePanel(c: AppController, queue: List<Track>, onClose: () -> Unit
     val queueTitle by c.player.queueTitle.collectAsState()
     val idx by c.player.index.collectAsState()
     val upcoming = if (idx >= 0) queue.size - idx - 1 else 0
+    var dragIndex by remember { mutableStateOf<Int?>(null) }
+    var dragOffset by remember { mutableStateOf(0f) }
+    val density = LocalDensity.current
+    var rowHeightPx by remember { mutableStateOf(with(density) { 46.dp.toPx() }) }
 
     Column(
         Modifier.width(300.dp).fillMaxHeight()
@@ -4455,8 +4853,45 @@ private fun QueuePanel(c: AppController, queue: List<Track>, onClose: () -> Unit
             )
         }
         LazyColumn(Modifier.weight(1f)) {
-            itemsIndexed(queue, key = { i, t -> "$i-${t.id}" }) { i, track ->
-                QueueRow(c, track, i, i == idx, i > 0, i < queue.lastIndex)
+            itemsIndexed(queue, key = { i, t -> "q-$i-${t.id}" }) { i, track ->
+                val dragging = dragIndex == i
+                Box(
+                    Modifier.fillMaxWidth()
+                        .zIndex(if (dragging) 1f else 0f)
+                        .offset { IntOffset(0, if (dragging) dragOffset.roundToInt() else 0) }
+                        .onSizeChanged { rowHeightPx = it.height.toFloat() },
+                ) {
+                    QueueRow(
+                        c = c,
+                        track = track,
+                        index = i,
+                        isCurrent = i == idx,
+                        dragModifier = Modifier.pointerInput(queue.size, i) {
+                            detectDragGestures(
+                                onDragStart = {
+                                    dragIndex = i
+                                    dragOffset = 0f
+                                },
+                                onDrag = { change, amount ->
+                                    change.consume()
+                                    dragOffset += amount.y
+                                },
+                                onDragEnd = {
+                                    val steps = (dragOffset / rowHeightPx).roundToInt()
+                                    if (steps != 0) {
+                                        c.moveInQueue(i, (i + steps).coerceIn(0, queue.lastIndex))
+                                    }
+                                    dragIndex = null
+                                    dragOffset = 0f
+                                },
+                                onDragCancel = {
+                                    dragIndex = null
+                                    dragOffset = 0f
+                                },
+                            )
+                        },
+                    )
+                }
             }
         }
     }
@@ -4468,8 +4903,7 @@ private fun QueueRow(
     track: Track,
     index: Int,
     isCurrent: Boolean,
-    canUp: Boolean,
-    canDown: Boolean,
+    dragModifier: Modifier = Modifier,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
@@ -4516,20 +4950,15 @@ private fun QueueRow(
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        IconButton(onClick = { c.moveInQueue(index, index - 1) }, enabled = canUp, modifier = Modifier.size(20.dp)) {
+        Box(
+            Modifier.size(24.dp).clip(CircleShape).then(dragModifier),
+            contentAlignment = Alignment.Center,
+        ) {
             Icon(
-                Icons.Filled.KeyboardArrowUp,
-                "Mover para cima",
-                tint = if (canUp) Tokens.textLow else Tokens.textLow.copy(alpha = 0.3f),
-                modifier = Modifier.size(14.dp),
-            )
-        }
-        IconButton(onClick = { c.moveInQueue(index, index + 1) }, enabled = canDown, modifier = Modifier.size(20.dp)) {
-            Icon(
-                Icons.Filled.KeyboardArrowDown,
-                "Mover para baixo",
-                tint = if (canDown) Tokens.textLow else Tokens.textLow.copy(alpha = 0.3f),
-                modifier = Modifier.size(14.dp),
+                Icons.Filled.DragHandle,
+                "Arrastar para reordenar",
+                tint = Tokens.textLow,
+                modifier = Modifier.size(15.dp),
             )
         }
         Box {
@@ -4729,11 +5158,14 @@ private fun NowPlayingBar(c: AppController, queueOpen: Boolean, onQueue: () -> U
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (radioActive) {
-                IconButton(onClick = { c.stopRadio() }, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Filled.Radio, "Encerrar rádio", tint = Tokens.accent, modifier = Modifier.size(17.dp))
-                }
-            }
+            ToggleIconButton(
+                Icons.Filled.Radio,
+                if (radioActive) "Encerrar rádio (ativa)" else "Iniciar rádio da música",
+                active = radioActive,
+                onClick = { c.toggleCurrentTrackRadio() },
+                size = 30.dp,
+                iconSize = 17.dp,
+            )
             ToggleIconButton(
                 Icons.Filled.Tune,
                 "Equalizador",
@@ -5155,11 +5587,14 @@ private fun NowPlayingScreen(c: AppController) {
                         )
                     }
                 }
-                if (radioActive) {
-                    IconButton(onClick = { c.stopRadio() }, modifier = Modifier.size(38.dp)) {
-                        Icon(Icons.Filled.Radio, "Encerrar rádio", tint = Tokens.accent, modifier = Modifier.size(22.dp))
-                    }
-                }
+                ToggleIconButton(
+                    Icons.Filled.Radio,
+                    if (radioActive) "Encerrar rádio (ativa)" else "Iniciar rádio da música",
+                    active = radioActive,
+                    onClick = { c.toggleCurrentTrackRadio() },
+                    size = 38.dp,
+                    iconSize = 22.dp,
+                )
                 ToggleIconButton(
                     Icons.Filled.Tune,
                     "Equalizador",

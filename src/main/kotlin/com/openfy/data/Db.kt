@@ -474,6 +474,37 @@ class Db(file: Path) : AutoCloseable {
         }
     }
 
+    /** Move uma faixa dentro da playlist e reescreve a ordem (position 1..n). */
+    @Synchronized
+    fun movePlaylistItem(playlistId: String, from: Int, to: Int): Boolean {
+        if (from == to) return false
+        val ids = conn.prepareStatement(
+            "select id from playlist_item where playlist_id=? and deleted=0 order by position asc"
+        ).use { ps ->
+            ps.setString(1, playlistId)
+            ps.executeQuery().use { rs ->
+                buildList { while (rs.next()) add(rs.getString(1)) }
+            }
+        }
+        if (from !in ids.indices || to !in ids.indices) return false
+        val reordered = ids.toMutableList().apply { add(to, removeAt(from)) }
+        val now = System.currentTimeMillis()
+        conn.prepareStatement(
+            "update playlist_item set position=?, updated_at=?, dirty=1 " +
+                "where playlist_id=? and id=?"
+        ).use { ps ->
+            reordered.forEachIndexed { index, id ->
+                ps.setInt(1, index + 1)
+                ps.setLong(2, now)
+                ps.setString(3, playlistId)
+                ps.setString(4, id)
+                ps.addBatch()
+            }
+            ps.executeBatch()
+        }
+        return true
+    }
+
     @Synchronized
     fun playlistTracks(playlistId: String): List<Track> =
         conn.prepareStatement(
