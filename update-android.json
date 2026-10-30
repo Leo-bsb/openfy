@@ -1,5 +1,5 @@
 {
-  "version": "0.7.2",
+  "version": "0.7.1",
   "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.7.1.apk",
   "size": 18393592,
   "notes": "Corrige download duplicado quando a fila automatica e a playlist pedem a mesma faixa. Mantem artista clicavel na aba Downloads, downloads em paralelo e atualizacao dentro do app."
