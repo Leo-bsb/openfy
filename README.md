@@ -274,11 +274,11 @@ Instaladores (usuário atual, sem admin):
 ```
 dist\Openfy-0.3.0.exe
 dist\Openfy-0.3.0.msi
-dist\Openfy-Android-0.7.0.apk
+dist\Openfy-Android-0.7.1.apk
 ```
 
 Páginas (GitHub Pages): https://leo-bsb.github.io/openfy/
-APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.7.0.apk
+APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.7.1.apk
 Manifesto de atualização do Android: https://leo-bsb.github.io/openfy/update-android.json
 Convite de playlist: https://leo-bsb.github.io/openfy/join.html?code=CODIGO
 OAuth: https://leo-bsb.github.io/openfy/oauth/spotify.html ·
@@ -287,7 +287,7 @@ Privacidade/termos: seções `#privacidade` e `#termos` da página inicial
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
 Desktop 0.2.9 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.2.9
-Android 0.7.0 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.7.0.apk
+Android 0.7.1 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.7.1.apk
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos

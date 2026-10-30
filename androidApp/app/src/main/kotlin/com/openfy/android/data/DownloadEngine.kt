@@ -17,7 +17,9 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -54,6 +56,12 @@ object DownloadEngine {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val slots = Semaphore(MAX_PARALLEL)
     private val jobs = ConcurrentHashMap<String, Job>()
+
+    /**
+     * Trava por faixa: a fila automática e o lote da playlist podem pedir a
+     * mesma faixa; sem isso as duas conexões baixariam o mesmo arquivo.
+     */
+    private val trackLocks = ConcurrentHashMap<String, Mutex>()
 
     private val budgetLock = Any()
     private var reservedBytes = 0L
@@ -113,9 +121,12 @@ object DownloadEngine {
     /** Baixa uma faixa e espera o resultado, respeitando o limite de paralelismo. */
     suspend fun download(track: Track): DownloadResult {
         DownloadService.ensureStarted(requireContext())
+        val lock = trackLocks.computeIfAbsent(track.id) { Mutex() }
         _progress.update { it + (track.id to 0f) }
         val result = try {
-            slots.withPermit { downloadGuarded(track, coroutineContext[Job]) }
+            lock.withLock {
+                slots.withPermit { downloadGuarded(track, coroutineContext[Job]) }
+            }
         } finally {
             _progress.update { it - track.id }
         }

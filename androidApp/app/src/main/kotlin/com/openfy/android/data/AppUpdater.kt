@@ -108,6 +108,12 @@ object AppUpdater {
     ): File = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "updates").apply { mkdirs() }
         val target = File(dir, "Openfy-${info.version}.apk")
+        // Já baixado numa tentativa anterior (ex.: faltou permitir a instalação).
+        if (target.isFile && target.length() > 0 &&
+            (info.sizeBytes <= 0 || target.length() == info.sizeBytes)
+        ) {
+            return@withContext target
+        }
         val temp = File(dir, "${target.name}.part")
         runCatching { temp.delete() }
         val connection = (URI(info.apkUrl).toURL().openConnection() as HttpURLConnection).apply {
@@ -151,8 +157,20 @@ object AppUpdater {
         }
     }
 
-    /** Abre o instalador do Android para o APK baixado. */
-    fun install(context: Context, apk: File) {
+    /**
+     * Abre o instalador do Android para o APK baixado.
+     * Retorna false quando o app ainda não pode instalar apps desconhecidos;
+     * nesse caso abre a tela de permissão para o usuário liberar.
+     */
+    fun install(context: Context, apk: File): Boolean {
+        if (!context.packageManager.canRequestPackageInstalls()) {
+            val settings = Intent(
+                android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:${context.packageName}"),
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(settings)
+            return false
+        }
         val uri: Uri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",
@@ -163,6 +181,7 @@ object AppUpdater {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
+        return true
     }
 
     /** `v0.6.0-android` -> `0.6.0`. */

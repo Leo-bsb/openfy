@@ -3811,16 +3811,27 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 val file = com.openfy.android.data.AppUpdater.download(getApplication(), info) { progress ->
                     _state.update { it.copy(updateDownloading = progress) }
                 }
-                com.openfy.android.data.AppUpdater.install(getApplication(), file)
+                val started = com.openfy.android.data.AppUpdater.install(getApplication(), file)
+                started
             }
             _state.update {
-                it.copy(
-                    updateDownloading = null,
-                    message = if (result.isSuccess) "Instalador aberto: confirme para atualizar." else null,
-                    error = result.exceptionOrNull()?.let { error ->
-                        "Falha ao atualizar: ${error.message ?: error.javaClass.simpleName}"
-                    },
-                )
+                when {
+                    result.getOrNull() == true -> it.copy(
+                        updateDownloading = null,
+                        message = "Instalador aberto: confirme para atualizar.",
+                    )
+                    result.getOrNull() == false -> it.copy(
+                        updateDownloading = null,
+                        message = "Permita instalar apps desta fonte e toque em Baixar e instalar de novo.",
+                    )
+                    else -> it.copy(
+                        updateDownloading = null,
+                        error = "Falha ao atualizar: " +
+                            (result.exceptionOrNull()?.message
+                                ?: result.exceptionOrNull()?.javaClass?.simpleName
+                                ?: "erro desconhecido"),
+                    )
+                }
             }
         }
     }
