@@ -3,23 +3,111 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Openfy</title>
+  <title>Openfy — música no PC e no celular</title>
+  <meta name="description" content="Openfy: tocador pessoal de música para Windows e Android, com conta própria, playlists sincronizadas, downloads offline e rádio inteligente.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main class="card">
-    <img class="logo" src="https://raw.githubusercontent.com/Leo-bsb/openfy/main/src/main/resources/logo.png" alt="Openfy" onerror="this.style.display='none'">
-    <h1>Openfy</h1>
-    <p class="muted">Seu tocador pessoal de música, no PC e no celular.</p>
-    <div class="actions">
-      <a class="button" href="https://github.com/Leo-bsb/openfy/releases/tag/v0.2.9">Desktop 0.2.9</a>
-      <a class="button ghost" href="https://github.com/Leo-bsb/openfy/releases/tag/v0.4.2-android">Android 0.4.2</a>
-    </div>
-    <p class="small">
-      Conta própria, sync de playlists e curtidas, perfil com foto, capa e
-      estatísticas, Discord Rich Presence no PC, fila, crossfade, rádio
-      inteligente, recap e aparência personalizável.
-    </p>
+  <header class="topbar">
+    <a class="brand" href="#inicio">
+      <img class="brand-logo" src="https://raw.githubusercontent.com/Leo-bsb/openfy/main/src/main/resources/logo.png" alt="" onerror="this.style.display='none'">
+      <span>Openfy</span>
+    </a>
+    <nav>
+      <a href="#download">Baixar</a>
+      <a href="#recursos">Recursos</a>
+      <a href="#duvidas">Dúvidas</a>
+      <a href="#privacidade">Privacidade</a>
+    </nav>
+  </header>
+
+  <main>
+    <section id="inicio" class="hero">
+      <img class="logo" src="https://raw.githubusercontent.com/Leo-bsb/openfy/main/src/main/resources/logo.png" alt="Openfy" onerror="this.style.display='none'">
+      <h1>Openfy</h1>
+      <p class="lead">Seu tocador pessoal de música, no PC e no celular — com a mesma conta.</p>
+      <div class="actions">
+        <a class="button" href="downloads/Openfy-Android-0.7.0.apk" download>Android 0.7.0 (APK)</a>
+        <a class="button ghost" href="https://github.com/Leo-bsb/openfy/releases/tag/v0.2.9" target="_blank" rel="noopener">Windows 0.2.9</a>
+      </div>
+      <p class="small">Playlists, curtidas, histórico, perfil e ajustes sincronizam entre PC e celular.</p>
+    </section>
+
+    <section id="download" class="section">
+      <h2>Baixar</h2>
+      <div class="grid">
+        <article class="card left">
+          <h3>Android</h3>
+          <p class="muted">APK direto, sem loja. Versão atual <strong>0.7.0</strong>.</p>
+          <p class="muted small">Ao instalar, o Android pode pedir para permitir instalação de apps desconhecidos para o navegador ou gerenciador de arquivos.</p>
+          <div class="actions left">
+            <a class="button" href="downloads/Openfy-Android-0.7.0.apk" download>Baixar APK 0.7.0</a>
+            <a class="button ghost" href="https://github.com/Leo-bsb/openfy/releases" target="_blank" rel="noopener">Versões anteriores</a>
+          </div>
+        </article>
+        <article class="card left">
+          <h3>Windows</h3>
+          <p class="muted">Instalador por usuário, sem precisar de administrador. Última versão publicada: <strong>0.2.9</strong>.</p>
+          <p class="muted small">Também dá para usar a versão portátil (pasta <code>Openfy</code> com <code>Openfy.exe</code>) nas releases. A partir da 0.3.0 o próprio app baixa e instala a atualização.</p>
+          <div class="actions left">
+            <a class="button" href="https://github.com/Leo-bsb/openfy/releases/tag/v0.2.9" target="_blank" rel="noopener">Baixar para Windows</a>
+            <a class="button ghost" href="https://github.com/Leo-bsb/openfy" target="_blank" rel="noopener">Código no GitHub</a>
+          </div>
+        </article>
+      </div>
+      <p class="small center">Atualizações: o Android verifica novas versões dentro do app em <em>Ajustes › Atualizações</em>.</p>
+    </section>
+
+    <section id="recursos" class="section">
+      <h2>O que ele faz</h2>
+      <div class="grid">
+        <article class="card left"><h3>Uma conta, dois aparelhos</h3><p class="muted">Playlists, curtidas, histórico, perfil e ajustes vão e voltam entre PC e celular. Alterações feitas offline entram numa fila e sobem quando a conexão volta, sem ressuscitar exclusões.</p></article>
+        <article class="card left"><h3>Playlists colaborativas</h3><p class="muted">Compartilhe por código ou link. Quem entra vira editor e as mudanças aparecem para todos os membros da playlist.</p></article>
+        <article class="card left"><h3>Download offline</h3><p class="muted">Baixe faixas ou playlists inteiras. Os downloads continuam em segundo plano, com progresso e cancelamento na notificação.</p></article>
+        <article class="card left"><h3>Rádio e mix</h3><p class="muted">Ao terminar uma playlist o som continua numa rádio baseada nela. O mix junta mais ouvidas, curtidas e recentes sem repetir artista em sequência.</p></article>
+        <article class="card left"><h3>Player completo</h3><p class="muted">Fila, crossfade até 15&nbsp;s, equalizador, letras, timer, notificação com avançar/voltar, perfil do artista e perfis com foto, capa e estatísticas.</p></article>
+        <article class="card left"><h3>Sem loja, sem anúncio</h3><p class="muted">App próprio, com contas no Supabase e custos de infraestrutura mantidos pelo autor. Sem venda de dados.</p></article>
+      </div>
+    </section>
+
+    <section id="duvidas" class="section">
+      <h2>Dúvidas rápidas</h2>
+      <div class="grid">
+        <article class="card left"><h3>Como entro numa playlist compartilhada?</h3><p class="muted">Abra o link de convite (<a href="join.html">join.html?code=…</a>) ou cole o código em <em>Suas playlists › ⋮ › Entrar com código</em>. Você entra como editor.</p></article>
+        <article class="card left"><h3>Preciso de conta?</h3><p class="muted">Não. Sem login o app funciona localmente. A conta serve para sincronizar entre aparelhos e compartilhar playlists.</p></article>
+        <article class="card left"><h3>Instalei o APK novo por cima?</h3><p class="muted">Sim. O Android aceita atualizar mantendo dados porque a assinatura é a mesma. Use <em>Ajustes › Atualizações</em> para baixar e instalar direto no app.</p></article>
+        <article class="card left"><h3>Meus downloads estão onde?</h3><p class="muted">No próprio aparelho, dentro do app. Sair da conta não apaga os arquivos; apagar em <em>Ajustes › Downloads</em> libera espaço.</p></article>
+      </div>
+    </section>
+
+    <section id="privacidade" class="section">
+      <h2>Privacidade</h2>
+      <article class="card left">
+        <p class="muted">Última atualização: 30/10/2026.</p>
+        <p>O Openfy funciona localmente sem conta. Se você optar por entrar, sincronizamos apenas metadados: playlists, curtidas, capas, filas, histórico de reprodução (eventos de escuta) e preferências. Arquivos de áudio baixados ficam no seu dispositivo e não são enviados ao servidor.</p>
+        <p>O histórico e o recap são usados para montar suas estatísticas e, se você ativar recursos sociais, compartilhar atividades públicas com pessoas que você segue. Você pode apagar eventos e sua conta.</p>
+        <p>O app usa o Supabase para autenticação, banco e armazenamento de capas. Não vendemos dados.</p>
+      </article>
+    </section>
+
+    <section id="termos" class="section">
+      <h2>Termos</h2>
+      <article class="card left">
+        <p>O Openfy é fornecido como está, sem garantia de disponibilidade contínua. Você é responsável pelo conteúdo que importa e por respeitar os termos das fontes usadas.</p>
+        <p>Não use o app para redistribuir conteúdo protegido. A conta pode ser encerrada em caso de abuso da infraestrutura compartilhada.</p>
+      </article>
+    </section>
   </main>
+
+  <footer>
+    <p>
+      <a href="join.html">Convite de playlist</a> ·
+      <a href="privacy.html">Privacidade</a> ·
+      <a href="terms.html">Termos</a> ·
+      <a href="https://github.com/Leo-bsb/openfy" target="_blank" rel="noopener">GitHub</a> ·
+      <a href="https://github.com/Leo-bsb/openfy/releases" target="_blank" rel="noopener">Releases</a>
+    </p>
+    <p class="small">Openfy — feito para ouvir música do seu jeito.</p>
+  </footer>
 </body>
 </html>
