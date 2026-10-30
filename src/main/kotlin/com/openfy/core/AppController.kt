@@ -709,13 +709,12 @@ class AppController(
             val tracks = runCatching {
                 withContext(Dispatchers.IO) { yt.search("$vibe mix", limit = 40) }
             }.getOrNull().orEmpty()
-            val first = tracks.firstOrNull()
-            if (first == null) {
+            if (tracks.isEmpty()) {
                 message.value = "Não foram encontradas faixas para a vibe $vibe."
                 return@launch
             }
-            startTrackRadio(first)
-            message.value = "Mix $vibe iniciado"
+            playTracks(tracks, 0, "Vibe $vibe")
+            message.value = "Mix $vibe: ${tracks.size} faixas"
         }
     }
 
@@ -1830,7 +1829,8 @@ class AppController(
         extras: ProfileExtras,
         avatarFile: File? = null,
         coverFile: File? = null,
-    ) = account.saveProfile(displayName, extras, avatarFile, coverFile)
+        removeAvatar: Boolean = false,
+    ) = account.saveProfile(displayName, extras, avatarFile, coverFile, removeAvatar)
 
     fun updateProfile(transform: (ProfileExtras) -> ProfileExtras) =
         account.updateProfileExtras(transform)

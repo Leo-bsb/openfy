@@ -3443,6 +3443,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     activePlayer.stop()
                     activePlayer.clearMediaItems()
                 }
+                // Sem faixa atual não há como desligar a rádio pelo botão: zera o estado.
+                resetRadio()
                 _state.update {
                     it.copy(
                         busy = false,

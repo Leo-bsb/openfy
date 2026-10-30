@@ -362,6 +362,7 @@ class AccountManager(
         extras: ProfileExtras,
         avatarFile: java.io.File? = null,
         coverFile: java.io.File? = null,
+        removeAvatar: Boolean = false,
     ) {
         val session = _state.value.session
         if (session == null) {
@@ -380,6 +381,9 @@ class AccountManager(
             var coverUrl = extras.coverUrl
             val result = runCatching {
                 val active = ensureSession() ?: throw SupabaseException(0, "Sessão expirada.")
+                if (removeAvatar && avatarFile == null) {
+                    avatarUrl = ""
+                }
                 if (avatarFile != null) {
                     avatarUrl = api.uploadProfileImage(
                         active.accessToken,

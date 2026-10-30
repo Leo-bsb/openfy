@@ -17,7 +17,6 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.TooltipPlacement
 import androidx.compose.foundation.background
@@ -141,6 +140,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -1280,10 +1280,17 @@ private fun HomeScreen(c: AppController) {
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
                 Row(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    val vibes = listOf("⚡ Treino", "🎯 Foco", "🌙 Relax", "🎉 Festa", "🚗 Viagem")
+                    val vibes = listOf(
+                        "⚡ Treino",
+                        "🎯 Foco",
+                        "🌙 Relax",
+                        "🎉 Festa",
+                        "🚗 Viagem",
+                        "🌧️ Noite",
+                    )
                     vibes.forEach { vibe ->
                         val cleanName = vibe.substringAfter(" ")
                         Button(
@@ -3296,6 +3303,8 @@ private fun ProfileScreen(c: AppController) {
     var bio by remember(editing, extras.bio) { mutableStateOf(extras.bio) }
     var avatarFile by remember { mutableStateOf<File?>(null) }
     var coverFile by remember { mutableStateOf<File?>(null) }
+    var removeAvatar by remember { mutableStateOf(false) }
+    var removeCover by remember { mutableStateOf(false) }
     var pinMenuOpen by remember { mutableStateOf(false) }
     var pinDragIndex by remember { mutableStateOf<Int?>(null) }
     var pinDragOffset by remember { mutableStateOf(0f) }
@@ -3560,11 +3569,19 @@ private fun ProfileScreen(c: AppController) {
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(onClick = {
+                            removeAvatar = false
                             chooseProfileImage("Escolha a foto de perfil")?.let { avatarFile = it }
                         }) {
                             Icon(Icons.Filled.Image, null, modifier = Modifier.size(15.dp))
                             Spacer(Modifier.width(5.dp))
-                            Text(if (avatarFile == null) "Trocar foto" else "Foto escolhida", color = accent)
+                            Text(
+                                when {
+                                    avatarFile != null -> "Foto escolhida"
+                                    removeAvatar -> "Foto será removida"
+                                    else -> "Trocar foto"
+                                },
+                                color = accent,
+                            )
                         }
                         TextButton(onClick = {
                             chooseProfileImage("Escolha a capa do perfil")?.let { coverFile = it }
@@ -3572,6 +3589,23 @@ private fun ProfileScreen(c: AppController) {
                             Icon(Icons.Filled.Image, null, modifier = Modifier.size(15.dp))
                             Spacer(Modifier.width(5.dp))
                             Text(if (coverFile == null) "Trocar capa" else "Capa escolhida", color = accent)
+                        }
+                        if (profile?.avatarUrl?.isNotBlank() == true && avatarFile == null && !removeAvatar) {
+                            TextButton(onClick = { removeAvatar = true }) {
+                                Icon(Icons.Filled.Delete, null, tint = Tokens.textLow, modifier = Modifier.size(15.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("Remover foto", color = Tokens.textLow)
+                            }
+                        }
+                        if (extras.coverUrl.isNotBlank() && coverFile == null) {
+                            TextButton(onClick = { removeCover = !removeCover }) {
+                                Icon(Icons.Filled.Delete, null, tint = Tokens.textLow, modifier = Modifier.size(15.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text(
+                                    if (removeCover) "Manter capa" else "Remover capa",
+                                    color = Tokens.textLow,
+                                )
+                            }
                         }
                     }
                     if (avatarFile != null || coverFile != null) {
@@ -3797,9 +3831,20 @@ private fun ProfileScreen(c: AppController) {
             ) {
                 Button(
                     onClick = {
-                        c.saveProfile(name, extras.copy(bio = bio), avatarFile, coverFile)
+                        c.saveProfile(
+                            name,
+                            extras.copy(
+                                bio = bio,
+                                coverUrl = if (removeCover) "" else extras.coverUrl,
+                            ),
+                            avatarFile,
+                            coverFile,
+                            removeAvatar,
+                        )
                         avatarFile = null
                         coverFile = null
+                        removeAvatar = false
+                        removeCover = false
                         editing = false
                     },
                     enabled = !account.profileBusy,
@@ -3820,6 +3865,8 @@ private fun ProfileScreen(c: AppController) {
                     bio = extras.bio
                     avatarFile = null
                     coverFile = null
+                    removeAvatar = false
+                    removeCover = false
                     editing = false
                 }) {
                     Text("Cancelar", color = Tokens.textLow)
@@ -3849,9 +3896,11 @@ private fun ProfileCover(
         bitmap = ArtworkCache.get(url)
     }
     val image = bitmap
-    val animatedGradient = if (motion) {
-        val transition = rememberInfiniteTransition(label = "profile-cover")
-        val phase by transition.animateFloat(
+    val panelHighColor = Tokens.panelHigh
+    val inkColor = Tokens.ink
+    // A fase só é lida na fase de desenho (drawBehind): anima sem recompor a tela.
+    val phaseState = if (motion) {
+        rememberInfiniteTransition(label = "profile-cover").animateFloat(
             initialValue = 0f,
             targetValue = 1f,
             animationSpec = infiniteRepeatable(
@@ -3860,32 +3909,33 @@ private fun ProfileCover(
             ),
             label = "cover-phase",
         )
-        Brush.linearGradient(
-            colors = listOf(
-                accent.copy(alpha = if (glow) 0.6f else 0.4f),
-                Tokens.panelHigh,
-                Tokens.ink,
-            ),
-            start = Offset(phase * 640f, 0f),
-            end = Offset(640f + phase * 640f, 960f),
-        )
     } else {
-        Brush.linearGradient(
-            listOf(
-                accent.copy(alpha = if (glow) 0.55f else 0.35f),
-                Tokens.panelHigh,
-                Tokens.ink,
-            ),
-        )
+        null
     }
     Box(
-        Modifier.fillMaxSize().background(
+        Modifier.fillMaxSize().drawBehind {
             if (gradient || image == null) {
-                animatedGradient
+                val phase = phaseState?.value ?: 0f
+                val shift = size.width * 0.5f * phase
+                drawRect(
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            accent.copy(alpha = if (glow) 0.55f else 0.35f),
+                            panelHighColor,
+                            inkColor,
+                        ),
+                        start = Offset(shift, 0f),
+                        end = Offset(size.width + shift, size.height),
+                    ),
+                )
             } else {
-                Brush.verticalGradient(listOf(Tokens.panelHigh, Tokens.ink))
-            },
-        ),
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        listOf(panelHighColor, inkColor),
+                    ),
+                )
+            }
+        },
     ) {
         if (image != null) {
             Image(image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
@@ -3896,7 +3946,7 @@ private fun ProfileCover(
                             listOf(
                                 accent.copy(alpha = if (glow) 0.42f else 0.28f),
                                 Color.Transparent,
-                                Tokens.ink.copy(alpha = 0.35f),
+                                inkColor.copy(alpha = 0.35f),
                             ),
                         ),
                     ),
@@ -3906,7 +3956,7 @@ private fun ProfileCover(
         Box(
             Modifier.fillMaxSize().background(
                 Brush.verticalGradient(
-                    listOf(Color.Transparent, Tokens.ink.copy(alpha = 0.78f)),
+                    listOf(Color.Transparent, inkColor.copy(alpha = 0.78f)),
                 ),
             ),
         )

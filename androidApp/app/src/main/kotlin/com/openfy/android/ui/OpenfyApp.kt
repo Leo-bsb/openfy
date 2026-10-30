@@ -123,6 +123,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -2882,7 +2883,8 @@ private fun ProfileScreen(
     } else {
         null
     }
-    val profileRowHeightPx = with(LocalDensity.current) { 44.dp.toPx() }
+    val profileDensity = LocalDensity.current
+    var profileRowHeightPx by remember { mutableStateOf(with(profileDensity) { 44.dp.toPx() }) }
 
     var editing by remember { mutableStateOf(false) }
     var name by remember(editing, profile?.displayName) {
@@ -2892,6 +2894,7 @@ private fun ProfileScreen(
     var avatarUri by remember { mutableStateOf<Uri?>(null) }
     var coverUri by remember { mutableStateOf<Uri?>(null) }
     var removeAvatar by remember { mutableStateOf(false) }
+    var removeCover by remember { mutableStateOf(false) }
     var pinPickerOpen by remember { mutableStateOf(false) }
 
     val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
@@ -3315,9 +3318,7 @@ private fun ProfileScreen(
                             }
                         }
                         if (extras.coverUrl.isNotBlank() && coverUri == null) {
-                            TextButton(onClick = {
-                                viewModel.updateProfileExtras { it.copy(coverUrl = "") }
-                            }) {
+                            TextButton(onClick = { removeCover = !removeCover }) {
                                 Icon(
                                     Icons.Filled.Delete,
                                     null,
@@ -3325,7 +3326,11 @@ private fun ProfileScreen(
                                     modifier = Modifier.size(15.dp),
                                 )
                                 Spacer(Modifier.width(4.dp))
-                                Text("Remover capa", color = OpenfyTextLow, fontSize = 11.sp)
+                                Text(
+                                    if (removeCover) "Manter capa" else "Remover capa",
+                                    color = OpenfyTextLow,
+                                    fontSize = 11.sp,
+                                )
                             }
                         }
                     }
@@ -3400,7 +3405,8 @@ private fun ProfileScreen(
             ProfileCard("Cartões de estatística") {
                 order.forEachIndexed { index, id ->
                     Row(
-                        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                            .onSizeChanged { profileRowHeightPx = it.height.toFloat() },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(
@@ -3472,7 +3478,7 @@ private fun ProfileScreen(
                     }
                 }
                 Text(
-                    "Arraste pelo ícone ⠿ ou use as setas para mudar a ordem.",
+                    "Segure e arraste pelo ícone ⠿ ou use as setas para mudar a ordem.",
                     color = OpenfyTextLow,
                     fontSize = 10.sp,
                     modifier = Modifier.padding(top = 6.dp),
@@ -3488,7 +3494,7 @@ private fun ProfileScreen(
                 }
                 Text(
                     "${extras.pins.size}/${ProfileExtras.PIN_LIMIT} fixadas. " +
-                        "Arraste pelo ícone ⠿ ou use as setas para mudar a ordem.",
+                        "Segure e arraste pelo ícone ⠿ ou use as setas para mudar a ordem.",
                     color = OpenfyTextLow,
                     fontSize = 10.sp,
                     modifier = Modifier.padding(top = 6.dp),
@@ -3503,12 +3509,16 @@ private fun ProfileScreen(
                     onClick = {
                         viewModel.saveProfile(
                             name,
-                            extras.copy(bio = bio),
+                            extras.copy(
+                                bio = bio,
+                                coverUrl = if (removeCover) "" else extras.coverUrl,
+                            ),
                             avatarUri,
                             coverUri,
                             removeAvatar,
                         )
                         removeAvatar = false
+                        removeCover = false
                         avatarUri = null
                         coverUri = null
                     },
@@ -3530,6 +3540,8 @@ private fun ProfileScreen(
                     bio = extras.bio
                     avatarUri = null
                     coverUri = null
+                    removeAvatar = false
+                    removeCover = false
                     editing = false
                 }) {
                     Text("Cancelar", color = OpenfyTextLow)
@@ -3652,9 +3664,11 @@ private fun ProfilePinRow(
     onDragSteps: (Int) -> Unit,
     onRemove: () -> Unit,
 ) {
-    val rowHeightPx = with(LocalDensity.current) { 44.dp.toPx() }
+    val pinDensity = LocalDensity.current
+    var rowHeightPx by remember { mutableStateOf(with(pinDensity) { 44.dp.toPx() }) }
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        Modifier.fillMaxWidth().padding(vertical = 2.dp)
+            .onSizeChanged { rowHeightPx = it.height.toFloat() },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CoverImage(pin.thumbnail, 40.dp, 7.dp)
@@ -4660,7 +4674,8 @@ private fun QueueDialog(
     var saveOpen by remember { mutableStateOf(false) }
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
     var dragOffsetY by remember { mutableStateOf(0f) }
-    val queueRowHeightPx = with(LocalDensity.current) { 54.dp.toPx() }
+    val queueDensity = LocalDensity.current
+    var queueRowHeightPx by remember { mutableStateOf(with(queueDensity) { 54.dp.toPx() }) }
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = OpenfyPanelHigh,
@@ -4762,6 +4777,7 @@ private fun QueueDialog(
                             Modifier.fillMaxWidth()
                                 .zIndex(if (dragging) 1f else 0f)
                                 .offset { IntOffset(0, if (dragging) dragOffsetY.roundToInt() else 0) }
+                                .onSizeChanged { queueRowHeightPx = it.height.toFloat() }
                                 .clickable {
                                     viewModel.playQueueIndex(index)
                                     onDismiss()
