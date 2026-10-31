@@ -1,7 +1,7 @@
 {
-  "version": "0.5.0",
-  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.5.0/Openfy-0.5.0.exe",
-  "size": 175557632,
-  "sha256": "912554c8394b0d9895bf29f11607a520595c97bf2721eae5435554b04afabc15",
-  "notes": "Radio como playlist temporaria com tocar/aleatorio/salvar/baixar, comunidade com seguir e playlists publicas, busca novas do perfil, importacao por link do Spotify e recap com imagem."
+  "version": "0.5.1",
+  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.5.1/Openfy-0.5.1.exe",
+  "size": 175586304,
+  "sha256": "0a0555ad51ca43a1ddf8d53ee451ecfca647ee6c06f8fd02cc692f3bf047c941",
+  "notes": "Corrige convite e compartilhamento de playlist, evita o erro de permissao ao sincronizar playlists de outra conta e adiciona as novidades dos artistas mais ouvidos."
 }
