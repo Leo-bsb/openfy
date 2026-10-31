@@ -170,6 +170,7 @@ import com.openfy.core.ProfilePin
 import com.openfy.core.ProfileStatsCards
 import com.openfy.core.ProfileStatsData
 import com.openfy.core.ProfileStatsVisibility
+import com.openfy.core.RadioList
 import com.openfy.core.RemoteCollection
 import com.openfy.core.RepeatMode
 import com.openfy.core.SearchMode
@@ -236,6 +237,11 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
     var tab by remember { mutableStateOf(0) }
     var playerOpen by remember { mutableStateOf(false) }
     var profileOpen by remember { mutableStateOf(false) }
+
+    // Abrir rádio/comunidade pelos menus deve fechar o player por cima.
+    LaunchedEffect(state.radioScreenOpen, state.communityOpen) {
+        if (state.radioScreenOpen || state.communityOpen) playerOpen = false
+    }
     var addToPlaylistTrack by remember { mutableStateOf<Track?>(null) }
     var createPlaylistFor by remember { mutableStateOf<Track?>(null) }
     val snackbar = remember { SnackbarHostState() }
@@ -319,6 +325,16 @@ private fun MainShell(state: AuthUiState, viewModel: AuthViewModel) {
             },
         ) { padding ->
             when {
+                state.radioScreenOpen -> RadioScreen(
+                    state,
+                    viewModel,
+                    Modifier.padding(padding),
+                )
+                state.communityOpen -> CommunityScreen(
+                    state,
+                    viewModel,
+                    Modifier.padding(padding),
+                )
                 profileOpen -> ProfileScreen(
                     state,
                     viewModel,
@@ -647,37 +663,6 @@ private fun HomeScreen(
                         tint = OpenfyAccent,
                         modifier = Modifier.size(28.dp),
                     )
-                }
-            }
-        }
-
-        item {
-            Column(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 4.dp)) {
-                Text(
-                    "Mix por vibes",
-                    color = OpenfyTextHigh,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                LazyRow(
-                    Modifier.fillMaxWidth().padding(top = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    val vibes = listOf("⚡ Treino", "🎯 Foco", "🌙 Relax", "🎉 Festa", "🚗 Viagem", "🌧️ Noite")
-                    items(vibes) { vibe ->
-                        val cleanName = vibe.substringAfter(" ")
-                        Button(
-                            onClick = { viewModel.startVibeMix(cleanName) },
-                            shape = RoundedCornerShape(16.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = OpenfyPanelHigh,
-                                contentColor = OpenfyTextHigh,
-                            ),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        ) {
-                            Text(vibe, fontSize = 12.sp)
-                        }
-                    }
                 }
             }
         }
@@ -2137,6 +2122,28 @@ private fun PlaylistDetailScreen(
                         },
                     )
                     DropdownMenuItem(
+                        text = { Text("Playlist pública") },
+                        leadingIcon = { Icon(Icons.Filled.Public, null) },
+                        onClick = {
+                            menuOpen = false
+                            viewModel.setPlaylistVisibility(
+                                state.openPlaylist?.id.orEmpty(),
+                                true,
+                            )
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Playlist privada") },
+                        leadingIcon = { Icon(Icons.Filled.Lock, null) },
+                        onClick = {
+                            menuOpen = false
+                            viewModel.setPlaylistVisibility(
+                                state.openPlaylist?.id.orEmpty(),
+                                false,
+                            )
+                        },
+                    )
+                    DropdownMenuItem(
                         text = { Text("Excluir playlist", color = MaterialTheme.colorScheme.error) },
                         leadingIcon = {
                             Icon(
@@ -2692,6 +2699,14 @@ private fun RecapScreen(
             }
         }
         item {
+            TextButton(
+                onClick = { viewModel.shareRecap() },
+                enabled = state.recap != null,
+            ) {
+                Text("Compartilhar imagem", color = OpenfyAccent, fontSize = 12.sp)
+            }
+        }
+        item {
             val months = state.recapMonths.ifEmpty { listOf(state.recapMonth) }
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 items(months) { month ->
@@ -2750,6 +2765,18 @@ private fun RecapScreen(
                         RecapMetric("Minutos", ((listening?.playedMs ?: 0) / 60_000).toString(), Modifier.weight(1f))
                         RecapMetric("Execuções", (listening?.plays ?: 0).toString(), Modifier.weight(1f))
                         RecapMetric("Faixas", (listening?.uniqueTracks ?: 0).toString(), Modifier.weight(1f))
+                    }
+                }
+                item {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val plays = (listening?.plays ?: 0L).coerceAtLeast(1L)
+                        val conclusion = ((listening?.completedPlays ?: 0L) * 100 / plays).toInt()
+                        val skip = ((listening?.skippedPlays ?: 0L) * 100 / plays).toInt()
+                        RecapMetric("Conclusão", "$conclusion%", Modifier.weight(1f))
+                        RecapMetric("Pulos", "$skip%", Modifier.weight(1f))
                     }
                 }
                 if (recap.topTracks.isNotEmpty()) {
@@ -2951,6 +2978,31 @@ private fun ProfileScreen(
 
     LaunchedEffect(Unit) { viewModel.loadProfileStats() }
 
+    // Bio salva sozinha; o botão continua para nome, foto e capa.
+    LaunchedEffect(bio, editing) {
+        if (editing && bio != extras.bio) {
+            kotlinx.coroutines.delay(800)
+            viewModel.updateProfileExtras { it.copy(bio = bio) }
+        }
+    }
+
+    // Só sai do modo de edição quando o servidor confirmou o perfil.
+    LaunchedEffect(state.profileStatus) {
+        if (state.profileStatus == "Perfil atualizado.") {
+            editing = false
+            avatarUri = null
+            coverUri = null
+            removeAvatar = false
+            removeCover = false
+        }
+    }
+    LaunchedEffect(state.profileStatus) {
+        if (state.profileStatus == "Perfil atualizado.") {
+            kotlinx.coroutines.delay(4_000)
+            viewModel.clearProfileStatus()
+        }
+    }
+
     val order = ProfileStatsCards.sanitizeOrder(extras.statsOrder)
     val hidden = extras.statsHidden.toSet()
     val visibleCards = order.filter { it !in hidden }
@@ -2978,10 +3030,13 @@ private fun ProfileScreen(
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    "Sincroniza com o desktop. Visível só para você até o social ser liberado.",
+                    "Nome, foto e playlists públicas aparecem para quem te segue.",
                     color = OpenfyTextLow,
                     fontSize = 10.sp,
                 )
+            }
+            TextButton(onClick = { viewModel.openCommunity() }) {
+                Text("Comunidade", color = OpenfyTextLow, fontSize = 11.sp)
             }
             TextButton(onClick = {
                 if (editing) {
@@ -3699,10 +3754,6 @@ private fun ProfileScreen(
                             coverUri,
                             removeAvatar,
                         )
-                        removeAvatar = false
-                        removeCover = false
-                        avatarUri = null
-                        coverUri = null
                     },
                     enabled = !state.profileBusy,
                 ) {
@@ -5385,6 +5436,335 @@ private fun LyricsDialog(
             }
         },
     )
+}
+
+@Composable
+private fun RadioScreen(
+    state: AuthUiState,
+    viewModel: AuthViewModel,
+    modifier: Modifier = Modifier,
+) {
+    var saveOpen by remember { mutableStateOf(false) }
+    var name by remember(state.radioTitle) { mutableStateOf("") }
+
+    Column(modifier.fillMaxSize().padding(horizontal = 14.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { viewModel.closeRadio() }) {
+                Icon(
+                    Icons.Filled.ArrowBack,
+                    "Voltar",
+                    tint = OpenfyTextHigh,
+                )
+            }
+            CoverImage(
+                state.radioTracks.firstOrNull()?.thumbnail.orEmpty(),
+                64.dp,
+                10.dp,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "RÁDIO",
+                    color = OpenfyAccent,
+                    fontSize = 10.sp,
+                    letterSpacing = 1.2.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    state.radioTitle.ifBlank { "Rádio" },
+                    color = OpenfyTextHigh,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    RadioList.subtitle(state.radioTracks.size),
+                    color = OpenfyTextLow,
+                    fontSize = 11.sp,
+                )
+            }
+        }
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Button(
+                onClick = { viewModel.playPreparedRadio(false) },
+                enabled = state.radioTracks.isNotEmpty(),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+            ) { Text("Tocar") }
+            TextButton(
+                onClick = { viewModel.playPreparedRadio(true) },
+                enabled = state.radioTracks.isNotEmpty(),
+            ) { Text("Aleatório", color = OpenfyAccent) }
+            TextButton(
+                onClick = {
+                    name = RadioList.defaultPlaylistName(
+                        state.radioTracks.firstOrNull()?.title,
+                    )
+                    saveOpen = true
+                },
+                enabled = state.radioTracks.isNotEmpty(),
+            ) { Text("Salvar playlist", color = OpenfyTextLow) }
+            TextButton(
+                onClick = { viewModel.downloadRadio() },
+                enabled = state.radioTracks.isNotEmpty(),
+            ) { Text("Baixar", color = OpenfyTextLow) }
+            TextButton(
+                onClick = { viewModel.loadMoreRadio() },
+                enabled = !state.radioPreparing,
+            ) { Text("Mais faixas", color = OpenfyTextLow) }
+        }
+        if (state.radioPreparing) {
+            Row(
+                Modifier.padding(vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(
+                    Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = OpenfyAccent,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Montando a rádio…", color = OpenfyTextLow, fontSize = 12.sp)
+            }
+        } else if (state.radioTracks.isEmpty()) {
+            Text(
+                "Não foi possível montar a rádio agora.",
+                color = OpenfyTextLow,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+        LazyColumn(Modifier.weight(1f)) {
+            itemsIndexed(state.radioTracks, key = { _, t -> "radio-${t.id}" }) { index, track ->
+                TrackRow(
+                    track = track,
+                    isCurrent = state.track?.id == track.id,
+                    liked = track.id in state.likedIds,
+                    onPlay = { viewModel.playTracks(state.radioTracks, index) },
+                    onLike = { viewModel.toggleLike(track) },
+                    onPlayNext = { viewModel.playNext(track) },
+                    onAddQueue = { viewModel.addToQueue(track) },
+                    onAddPlaylist = { },
+                    onRadio = { viewModel.startRadioFor(track) },
+                    downloaded = track.id in state.downloadedIds,
+                    downloadProgress = state.downloadProgress[track.id],
+                    onDownload = { viewModel.startDownload(track) },
+                    onCancelDownload = { viewModel.cancelDownload(track.id) },
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+            item { Spacer(Modifier.height(24.dp)) }
+        }
+    }
+
+    if (saveOpen) {
+        AlertDialog(
+            onDismissRequest = { saveOpen = false },
+            containerColor = OpenfyPanelHigh,
+            title = { Text("Salvar rádio como playlist", color = OpenfyTextHigh) },
+            text = {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(80) },
+                    singleLine = true,
+                    label = { Text("Nome") },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        saveOpen = false
+                        viewModel.saveRadioPlaylist(name)
+                    },
+                ) { Text("Salvar", color = OpenfyAccent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { saveOpen = false }) {
+                    Text("Cancelar", color = OpenfyTextLow)
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun CommunityScreen(
+    state: AuthUiState,
+    viewModel: AuthViewModel,
+    modifier: Modifier = Modifier,
+) {
+    var tab by remember { mutableStateOf(0) }
+    var query by remember { mutableStateOf(state.communityQuery) }
+    val people = when (tab) {
+        0 -> state.following
+        1 -> state.followers
+        else -> state.communityResults
+    }
+    val followingIds = remember(state.following) {
+        state.following.mapTo(HashSet()) { it.id }
+    }
+
+    Column(modifier.fillMaxSize().padding(horizontal = 14.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { viewModel.closeCommunity() }) {
+                Icon(
+                    Icons.Filled.ArrowBack,
+                    "Voltar",
+                    tint = OpenfyTextHigh,
+                )
+            }
+            Text(
+                "Comunidade",
+                color = OpenfyTextHigh,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("Seguindo", "Seguidores", "Descobrir").forEachIndexed { index, label ->
+                TextButton(onClick = { tab = index }) {
+                    Text(
+                        label,
+                        color = if (tab == index) OpenfyAccent else OpenfyTextLow,
+                        fontWeight = if (tab == index) FontWeight.SemiBold else FontWeight.Normal,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+        if (tab == 2) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = {
+                    query = it
+                    viewModel.searchPeople(it)
+                },
+                singleLine = true,
+                placeholder = { Text("Nome ou @handle", fontSize = 12.sp) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (state.communityBusy) {
+            LinearProgressIndicator(
+                Modifier.fillMaxWidth().padding(top = 6.dp),
+                color = OpenfyAccent,
+            )
+        }
+        LazyColumn(Modifier.weight(1f)) {
+            items(people, key = { "${tab}-${it.id}" }) { person ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CoverImage(person.avatarUrl, 40.dp, 20.dp)
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            person.displayName.ifBlank { person.handle },
+                            color = OpenfyTextHigh,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "@${person.handle}",
+                            color = OpenfyTextLow,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    TextButton(
+                        onClick = {
+                            viewModel.setFollow(person, person.id !in followingIds)
+                        },
+                        enabled = !state.communityBusy,
+                    ) {
+                        Text(
+                            if (person.id in followingIds) "Deixar de seguir" else "Seguir",
+                            color = if (person.id in followingIds) OpenfyTextLow else OpenfyAccent,
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+            }
+            if (tab == 0) {
+                item {
+                    Text(
+                        "Playlists públicas de quem você segue",
+                        color = OpenfyTextHigh,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+                    )
+                }
+                if (state.publicPlaylists.isEmpty()) {
+                    item {
+                        Text(
+                            "Ninguém que você segue publicou playlists ainda.",
+                            color = OpenfyTextLow,
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+                items(state.publicPlaylists, key = { "pub-${it.id}" }) { playlist ->
+                    val owner = state.following.firstOrNull { it.id == playlist.ownerId }
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CoverImage(playlist.coverUrl, 42.dp, 8.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                playlist.name,
+                                color = OpenfyTextHigh,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                owner?.displayName?.ifBlank { owner.handle }
+                                    ?: "Playlist pública",
+                                color = OpenfyTextLow,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        TextButton(onClick = { viewModel.playPublicPlaylist(playlist) }) {
+                            Text("Ouvir", color = OpenfyAccent, fontSize = 11.sp)
+                        }
+                        TextButton(onClick = { viewModel.copyPublicPlaylist(playlist) }) {
+                            Text("Copiar para minha conta", color = OpenfyTextLow, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+            state.communityStatus?.let { status ->
+                item {
+                    Text(
+                        status,
+                        color = OpenfyTextLow,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                }
+            }
+            item { Spacer(Modifier.height(24.dp)) }
+        }
+    }
 }
 
 @Composable

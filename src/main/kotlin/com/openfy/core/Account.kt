@@ -5,6 +5,8 @@ import com.openfy.data.PushPlaybackState
 import com.openfy.data.RemoteAuthSession
 import com.openfy.data.RemotePlaybackState
 import com.openfy.data.RemoteProfile
+import com.openfy.data.RemotePublicPlaylist
+import com.openfy.data.RemoteTrack
 import com.openfy.data.SupabaseApi
 import com.openfy.data.SupabaseException
 import kotlinx.coroutines.CoroutineScope
@@ -51,6 +53,13 @@ data class AccountState(
     val error: String? = null,
     val lastSync: String? = null,
     val remotePlayback: RemotePlaybackState? = null,
+    val following: List<RemoteProfile> = emptyList(),
+    val followers: List<RemoteProfile> = emptyList(),
+    val publicPlaylists: List<RemotePublicPlaylist> = emptyList(),
+    val communityBusy: Boolean = false,
+    val communityStatus: String? = null,
+    val communityQuery: String = "",
+    val communityResults: List<RemoteProfile> = emptyList(),
 )
 
 /** Snapshot local de fila/posição; a conta completa com usuário e device. */
@@ -111,6 +120,7 @@ class AccountManager(
     private var settingsActivityId: String? = null
     private var settingsSaveJob: Job? = null
     private var profileStatsJob: Job? = null
+    private var communityJob: Job? = null
 
     init {
         restore()
@@ -553,6 +563,153 @@ class AccountManager(
     fun clearProfileStatus() {
         _state.update { it.copy(profileStatus = null) }
     }
+
+    // ------------------------------------------------------------------ social
+
+    /** Carrega quem eu sigo, quem me segue e o feed de playlists públicas. */
+    fun loadCommunity() {
+        val session = _state.value.session ?: return
+        if (_state.value.communityBusy) return
+        communityJob?.cancel()
+        communityJob = scope.launch {
+            _state.update { it.copy(communityBusy = true) }
+            val result = runCatching {
+                val active = ensureSession() ?: throw SupabaseException(0, "Sessão expirada.")
+                val following = api.followingIds(active.accessToken, active.userId)
+                val followers = api.followerIds(active.accessToken, active.userId)
+                val people = api.profiles(active.accessToken, (following + followers).distinct())
+                val byId = people.associateBy { it.id }
+                val feed = api.publicPlaylists(active.accessToken, following)
+                Triple(following.mapNotNull { byId[it] }, followers.mapNotNull { byId[it] }, feed)
+            }
+            result.onSuccess { (following, followers, feed) ->
+                _state.update {
+                    it.copy(
+                        following = following,
+                        followers = followers,
+                        publicPlaylists = feed,
+                        communityBusy = false,
+                        communityStatus = if (following.isEmpty()) {
+                            "Você ainda não segue ninguém. Busque por nome ou @handle."
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        communityBusy = false,
+                        communityStatus = error.message
+                            ?: "Não foi possível carregar a comunidade.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun searchPeople(query: String) {
+        _state.update { it.copy(communityQuery = query) }
+        val clean = query.trim()
+        if (clean.length < 2) {
+            _state.update { it.copy(communityResults = emptyList()) }
+            return
+        }
+        scope.launch {
+            val found = runCatching {
+                val active = ensureSession() ?: return@runCatching emptyList()
+                api.searchProfiles(active.accessToken, clean).filter { it.id != active.userId }
+            }.getOrDefault(emptyList())
+            _state.update { it.copy(communityResults = found) }
+        }
+    }
+
+    fun setFollow(target: RemoteProfile, follow: Boolean) {
+        if (_state.value.session == null) return
+        scope.launch {
+            _state.update { it.copy(communityBusy = true) }
+            val ok = runCatching {
+                val active = ensureSession() ?: return@runCatching false
+                if (follow) {
+                    api.follow(active.accessToken, active.userId, target.id)
+                } else {
+                    api.unfollow(active.accessToken, active.userId, target.id)
+                }
+            }.getOrDefault(false)
+            if (!ok) {
+                _state.update {
+                    it.copy(
+                        communityBusy = false,
+                        communityStatus = if (follow) {
+                            "Não foi possível seguir agora."
+                        } else {
+                            "Não foi possível deixar de seguir agora; veja docs/SQL-SOCIAL.md."
+                        },
+                    )
+                }
+                return@launch
+            }
+            val label = target.displayName.ifBlank { target.handle }
+            _state.update { state ->
+                if (follow) {
+                    state.copy(
+                        following = (state.following + target).distinctBy { it.id },
+                        communityBusy = false,
+                        communityStatus = "Seguindo $label.",
+                    )
+                } else {
+                    state.copy(
+                        following = state.following.filterNot { it.id == target.id },
+                        communityBusy = false,
+                        communityStatus = "Deixou de seguir $label.",
+                    )
+                }
+            }
+            loadCommunity()
+        }
+    }
+
+    /** Muda a visibilidade de uma playlist própria (só vale para o dono). */
+    fun setPlaylistVisibility(playlistId: String, isPublic: Boolean) {
+        if (_state.value.session == null) return
+        scope.launch {
+            val ok = runCatching {
+                val active = ensureSession() ?: return@runCatching false
+                api.setPlaylistVisibility(active.accessToken, playlistId, isPublic)
+                true
+            }.getOrDefault(false)
+            _state.update {
+                it.copy(
+                    status = if (ok) {
+                        if (isPublic) "Playlist pública: aparece para quem te segue." else "Playlist privada."
+                    } else {
+                        "Não foi possível mudar a visibilidade da playlist."
+                    },
+                )
+            }
+            if (ok) loadCommunity()
+        }
+    }
+
+    /** Faixas de uma playlist pública, na ordem do servidor. */
+    suspend fun publicPlaylistTracks(playlistId: String): List<Track> {
+        val active = ensureSession() ?: return emptyList()
+        val items = api.items(active.accessToken, listOf(playlistId))
+            .sortedWith(compareBy({ it.rank }, { it.id }))
+        val ids = items.map { it.trackId }
+        if (ids.isEmpty()) return emptyList()
+        val byId = api.tracks(active.accessToken, ids).associateBy { it.id }
+        return ids.mapNotNull { id -> byId[id]?.let(::remoteTrack) }
+    }
+
+    private fun remoteTrack(remote: RemoteTrack): Track = Track(
+        id = remote.id,
+        title = remote.title,
+        artist = remote.artist,
+        album = remote.album,
+        durationSec = remote.duration,
+        thumbnail = remote.thumbnail,
+    )
 
     fun signIn(email: String, password: String) {
         if (email.isBlank() || password.length < 6) {

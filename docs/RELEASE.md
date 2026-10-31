@@ -1,6 +1,6 @@
 # RELEASE — checklist do desktop
 
-Versão atual: **0.4.0** (mesmo número em `BuildInfo.VERSION`, `version` e
+Versão atual: **0.5.0** (mesmo número em `BuildInfo.VERSION`, `version` e
 `packageVersion` no `build.gradle.kts`). O verificador de atualizações do app
 (`UpdateChecker`) consulta primeiro o manifesto
 `https://leo-bsb.github.io/openfy/update-desktop.json`; se ele falhar, cai nas
@@ -58,10 +58,10 @@ Get-FileHash build\compose\binaries\main\msi\Openfy-*.msi -Algorithm SHA256
   **antes** do JSON):
   ```json
   {
-    "version": "0.4.0",
-    "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.4.0/Openfy-0.4.0.exe",
-    "size": 175373312,
-    "sha256": "3e3283…cbb0",
+    "version": "0.5.0",
+    "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.5.0/Openfy-0.5.0.exe",
+    "size": 175557632,
+    "sha256": "912554…bc15",
     "notes": "resumo curto em uma linha"
   }
   ```

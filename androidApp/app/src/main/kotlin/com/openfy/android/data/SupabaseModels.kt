@@ -87,8 +87,38 @@ data class PlaylistDto(
     val name: String = "",
     @SerialName("updated_at") val updatedAt: String? = null,
     @SerialName("cover_url") val coverUrl: String = "",
+    @SerialName("owner_id") val ownerId: String = "",
+    /** "private" | "public"; vazio quando o servidor ainda não tem a migration. */
+    val visibility: String = "",
     val deleted: Boolean = false,
 )
+
+/** Playlist pública de outra conta, vista na Comunidade. */
+@Serializable
+data class PublicPlaylist(
+    val id: String = "",
+    @SerialName("owner_id") val ownerId: String = "",
+    val name: String = "",
+    val description: String = "",
+    @SerialName("cover_url") val coverUrl: String = "",
+    @SerialName("updated_at") val updatedAt: String? = null,
+    val visibility: String = "",
+)
+
+@Serializable
+data class FollowRow(
+    @SerialName("follower_id") val followerId: String = "",
+    @SerialName("followed_id") val followedId: String = "",
+)
+
+@Serializable
+data class FollowBody(
+    @SerialName("follower_id") val followerId: String,
+    @SerialName("followed_id") val followedId: String,
+)
+
+@Serializable
+data class VisibilityPatch(val visibility: String)
 
 @Serializable
 data class RemotePlaylistItem(

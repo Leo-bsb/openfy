@@ -4,6 +4,8 @@ import com.openfy.data.Db
 import com.openfy.data.Downloader
 import com.openfy.data.LyricLine
 import com.openfy.data.LyricsClient
+import com.openfy.data.RemoteProfile
+import com.openfy.data.SpotifyClient
 import com.openfy.data.UpdateChecker
 import com.openfy.data.UpdateInstaller
 import com.openfy.data.UpdateStatus
@@ -42,6 +44,8 @@ sealed interface Screen {
     data object Downloads : Screen
     data object Profile : Screen
     data object Settings : Screen
+    data object Radio : Screen
+    data object Community : Screen
     data class PlaylistView(val id: String) : Screen
     data class ArtistView(val id: String) : Screen
     data class RemoteCollection(val id: String) : Screen
@@ -286,6 +290,7 @@ class AppController(
 
     fun go(target: Screen) {
         if (screen.value == target) return
+        if (target == Screen.Radio || target == Screen.Community) closeNowPlaying()
         backStack.addLast(screen.value)
         forwardStack.clear()
         screen.value = target
@@ -343,6 +348,7 @@ class AppController(
             Screen.Home -> loadStats()
             Screen.TopPlayed -> loadTopPlayed()
             Screen.Recap -> loadRecap()
+            Screen.Community -> account.loadCommunity()
             else -> Unit
         }
     }
@@ -363,6 +369,8 @@ class AppController(
         Screen.Downloads -> "downloads"
         Screen.Profile -> "profile"
         Screen.Settings -> "settings"
+        Screen.Radio -> "radio"
+        Screen.Community -> "community"
         is Screen.PlaylistView -> "playlist:${s.id}"
         is Screen.ArtistView -> "artist:${s.id}"
         is Screen.RemoteCollection -> "remote:${s.id}"
@@ -380,6 +388,8 @@ class AppController(
         token == "downloads" -> Screen.Downloads
         token == "profile" -> Screen.Profile
         token == "settings" -> Screen.Settings
+        token == "radio" -> Screen.Radio
+        token == "community" -> Screen.Community
         token.startsWith("playlist:") -> Screen.PlaylistView(token.removePrefix("playlist:"))
         token.startsWith("artist:") -> Screen.ArtistView(token.removePrefix("artist:"))
         token.startsWith("remote:") -> Screen.RemoteCollection(token.removePrefix("remote:"))
@@ -689,10 +699,41 @@ class AppController(
     // ------------------------------------------------------------------ radio
     fun startTrackRadio(track: Track) {
         scope.launch(Dispatchers.IO) { db.remember(track) }
-        player.playThenRadio(track)
-        message.value = "Rádio: ${track.title}"
+        player.prepareRadio(track, RadioList.titleForTrack(track))
+        go(Screen.Radio)
     }
 
+    fun openRadio() = go(Screen.Radio)
+
+    fun playRadio(shuffle: Boolean = false) {
+        if (player.radioTracks.value.isEmpty()) return
+        player.playRadio(shuffle)
+        message.value = if (shuffle) "Rádio em modo aleatório." else "Tocando a rádio."
+    }
+
+    fun loadMoreRadio() = player.loadMoreRadio()
+
+    fun saveRadioPlaylist(name: String) {
+        val tracks = player.radioTracks.value
+        if (tracks.isEmpty()) return
+        val clean = name.trim().take(80)
+            .ifBlank { RadioList.defaultPlaylistName(player.radioSeedTrack.value?.title) }
+        scope.launch {
+            val id = withContext(Dispatchers.IO) { db.createPlaylist(clean).id }
+            withContext(Dispatchers.IO) { tracks.forEach { db.addToPlaylist(id, it) } }
+            refreshLibrary()
+            account.requestSync()
+            message.value = "Playlist \"$clean\" criada com ${tracks.size} faixas."
+        }
+    }
+
+    fun downloadRadio() {
+        val tracks = player.radioTracks.value
+        if (tracks.isEmpty()) return
+        downloadTracks(tracks)
+    }
+
+    /** Mantido para o atalho do player: encerra ou monta a rádio da faixa atual. */
     fun toggleCurrentTrackRadio() {
         if (player.radioActive.value) {
             stopRadio()
@@ -708,26 +749,15 @@ class AppController(
         message.value = "Rádio da playlist: $label"
     }
 
-    fun startVibeMix(vibe: String) {
-        scope.launch {
-            message.value = "Carregando mix $vibe..."
-            val tracks = runCatching {
-                withContext(Dispatchers.IO) { yt.search("$vibe mix", limit = 40) }
-            }.getOrNull().orEmpty()
-            if (tracks.isEmpty()) {
-                message.value = "Não foram encontradas faixas para a vibe $vibe."
-                return@launch
-            }
-            playTracks(tracks, 0, "Vibe $vibe")
-            message.value = "Mix $vibe: ${tracks.size} faixas"
-        }
-    }
-
     fun startArtistRadio() {
         val page = artistPage.value ?: return
         val videoId = page.radioVideoId ?: page.topTracks.firstOrNull()?.id ?: return
         val playlistId = page.radioPlaylistId ?: "RDAMVM$videoId"
-        startRadio(videoId, playlistId, page.name)
+        val seed = page.topTracks.firstOrNull { it.id == videoId } ?: page.topTracks.first()
+        player.prepareRadio(seed, RadioList.titleForArtist(page.name)) {
+            withContext(Dispatchers.IO) { yt.radio(videoId, playlistId) }
+        }
+        go(Screen.Radio)
     }
 
     private fun startRadio(videoId: String, playlistId: String, label: String) {
@@ -1285,10 +1315,21 @@ class AppController(
         }
     }
 
-    fun importYtmUrl(url: String) {
-        val browse = Importer.parseYtmBrowseId(url)
+    /** Importa por link: playlist/álbum do YouTube Music ou playlist pública do Spotify. */
+    fun importLink(url: String) {
+        val clean = url.trim()
+        if (clean.isEmpty()) {
+            importStatus.value = "Cole um link de playlist."
+            return
+        }
+        if (SpotifyClient.playlistId(clean) != null) {
+            importSpotifyPlaylist(clean)
+            return
+        }
+        val browse = Importer.parseYtmBrowseId(clean)
         if (browse == null) {
-            importStatus.value = "Link inválido. Cole a URL de uma playlist ou álbum do YouTube Music."
+            importStatus.value = "Cole um link de playlist ou álbum do YouTube Music, " +
+                "ou de uma playlist pública do Spotify."
             return
         }
         scope.launch {
@@ -1332,27 +1373,30 @@ class AppController(
         }
     }
 
-    fun importCsvFile(file: File) {
+    private fun importSpotifyPlaylist(url: String) {
         scope.launch {
             importBusy.value = true
-            importStatus.value = "Lendo CSV..."
-            val rows = runCatching {
-                withContext(Dispatchers.IO) { Importer.parseCsv(file.readText()) }
-            }.getOrDefault(emptyList())
-            if (rows.isEmpty()) {
+            importStatus.value = "Lendo playlist do Spotify..."
+            val spotify = runCatching { SpotifyClient.playlist(url) }.getOrNull()
+            if (spotify == null || spotify.tracks.isEmpty()) {
                 importBusy.value = false
-                importStatus.value = "CSV vazio ou em formato não reconhecido."
+                importStatus.value = "Não foi possível ler a playlist pública do Spotify."
                 return@launch
             }
-            val name = file.nameWithoutExtension.ifBlank { "Importada do Spotify" }
+            val name = spotify.name.ifBlank { "Importada do Spotify" }
             val playlist = withContext(Dispatchers.IO) { db.createPlaylist(name) }
             var matched = 0
-            rows.forEachIndexed { index, row ->
-                importStatus.value = "Casando ${index + 1}/${rows.size}: ${row.title}"
+            spotify.tracks.forEachIndexed { index, item ->
+                importStatus.value = "Casando ${index + 1}/${spotify.tracks.size}: ${item.title}"
                 val found = runCatching {
-                    withContext(Dispatchers.IO) { yt.searchSongs("${row.artist} ${row.title}", 6) }
+                    withContext(Dispatchers.IO) {
+                        yt.searchSongs("${item.artist} ${item.title}".trim(), 6)
+                    }
                 }.getOrDefault(emptyList())
-                val best = Importer.bestMatch(row, found)
+                val best = Importer.bestMatch(
+                    Importer.CsvRow(item.title, item.artist, "", item.durationMs),
+                    found,
+                )
                 if (best != null) {
                     withContext(Dispatchers.IO) { db.addToPlaylist(playlist.id, best) }
                     matched++
@@ -1362,7 +1406,7 @@ class AppController(
             refreshLibrary()
             account.requestSync()
             importBusy.value = false
-            importStatus.value = "\"$name\": $matched de ${rows.size} faixas encontradas."
+            importStatus.value = "\"$name\": $matched de ${spotify.tracks.size} faixas encontradas."
         }
     }
 
@@ -1549,6 +1593,31 @@ class AppController(
 
     fun openRecap() {
         if (screen.value == Screen.Recap) loadRecap(force = true) else go(Screen.Recap)
+    }
+
+    /** Gera o PNG 1080×1920 do recap e abre a pasta com o arquivo. */
+    fun exportRecapImage(accent: Int, accent2: Int) {
+        val snapshot = recap.value
+        if (snapshot == null) {
+            message.value = "Abra o recap do mês antes de gerar a imagem."
+            return
+        }
+        val month = recapMonth.value
+        val name = account.state.value.profile?.displayName.orEmpty()
+        scope.launch {
+            message.value = "Gerando imagem do recap..."
+            val file = runCatching {
+                withContext(Dispatchers.IO) {
+                    RecapImage.render(snapshot, month, name, accent, accent2)
+                }
+            }.getOrNull()
+            if (file == null) {
+                message.value = "Não foi possível gerar a imagem do recap."
+                return@launch
+            }
+            runCatching { java.awt.Desktop.getDesktop().open(file.parentFile) }
+            message.value = "Imagem salva em ${file.absolutePath}"
+        }
     }
 
     private fun _stateAccountHasSession(): Boolean = account.state.value.session != null
@@ -1857,6 +1926,49 @@ class AppController(
 
     // ------------------------------------------------------------------ profile
     fun openProfile() = go(Screen.Profile)
+
+    fun openCommunity() {
+        account.loadCommunity()
+        go(Screen.Community)
+    }
+
+    fun searchPeople(query: String) = account.searchPeople(query)
+
+    fun setFollow(person: RemoteProfile, follow: Boolean) = account.setFollow(person, follow)
+
+    fun publishPlaylist(id: String, isPublic: Boolean) =
+        account.setPlaylistVisibility(id, isPublic)
+
+    fun playPublicPlaylist(id: String) {
+        scope.launch {
+            message.value = "Carregando playlist..."
+            val tracks = runCatching { account.publicPlaylistTracks(id) }
+                .getOrDefault(emptyList())
+            if (tracks.isEmpty()) {
+                message.value = "A playlist está vazia."
+                return@launch
+            }
+            player.playNow(tracks, 0)
+        }
+    }
+
+    fun copyPublicPlaylist(id: String, name: String) {
+        scope.launch {
+            message.value = "Copiando playlist..."
+            val tracks = runCatching { account.publicPlaylistTracks(id) }
+                .getOrDefault(emptyList())
+            if (tracks.isEmpty()) {
+                message.value = "A playlist está vazia."
+                return@launch
+            }
+            val clean = name.trim().take(80).ifBlank { "Playlist da comunidade" }
+            val localId = withContext(Dispatchers.IO) { db.createPlaylist(clean).id }
+            withContext(Dispatchers.IO) { tracks.forEach { db.addToPlaylist(localId, it) } }
+            refreshLibrary()
+            account.requestSync()
+            message.value = "\"$clean\" copiada com ${tracks.size} faixas."
+        }
+    }
 
     fun saveProfile(
         displayName: String,

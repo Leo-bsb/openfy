@@ -35,8 +35,8 @@ parava de ler e a UI travava depois de alguns minutos de uso.
 - [x] Playlists e álbuns públicos, com carregamento das listas longas por continuação
 - [x] Explorar com playlists em destaque, lançamentos e playlists da comunidade
 - [x] Rádio por faixa e por artista, com autoplay e prefetch da próxima página
-- [x] Rádio da playlist (desktop e Android) e "Rádio desta música" nos menus de faixa
-- [x] Mix por vibes (Treino, Foco, Relax, Festa, Viagem, Noite) nos dois apps
+- [x] Rádio como playlist temporária: monta a lista sem tocar, com Tocar/Aleatório/Salvar/Baixar (desktop e Android)
+- [x] Comunidade: seguir pessoas, ver seguidores e as playlists públicas de quem você segue
 - [x] Extração de áudio via `innertubex-desktop:v0.11.0` (sem PoToken/WebView)
 - [x] Streaming com Range/seek através do servidor local
 - [x] Fila, aleatório, repetir (off/all/one), volume
@@ -68,7 +68,7 @@ parava de ler e a UI travava depois de alguns minutos de uso.
 - [x] "Seu mix" multi-semente (até 4 sementes de curtidas/recentes, faixas intercaladas)
 - [x] Autoplay: busca toca e emenda a rádio; playlist/álbum/mix vai até o fim e então entra na rádio
 - [x] Importar playlist/álbum do YouTube Music por link (sem login)
-- [x] Importar CSV do Exportify (Spotify) casando faixas no catálogo
+- [x] Importar playlist do Spotify por link (página pública, sem OAuth) casando faixas no catálogo
 - [x] Backup JSON de playlists e curtidas (exportar/importar)
 - [x] Letras sincronizadas (LRCLIB) na tela do player
 - [x] Timer para dormir (15/30/45/60 min)
@@ -196,7 +196,7 @@ laços com cabeça de cobra, usada na sidebar, na bandeja e como ícone da janel
 
 - **YouTube Music por link**: no botão de importar (topo), cole a URL de uma
   playlist ou álbum público. O app carrega as continuações e cria a playlist local.
-- **Spotify sem login**: exporte suas playlists com o Exportify (CSV) e importe.
+- **Spotify sem login**: cole o link de uma playlist pública do Spotify e o app casa as faixas.
   Cada faixa é casada por título, artista e duração no catálogo do YouTube Music.
 - **Backup**: exporte/importe um JSON com playlists e curtidas (metadados, sem áudio).
 - **Compartilhar playlist**: no cabeçalho da playlist, "Compartilhar" gera um
@@ -209,7 +209,7 @@ laços com cabeça de cobra, usada na sidebar, na bandeja e como ícone da janel
 - **Timer**: 15/30/45/60 min na tela do player; pausa ao terminar.
 
 A conta própria e o sync via Supabase já estão ativos. OAuth Spotify/Google
-para importar a conta ainda não; use o CSV do Exportify.
+para importar a conta ainda não; use o link da playlist pública.
 
 ## Ajustes e transi??o
 
@@ -252,7 +252,7 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
   configuráveis e faixas fixadas. O snapshot sincroniza com LWW e abre offline.
 - Discord Rich Presence opcional no PC: Ajustes > Integrações, com Application
   ID do Discord Developer Portal; mostra título/artista e play/pause.
-- Ainda faltam no Android: importar CSV/backup JSON, MediaSessionService com
+- Ainda faltam no Android: importar backup JSON, MediaSessionService com
   player dentro do serviço e o módulo compartilhado KMP.
 - Downloads no Android rodam no `DownloadEngine` (fora do ciclo de vida da tela)
   com `DownloadService` em primeiro plano (`dataSync`), então continuam ao abrir
@@ -275,13 +275,13 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.4.0.exe
-dist\Openfy-0.4.0.msi
-dist\Openfy-Android-0.8.0.apk
+dist\Openfy-0.5.0.exe
+dist\Openfy-0.5.0.msi
+dist\Openfy-Android-0.9.0.apk
 ```
 
 Páginas (GitHub Pages): https://leo-bsb.github.io/openfy/
-APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.8.0.apk
+APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.0.apk
 Manifesto de atualização do Android: https://leo-bsb.github.io/openfy/update-android.json
 Manifesto de atualização do desktop: https://leo-bsb.github.io/openfy/update-desktop.json
 Recuperação de senha: https://leo-bsb.github.io/openfy/recover.html
@@ -291,8 +291,8 @@ https://leo-bsb.github.io/openfy/oauth/google.html ·
 Privacidade/termos: seções `#privacidade` e `#termos` da página inicial
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.4.0 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.4.0
-Android 0.8.0 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.8.0.apk
+Desktop 0.5.0 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.5.0
+Android 0.9.0 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.0.apk
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -312,8 +312,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.4.0.exe`
-- `build\compose\binaries\main\msi\Openfy-0.4.0.msi`
+- `build\compose\binaries\main\exe\Openfy-0.5.0.exe`
+- `build\compose\binaries\main\msi\Openfy-0.5.0.msi`
 
 Rodar em desenvolvimento:
 
@@ -337,7 +337,7 @@ O `playerSmoke` prova o caminho real: carrega, pausa, retoma, faz seek, troca de
 faixa e confirma que uma faixa inválida gera erro (em vez de ficar travado).
 O `featureSmoke` cobre a busca com filtros e continuação, o perfil de artista,
 álbum/playlist públicos, o Explorar, as rádios, as sugestões, as letras (LRCLIB)
-importador (URL/CSV/match), o backup JSON, a playlist compartilhada
+importador (link do YouTube Music/Spotify + casamento de faixas), o backup JSON, a playlist compartilhada
 (`.openfyplaylist`) e o backup consistente do banco (`VACUUM INTO`). O `probe` é
 só uma ferramenta de diagnóstico: grava JSONs brutos para inspecionar tokens e
 formatos novos.

@@ -1,5 +1,6 @@
 package com.openfy.player
 
+import com.openfy.core.RadioList
 import com.openfy.core.RadioPage
 import com.openfy.core.Recommender
 import com.openfy.core.RepeatMode
@@ -47,6 +48,11 @@ class Player(
     val radioLoading = MutableStateFlow(false)
     val queueTitle = MutableStateFlow("")
     val radioSeedTrack = MutableStateFlow<Track?>(null)
+
+    /** Lista temporária da rádio: existe antes de virar fila. */
+    val radioTracks = MutableStateFlow<List<Track>>(emptyList())
+    val radioTitle = MutableStateFlow("")
+    val radioPreparing = MutableStateFlow(false)
     val autoplayRadio = MutableStateFlow(true)
     val eqEnabled = MutableStateFlow(false)
     val eqGains = MutableStateFlow(List(EQ_FREQS.size) { 0 })
@@ -59,6 +65,7 @@ class Player(
     /** Inicia uma radio a partir de um videoId (usado no fim da fila). */
     var radioStarter: (suspend (String) -> RadioPage?)? = null
     private var radioContinuation: String? = null
+    private var radioTracksContinuation: String? = null
 
     /** Avisa que fila/posição mudaram; o AppController empurra o handoff. */
     var onSessionChanged: (() -> Unit)? = null
@@ -340,6 +347,94 @@ class Player(
         load(tracks[0])
     }
 
+    /**
+     * Monta a lista temporária da rádio sem tocar nada. O usuário decide quando
+     * ela vira fila (Tocar/Aleatório) e pode salvar como playlist.
+     */
+    fun prepareRadio(
+        seed: Track,
+        title: String,
+        starter: (suspend () -> RadioPage?)? = null,
+    ) {
+        radioTitle.value = title
+        radioSeedTrack.value = seed
+        radioTracks.value = emptyList()
+        radioTracksContinuation = null
+        radioPreparing.value = true
+        radioEpoch++
+        val epoch = radioEpoch
+        radioJob?.cancel()
+        radioJob = scope.launch {
+            val page = runCatching {
+                if (starter != null) starter() else radioStarter?.invoke(seed.id)
+            }.getOrNull()
+            if (epoch != radioEpoch) return@launch
+            radioPreparing.value = false
+            if (page == null || page.tracks.isEmpty()) {
+                radioTracks.value = emptyList()
+                return@launch
+            }
+            val ranked = recommender.rankRadio(
+                page.tracks,
+                seed,
+                emptyList(),
+                limit = RadioList.MAX_TRACKS / 2,
+                policy = Recommender.DiversityPolicy(recentArtistWindow = 3, maxPerArtist = 2),
+            )
+            radioTracks.value = RadioList.merge(emptyList(), ranked.ifEmpty { page.tracks })
+            radioTracksContinuation = page.continuation
+            com.openfy.core.Log.write("player: radio pronta com ${radioTracks.value.size} faixas")
+        }
+    }
+
+    /** Transforma a lista temporária na fila do player. */
+    fun playRadio(shuffleTracks: Boolean) {
+        val base = RadioList.merge(emptyList(), radioTracks.value)
+        if (base.isEmpty()) return
+        val seed = radioSeedTrack.value ?: base.first()
+        stopRadio()
+        autoplaySuppressed = false
+        cancelCrossfade()
+        val list = if (shuffleTracks) base.shuffled() else base
+        radioTracks.value = list
+        radioActive.value = true
+        radioContinuation = radioTracksContinuation
+        radioStartIndex = 0
+        radioSeedTrack.value = seed
+        setQueueContext(radioTitle.value.ifBlank { "Rádio" }, "radio", seed.id)
+        queue.value = list
+        index.value = 0
+        if (shuffle.value) {
+            shuffleSnapshotQueue = list
+            shuffleSnapshotIndex = 0
+        }
+        com.openfy.core.Log.write("player: radio tocando ${list.size} faixas")
+        load(list[0])
+    }
+
+    /** Acrescenta a próxima página à lista temporária (ou à fila, se tocando). */
+    fun loadMoreRadio() {
+        if (radioActive.value) {
+            maybeLoadMoreRadio(force = true)
+            return
+        }
+        if (radioPreparing.value) return
+        val token = radioTracksContinuation ?: return
+        val seed = radioSeedTrack.value ?: return
+        val epoch = radioEpoch
+        radioPreparing.value = true
+        radioJob?.cancel()
+        radioJob = scope.launch {
+            val page = runCatching { radioSource?.invoke(token) }.getOrNull()
+            if (epoch != radioEpoch) return@launch
+            radioPreparing.value = false
+            if (page == null) return@launch
+            radioTracksContinuation = if (page.continuation == token) null else page.continuation
+            val extra = recommender.rankRadio(page.tracks, seed, radioTracks.value, limit = RADIO_PAGE)
+            radioTracks.value = RadioList.merge(radioTracks.value, extra)
+        }
+    }
+
     fun playSingle(track: Track) = playNow(listOf(track), 0)
 
     /** Toca uma lista embaralhada e guarda a ordem original para o modo shuffle. */
@@ -599,6 +694,7 @@ class Player(
         if (radioStartIndex < 0) radioStartIndex = start
         radioActive.value = true
         trimQueue()
+        radioTracks.value = RadioList.merge(queue.value, emptyList())
         if (shouldAdvance && takeOver) {
             index.value = start
             load(queue.value[index.value])
@@ -611,10 +707,10 @@ class Player(
      * Mantem a radio abastecida: quando restam poucas faixas, pede a proxima
      * pagina ao controlador sem interromper a reproducao atual.
      */
-    private fun maybeLoadMoreRadio() {
+    private fun maybeLoadMoreRadio(force: Boolean = false) {
         if (!radioActive.value || radioLoading.value || radioJob?.isActive == true) return
         val token = radioContinuation ?: return
-        if (queue.value.size - index.value > RADIO_PREFETCH) return
+        if (!force && queue.value.size - index.value > RADIO_PREFETCH) return
         val seed = radioSeedTrack.value ?: current.value ?: return
         val epoch = radioEpoch
         radioLoading.value = true

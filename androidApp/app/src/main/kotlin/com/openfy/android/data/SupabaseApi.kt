@@ -7,6 +7,7 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.delete
 import io.ktor.client.request.parameter
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
@@ -254,7 +255,7 @@ class SupabaseApi {
         val response = client.get("$baseUrl/rest/v1/playlists") {
             header("apikey", anonKey)
             header(HttpHeaders.Authorization, "Bearer $accessToken")
-            parameter("select", "id,name,updated_at,cover_url,deleted")
+            parameter("select", "id,name,updated_at,cover_url,owner_id,visibility,deleted")
             parameter("deleted", "eq.false")
             parameter("order", "created_at.asc")
             parameter("limit", "200")
@@ -292,7 +293,7 @@ class SupabaseApi {
             val response = client.get("$baseUrl/rest/v1/playlists") {
                 header("apikey", anonKey)
                 header(HttpHeaders.Authorization, "Bearer $accessToken")
-                parameter("select", "id,name,updated_at,cover_url,deleted")
+                parameter("select", "id,name,updated_at,cover_url,owner_id,visibility,deleted")
                 parameter("id", "in.(${chunk.joinToString(",")})")
                 parameter("deleted", "eq.false")
                 parameter("order", "created_at.asc")
@@ -785,6 +786,182 @@ class SupabaseApi {
                     lastSeenAt = Instant.now().toString(),
                 ),
             )
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
+    // ------------------------------------------------------------------ social
+
+    /** Quem eu sigo (ids). */
+    suspend fun followingIds(accessToken: String, userId: String): List<String> {
+        val response = client.get("$baseUrl/rest/v1/follows") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "followed_id")
+            parameter("follower_id", "eq.$userId")
+            parameter("deleted", "eq.false")
+            parameter("limit", "1000")
+        }
+        return decoded<List<FollowRow>>(response)
+            .map { it.followedId }
+            .filter { it.isNotBlank() }
+    }
+
+    /** Quem me segue (ids). */
+    suspend fun followerIds(accessToken: String, userId: String): List<String> {
+        val response = client.get("$baseUrl/rest/v1/follows") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "follower_id")
+            parameter("followed_id", "eq.$userId")
+            parameter("deleted", "eq.false")
+            parameter("limit", "1000")
+        }
+        return decoded<List<FollowRow>>(response)
+            .map { it.followerId }
+            .filter { it.isNotBlank() }
+    }
+
+    /** Segue alguém; se a linha já existir como tombstone, ressuscita com PATCH. */
+    suspend fun follow(accessToken: String, userId: String, targetId: String): Boolean {
+        val response = client.post("$baseUrl/rest/v1/follows") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "resolution=merge-duplicates,return=minimal")
+            contentType(ContentType.Application.Json)
+            setBody(FollowBody(userId, targetId))
+        }
+        if (response.status.isSuccess()) return true
+        val patch = client.patch("$baseUrl/rest/v1/follows") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=minimal")
+            parameter("follower_id", "eq.$userId")
+            parameter("followed_id", "eq.$targetId")
+            contentType(ContentType.Application.Json)
+            setBody(DeletedPatch(deleted = false))
+        }
+        return patch.status.isSuccess()
+    }
+
+    /**
+     * Deixa de seguir. O servidor atual recusa o tombstone e o DELETE remove
+     * zero linhas, então tentamos os dois e só consideramos sucesso quando uma
+     * linha realmente mudou.
+     */
+    suspend fun unfollow(accessToken: String, userId: String, targetId: String): Boolean {
+        val delete = client.delete("$baseUrl/rest/v1/follows") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=representation")
+            parameter("follower_id", "eq.$userId")
+            parameter("followed_id", "eq.$targetId")
+        }
+        if (delete.status.isSuccess()) {
+            val rows = runCatching {
+                json.decodeFromString<List<FollowRow>>(delete.bodyAsText())
+            }.getOrDefault(emptyList())
+            if (rows.isNotEmpty()) return true
+        }
+        val patch = client.patch("$baseUrl/rest/v1/follows") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=representation")
+            parameter("follower_id", "eq.$userId")
+            parameter("followed_id", "eq.$targetId")
+            contentType(ContentType.Application.Json)
+            setBody(DeletedPatch())
+        }
+        if (!patch.status.isSuccess()) return false
+        val rows = runCatching {
+            json.decodeFromString<List<FollowRow>>(patch.bodyAsText())
+        }.getOrDefault(emptyList())
+        return rows.isNotEmpty()
+    }
+
+    suspend fun profilesByIds(accessToken: String, ids: Collection<String>): List<Profile> {
+        if (ids.isEmpty()) return emptyList()
+        return ids.distinct().chunked(50).flatMap { chunk ->
+            val response = client.get("$baseUrl/rest/v1/profiles") {
+                header("apikey", anonKey)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                parameter("select", "id,handle,display_name,avatar_url")
+                parameter("id", "in.(${chunk.joinToString(",")})")
+                parameter("limit", "1000")
+            }
+            decoded<List<Profile>>(response)
+        }
+    }
+
+    /** Busca pessoas públicas por nome ou @handle. */
+    suspend fun searchProfiles(accessToken: String, query: String): List<Profile> {
+        val clean = query.trim().removePrefix("@").take(60)
+        if (clean.isBlank()) return emptyList()
+        val response = client.get("$baseUrl/rest/v1/profiles") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "id,handle,display_name,avatar_url")
+            parameter("is_public", "eq.true")
+            parameter("or", "(handle.ilike.*$clean*,display_name.ilike.*$clean*)")
+            parameter("order", "handle.asc")
+            parameter("limit", "20")
+        }
+        return decoded(response)
+    }
+
+    /** Playlists públicas das contas que eu sigo. */
+    suspend fun publicPlaylists(
+        accessToken: String,
+        ownerIds: Collection<String>,
+    ): List<PublicPlaylist> {
+        if (ownerIds.isEmpty()) return emptyList()
+        return ownerIds.distinct().chunked(50).flatMap { chunk ->
+            val response = client.get("$baseUrl/rest/v1/playlists") {
+                header("apikey", anonKey)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                parameter(
+                    "select",
+                    "id,owner_id,name,description,cover_url,updated_at,visibility",
+                )
+                parameter("owner_id", "in.(${chunk.joinToString(",")})")
+                parameter("visibility", "eq.public")
+                parameter("deleted", "eq.false")
+                parameter("order", "updated_at.desc")
+                parameter("limit", "50")
+            }
+            decoded<List<PublicPlaylist>>(response)
+        }
+    }
+
+    /** Itens ativos de várias playlists públicas, para tocar/copiar. */
+    suspend fun playlistItems(
+        accessToken: String,
+        playlistIds: Collection<String>,
+    ): List<RemotePlaylistItem> {
+        if (playlistIds.isEmpty()) return emptyList()
+        return playlistIds.distinct().chunked(40).flatMap { chunk ->
+            val response = client.get("$baseUrl/rest/v1/playlist_items") {
+                header("apikey", anonKey)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                parameter("select", "id,playlist_id,track_id,rank,deleted")
+                parameter("playlist_id", "in.(${chunk.joinToString(",")})")
+                parameter("deleted", "eq.false")
+                parameter("order", "playlist_id.asc,rank.asc")
+                parameter("limit", "2000")
+            }
+            decoded<List<RemotePlaylistItem>>(response)
+        }
+    }
+
+    suspend fun setPlaylistVisibility(accessToken: String, playlistId: String, visibility: String) {
+        val clean = if (visibility == "public") "public" else "private"
+        val response = client.patch("$baseUrl/rest/v1/playlists") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=minimal")
+            parameter("id", "eq.$playlistId")
+            contentType(ContentType.Application.Json)
+            setBody(VisibilityPatch(clean))
         }
         if (!response.status.isSuccess()) decodeError(response)
     }

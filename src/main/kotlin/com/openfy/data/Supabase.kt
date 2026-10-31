@@ -5,6 +5,7 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
+import io.ktor.client.request.delete
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.request.patch
@@ -87,6 +88,32 @@ data class ProfilePatch(
 
 @Serializable
 data class DeletedPatch(val deleted: Boolean = true)
+
+@Serializable
+data class FollowRow(
+    @SerialName("follower_id") val followerId: String = "",
+    @SerialName("followed_id") val followedId: String = "",
+)
+
+@Serializable
+data class FollowBody(
+    @SerialName("follower_id") val followerId: String,
+    @SerialName("followed_id") val followedId: String,
+)
+
+@Serializable
+data class VisibilityPatch(val visibility: String)
+
+@Serializable
+data class RemotePublicPlaylist(
+    val id: String,
+    @SerialName("owner_id") val ownerId: String = "",
+    val name: String = "",
+    val description: String = "",
+    @SerialName("cover_url") val coverUrl: String = "",
+    @SerialName("updated_at") val updatedAt: String? = null,
+    val visibility: String = "",
+)
 
 @Serializable
 data class RemoteTrack(
@@ -510,12 +537,150 @@ class SupabaseApi {
             ?: throw SupabaseException(0, "O servidor não devolveu o id dos ajustes.")
     }
 
+    // ------------------------------------------------------------------ social
+
+    /** Ids de quem eu sigo. */
+    suspend fun followingIds(accessToken: String, userId: String): List<String> =
+        decode<List<FollowRow>>(
+            client.get("$baseUrl/rest/v1/follows") {
+                auth(accessToken)
+                parameter("select", "followed_id")
+                parameter("follower_id", "eq.$userId")
+                parameter("deleted", "eq.false")
+                parameter("limit", "1000")
+            },
+        ).map { it.followedId }.filter { it.isNotBlank() }
+
+    /** Ids de quem me segue. */
+    suspend fun followerIds(accessToken: String, userId: String): List<String> =
+        decode<List<FollowRow>>(
+            client.get("$baseUrl/rest/v1/follows") {
+                auth(accessToken)
+                parameter("select", "follower_id")
+                parameter("followed_id", "eq.$userId")
+                parameter("deleted", "eq.false")
+                parameter("limit", "1000")
+            },
+        ).map { it.followerId }.filter { it.isNotBlank() }
+
+    /** Segue alguém; se a linha já existir como tombstone, ressuscita via PATCH. */
+    suspend fun follow(accessToken: String, userId: String, targetId: String): Boolean {
+        val created = client.post("$baseUrl/rest/v1/follows") {
+            auth(accessToken)
+            header("Prefer", "return=minimal")
+            contentType(ContentType.Application.Json)
+            setBody(FollowBody(userId, targetId))
+        }
+        if (created.status.value in 200..299) return true
+        val revived = client.patch("$baseUrl/rest/v1/follows") {
+            auth(accessToken)
+            header("Prefer", "return=minimal")
+            parameter("follower_id", "eq.$userId")
+            parameter("followed_id", "eq.$targetId")
+            contentType(ContentType.Application.Json)
+            setBody(DeletedPatch(deleted = false))
+        }
+        return revived.status.value in 200..299
+    }
+
+    /**
+     * Deixa de seguir. O servidor atual recusa o tombstone e o DELETE remove
+     * zero linhas sem policy; só consideramos sucesso quando uma linha mudou.
+     */
+    suspend fun unfollow(accessToken: String, userId: String, targetId: String): Boolean {
+        val deleted = client.delete("$baseUrl/rest/v1/follows") {
+            auth(accessToken)
+            header("Prefer", "return=representation")
+            parameter("follower_id", "eq.$userId")
+            parameter("followed_id", "eq.$targetId")
+        }
+        if (deleted.status.value in 200..299) {
+            val rows = runCatching { decode<List<FollowRow>>(deleted) }.getOrDefault(emptyList())
+            if (rows.isNotEmpty()) return true
+        }
+        val patched = client.patch("$baseUrl/rest/v1/follows") {
+            auth(accessToken)
+            header("Prefer", "return=representation")
+            parameter("follower_id", "eq.$userId")
+            parameter("followed_id", "eq.$targetId")
+            contentType(ContentType.Application.Json)
+            setBody(DeletedPatch())
+        }
+        if (patched.status.value !in 200..299) return false
+        return runCatching { decode<List<FollowRow>>(patched) }.getOrDefault(emptyList()).isNotEmpty()
+    }
+
+    suspend fun profiles(accessToken: String, ids: Collection<String>): List<RemoteProfile> {
+        if (ids.isEmpty()) return emptyList()
+        return ids.distinct().chunked(50).flatMap { chunk ->
+            decode<List<RemoteProfile>>(
+                client.get("$baseUrl/rest/v1/profiles") {
+                    auth(accessToken)
+                    parameter("select", "id,handle,display_name,avatar_url")
+                    parameter("id", inClause(chunk))
+                    parameter("limit", "1000")
+                },
+            )
+        }
+    }
+
+    /** Busca pessoas públicas por nome ou @handle. */
+    suspend fun searchProfiles(accessToken: String, query: String): List<RemoteProfile> {
+        val clean = query.trim().removePrefix("@").take(60)
+        if (clean.isBlank()) return emptyList()
+        return decode(
+            client.get("$baseUrl/rest/v1/profiles") {
+                auth(accessToken)
+                parameter("select", "id,handle,display_name,avatar_url")
+                parameter("is_public", "eq.true")
+                parameter("or", "(handle.ilike.*$clean*,display_name.ilike.*$clean*)")
+                parameter("order", "handle.asc")
+                parameter("limit", "20")
+            },
+        )
+    }
+
+    /** Playlists públicas das contas que eu sigo. */
+    suspend fun publicPlaylists(
+        accessToken: String,
+        ownerIds: Collection<String>,
+    ): List<RemotePublicPlaylist> {
+        if (ownerIds.isEmpty()) return emptyList()
+        return ownerIds.distinct().chunked(50).flatMap { chunk ->
+            decode<List<RemotePublicPlaylist>>(
+                client.get("$baseUrl/rest/v1/playlists") {
+                    auth(accessToken)
+                    parameter(
+                        "select",
+                        "id,owner_id,name,description,cover_url,updated_at,visibility",
+                    )
+                    parameter("owner_id", inClause(chunk))
+                    parameter("visibility", "eq.public")
+                    parameter("deleted", "eq.false")
+                    parameter("order", "updated_at.desc")
+                    parameter("limit", "50")
+                },
+            )
+        }
+    }
+
+    suspend fun setPlaylistVisibility(accessToken: String, playlistId: String, isPublic: Boolean) {
+        ensure(
+            client.patch("$baseUrl/rest/v1/playlists") {
+                auth(accessToken)
+                header("Prefer", "return=minimal")
+                parameter("id", "eq.$playlistId")
+                contentType(ContentType.Application.Json)
+                setBody(VisibilityPatch(if (isPublic) "public" else "private"))
+            },
+        )
+    }
+
     /**
      * Sobe avatar/capa do perfil no bucket público. O nome inclui timestamp para
      * o cache dos clients não mostrar a imagem anterior.
      */
-    suspend fun uploadProfileImage(
-        accessToken: String,
+    suspend fun uploadProfileImage(        accessToken: String,
         userId: String,
         bucket: String,
         baseName: String,

@@ -38,6 +38,7 @@ import com.openfy.android.data.MonthlyArtistRow
 import com.openfy.android.data.MonthlyListeningRow
 import com.openfy.android.data.PlaylistDto
 import com.openfy.android.data.Profile
+import com.openfy.android.data.PublicPlaylist
 import com.openfy.android.data.PushPlayEvent
 import com.openfy.android.data.PushPlaybackState
 import com.openfy.android.data.PushPlaylist
@@ -70,6 +71,7 @@ import com.openfy.core.ProfileStatsCards
 import com.openfy.core.ProfileStatsData
 import com.openfy.core.ProfileTrackStat
 import com.openfy.core.QueueLogic
+import com.openfy.core.RadioList
 import com.openfy.core.RemoteCollection
 import com.openfy.core.RepeatMode
 import com.openfy.core.SearchMode
@@ -196,6 +198,18 @@ data class AuthUiState(
     val eqEnabled: Boolean = false,
     val eqGains: List<Int> = List(10) { 0 },
     val radioActive: Boolean = false,
+    val radioTracks: List<Track> = emptyList(),
+    val radioTitle: String = "",
+    val radioPreparing: Boolean = false,
+    val radioScreenOpen: Boolean = false,
+    val following: List<Profile> = emptyList(),
+    val followers: List<Profile> = emptyList(),
+    val publicPlaylists: List<PublicPlaylist> = emptyList(),
+    val communityBusy: Boolean = false,
+    val communityStatus: String? = null,
+    val communityQuery: String = "",
+    val communityResults: List<Profile> = emptyList(),
+    val communityOpen: Boolean = false,
     val recapMonth: String = YearMonth.now().atDay(1).toString(),
     val recapMonths: List<String> = emptyList(),
     val recap: RecapData? = null,
@@ -363,6 +377,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         store.shuffleSnapshotQueue().takeIf { it.isNotEmpty() }
     private var shuffleSnapshotIndex = store.shuffleSnapshotIndex()
     private var radioContinuation: String? = null
+    private var radioTracksContinuation: String? = null
     private var radioLoading = false
     private var radioSeed: Track? = null
     private var playlistContextId: String? = null
@@ -1449,7 +1464,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(
                         profileExtras = next,
                         profileBusy = false,
-                        profileStatus = null,
+                        profileStatus = error.message ?: "Não foi possível salvar o perfil.",
                         error = error.message ?: "Não foi possível salvar o perfil.",
                     )
                 }
@@ -1473,6 +1488,211 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             require(bytes.size <= 8 * 1024 * 1024) { "A imagem deve ter no máximo 8 MB." }
             Triple(bytes, mime, extension)
         }
+
+    // ------------------------------------------------------------------ social
+
+    fun clearProfileStatus() = _state.update { it.copy(profileStatus = null) }
+
+    fun openCommunity() {
+        _state.update { it.copy(communityOpen = true) }
+        loadCommunity()
+    }
+
+    fun closeCommunity() = _state.update { it.copy(communityOpen = false) }
+
+    fun loadCommunity() {
+        if (_state.value.session == null || _state.value.communityBusy) return
+        viewModelScope.launch {
+            _state.update { it.copy(communityBusy = true) }
+            val result = runCatching {
+                withSession { active ->
+                    val following = api.followingIds(active.accessToken, active.userId)
+                    val followers = api.followerIds(active.accessToken, active.userId)
+                    val people = api.profilesByIds(
+                        active.accessToken,
+                        (following + followers).distinct(),
+                    )
+                    val byId = people.associateBy { it.id }
+                    Triple(
+                        following.mapNotNull { byId[it] },
+                        followers.mapNotNull { byId[it] },
+                        api.publicPlaylists(active.accessToken, following),
+                    )
+                }
+            }
+            result.onSuccess { (following, followers, feed) ->
+                _state.update {
+                    it.copy(
+                        following = following,
+                        followers = followers,
+                        publicPlaylists = feed,
+                        communityBusy = false,
+                        communityStatus = if (following.isEmpty()) {
+                            "Você ainda não segue ninguém. Busque por nome ou @handle."
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        communityBusy = false,
+                        communityStatus = error.message
+                            ?: "Não foi possível carregar a comunidade.",
+                    )
+                }
+            }
+        }
+    }
+
+    fun searchPeople(query: String) {
+        _state.update { it.copy(communityQuery = query) }
+        val clean = query.trim()
+        if (clean.length < 2) {
+            _state.update { it.copy(communityResults = emptyList()) }
+            return
+        }
+        viewModelScope.launch {
+            val found = runCatching {
+                withSession { active ->
+                    api.searchProfiles(active.accessToken, clean)
+                        .filter { it.id != active.userId }
+                }
+            }.getOrDefault(emptyList())
+            _state.update { it.copy(communityResults = found) }
+        }
+    }
+
+    fun setFollow(target: Profile, follow: Boolean) {
+        if (_state.value.session == null) return
+        viewModelScope.launch {
+            _state.update { it.copy(communityBusy = true) }
+            val ok = runCatching {
+                withSession { active ->
+                    if (follow) {
+                        api.follow(active.accessToken, active.userId, target.id)
+                    } else {
+                        api.unfollow(active.accessToken, active.userId, target.id)
+                    }
+                }
+            }.getOrDefault(false)
+            if (!ok) {
+                _state.update {
+                    it.copy(
+                        communityBusy = false,
+                        communityStatus = if (follow) {
+                            "Não foi possível seguir agora."
+                        } else {
+                            "Não foi possível deixar de seguir agora; veja docs/SQL-SOCIAL.md."
+                        },
+                    )
+                }
+                return@launch
+            }
+            val label = target.displayName.ifBlank { target.handle }
+            _state.update { state ->
+                if (follow) {
+                    state.copy(
+                        following = (state.following + target).distinctBy { it.id },
+                        communityBusy = false,
+                        communityStatus = "Seguindo $label.",
+                    )
+                } else {
+                    state.copy(
+                        following = state.following.filterNot { it.id == target.id },
+                        communityBusy = false,
+                        communityStatus = "Deixou de seguir $label.",
+                    )
+                }
+            }
+            loadCommunity()
+        }
+    }
+
+    fun setPlaylistVisibility(playlistId: String, isPublic: Boolean) {
+        if (_state.value.session == null) return
+        viewModelScope.launch {
+            val ok = runCatching {
+                withSession { active ->
+                    api.setPlaylistVisibility(
+                        active.accessToken,
+                        playlistId,
+                        if (isPublic) "public" else "private",
+                    )
+                    true
+                }
+            }.getOrDefault(false)
+            _state.update {
+                it.copy(
+                    message = if (ok) {
+                        if (isPublic) "Playlist pública: aparece para quem te segue." else "Playlist privada."
+                    } else {
+                        "Não foi possível mudar a visibilidade da playlist."
+                    },
+                )
+            }
+            if (ok) loadCommunity()
+        }
+    }
+
+    private suspend fun publicPlaylistTracks(playlistId: String): List<Track> =
+        withSession { active ->
+            val items = api.playlistItems(active.accessToken, listOf(playlistId))
+                .sortedWith(compareBy({ it.rank }, { it.id }))
+            val ids = items.map { it.trackId }
+            if (ids.isEmpty()) return@withSession emptyList()
+            val byId = api.tracks(active.accessToken, ids).associateBy { it.id }
+            ids.mapNotNull { id ->
+                byId[id]?.let { remote ->
+                    Track(
+                        id = remote.id,
+                        title = remote.title,
+                        artist = remote.artist,
+                        album = remote.album,
+                        durationSec = remote.duration,
+                        thumbnail = remote.thumbnail,
+                    )
+                }
+            }
+        }
+
+    fun playPublicPlaylist(playlist: PublicPlaylist) {
+        viewModelScope.launch {
+            _state.update { it.copy(communityBusy = true) }
+            val tracks = runCatching { publicPlaylistTracks(playlist.id) }.getOrDefault(emptyList())
+            _state.update { it.copy(communityBusy = false) }
+            if (tracks.isEmpty()) {
+                _state.update { it.copy(communityStatus = "A playlist está vazia.") }
+                return@launch
+            }
+            playTracks(tracks, 0)
+        }
+    }
+
+    fun copyPublicPlaylist(playlist: PublicPlaylist) {
+        viewModelScope.launch {
+            _state.update { it.copy(communityBusy = true) }
+            val tracks = runCatching { publicPlaylistTracks(playlist.id) }.getOrDefault(emptyList())
+            if (tracks.isEmpty()) {
+                _state.update {
+                    it.copy(communityBusy = false, communityStatus = "A playlist está vazia.")
+                }
+                return@launch
+            }
+            val name = playlist.name.ifBlank { "Playlist da comunidade" }
+            createPlaylist(name)
+            val created = _state.value.playlists.lastOrNull { it.name == name }
+            if (created != null) tracks.forEach { addToPlaylist(created, it) }
+            _state.update {
+                it.copy(
+                    communityBusy = false,
+                    communityStatus = null,
+                    message = "\"$name\" copiada com ${tracks.size} faixas.",
+                )
+            }
+        }
+    }
 
     fun addProfilePin(track: Track) {
         updateProfileExtras { extras ->
@@ -1965,26 +2185,6 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         play(first, mix, "mix")
         _state.update { it.copy(message = "Seu mix: ${mix.size} faixas.") }
     }
-
-    /** Inicia um mix temático por vibe com rádio contínua. */
-    fun startVibeMix(vibe: String) {
-        viewModelScope.launch {
-            _state.update { it.copy(mixLoading = true, message = "Carregando vibe $vibe…") }
-            val tracks = runCatching {
-                youtube.search("$vibe mix", limit = 40)
-            }.getOrNull().orEmpty()
-            _state.update { it.copy(mixLoading = false) }
-            val first = tracks.firstOrNull()
-            if (first == null) {
-                _state.update { it.copy(error = "Nenhuma faixa encontrada para a vibe $vibe.") }
-                return@launch
-            }
-            play(first, tracks, "vibe", keepRadio = true)
-            startRadio(first, null)
-            _state.update { it.copy(message = "Vibe $vibe iniciada.") }
-        }
-    }
-
     /** Remove as próximas faixas, mantendo a atual e guardando para desfazer. */
     fun clearUpcoming() {
         val current = _state.value
@@ -2150,14 +2350,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     fun playArtistRadio() {
         val page = _state.value.artistPage ?: return
         val id = page.radioVideoId ?: page.topTracks.firstOrNull()?.id ?: return
-        val seed = Track(
-            id = id,
-            title = page.name,
-            artist = page.name,
-            thumbnail = page.avatar,
-        )
-        play(seed, listOf(seed), "artist")
-        startRadio(seed, page.radioPlaylistId)
+        val seed = page.topTracks.firstOrNull { it.id == id }
+            ?: page.topTracks.firstOrNull()
+            ?: Track(id = id, title = page.name, artist = page.name, thumbnail = page.avatar)
+        prepareRadio(seed, RadioList.titleForArtist(page.name), page.radioPlaylistId)
     }
 
     fun playCollectionTrack(track: Track) {
@@ -2216,20 +2412,118 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Rádio a partir da faixa atual (botão do player). */
+    /** Rádio a partir da faixa atual (atalho). */
     fun startTrackRadio() {
         val track = _state.value.track ?: return
-        startRadio(track, null)
-        _state.update { it.copy(message = "Rádio a partir de ${track.title}.") }
+        prepareRadio(track, RadioList.titleForTrack(track))
     }
 
     /** Rádio a partir de uma faixa qualquer (menus de três pontinhos). */
-    fun startRadioFor(track: Track) {
-        if (_state.value.track?.id != track.id) {
-            play(track, (_state.value.queue + track).distinctBy { it.id }, "radio", keepRadio = true)
+    fun startRadioFor(track: Track) = prepareRadio(track, RadioList.titleForTrack(track))
+
+    /**
+     * Monta a lista temporária sem tocar nada; o usuário decide quando virar
+     * fila, salvar como playlist ou baixar.
+     */
+    fun prepareRadio(seed: Track, title: String, playlistId: String? = null) {
+        radioEpoch++
+        val epoch = radioEpoch
+        radioJob?.cancel()
+        _state.update {
+            it.copy(
+                radioTracks = emptyList(),
+                radioTitle = title,
+                radioPreparing = true,
+                radioScreenOpen = true,
+            )
         }
-        startRadio(track, null)
-        _state.update { it.copy(message = "Rádio a partir de ${track.title}.") }
+        radioJob = viewModelScope.launch {
+            val page = runCatching {
+                withContext(Dispatchers.IO) {
+                    if (playlistId == null) youtube.radio(seed.id) else youtube.radio(seed.id, playlistId)
+                }
+            }.getOrNull()
+            if (epoch != radioEpoch) return@launch
+            if (page == null || page.tracks.isEmpty()) {
+                _state.update { it.copy(radioPreparing = false) }
+                return@launch
+            }
+            radioSeed = seed
+            radioTracksContinuation = page.continuation
+            val merged = RadioList.merge(emptyList(), page.tracks.filter { it.id != seed.id })
+            _state.update { it.copy(radioTracks = merged, radioPreparing = false) }
+        }
+    }
+
+    fun openRadio() = _state.update { it.copy(radioScreenOpen = true) }
+
+    fun closeRadio() = _state.update { it.copy(radioScreenOpen = false) }
+
+    /** Toca a lista temporária; a rádio continua se estendendo no fim da fila. */
+    fun playPreparedRadio(shuffleFirst: Boolean) {
+        val s = _state.value
+        val base = RadioList.merge(emptyList(), s.radioTracks)
+        if (base.isEmpty()) return
+        val list = if (shuffleFirst) base.shuffled() else base
+        val seed = radioSeed ?: list.first()
+        _state.update { it.copy(radioTracks = list, radioScreenOpen = false) }
+        play(list.first(), list, "radio", keepRadio = true)
+        radioSeed = seed
+        radioContinuation = radioTracksContinuation
+        _state.update { it.copy(radioActive = true) }
+    }
+
+    fun loadMoreRadio() {
+        val s = _state.value
+        if (s.radioPreparing) return
+        if (s.radioActive) {
+            maybeAppendRadio(force = true)
+            return
+        }
+        val token = radioTracksContinuation ?: return
+        val seed = radioSeed ?: s.radioTracks.firstOrNull() ?: return
+        _state.update { it.copy(radioPreparing = true) }
+        val epoch = radioEpoch
+        radioJob?.cancel()
+        radioJob = viewModelScope.launch {
+            val page = runCatching {
+                withContext(Dispatchers.IO) { youtube.radioNext(token) }
+            }.getOrNull()
+            if (epoch != radioEpoch) return@launch
+            if (page == null) {
+                _state.update { it.copy(radioPreparing = false) }
+                return@launch
+            }
+            radioTracksContinuation = page.continuation
+            val merged = RadioList.merge(
+                _state.value.radioTracks,
+                page.tracks.filter { it.id != seed.id },
+            )
+            _state.update { it.copy(radioTracks = merged, radioPreparing = false) }
+        }
+    }
+
+    /** Cria uma playlist de verdade com as faixas da rádio. */
+    fun saveRadioPlaylist(name: String) {
+        val tracks = _state.value.radioTracks
+        if (tracks.isEmpty()) return
+        val clean = name.trim().take(80)
+            .ifBlank { RadioList.defaultPlaylistName(tracks.firstOrNull()?.title) }
+        createPlaylist(clean)
+        val playlist = _state.value.playlists.lastOrNull { it.name == clean } ?: return
+        tracks.forEach { addToPlaylist(playlist, it) }
+        _state.update {
+            it.copy(
+                message = "Playlist \"$clean\" criada com ${tracks.size} faixas.",
+                radioScreenOpen = false,
+            )
+        }
+    }
+
+    fun downloadRadio() {
+        val tracks = _state.value.radioTracks
+        if (tracks.isEmpty()) return
+        downloadPlaylist(tracks)
     }
 
     /** Rádio inspirada na playlist aberta. */
@@ -2259,11 +2553,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(message = "Rádio desligada; a fila atual continua.") }
     }
 
-    private fun maybeAppendRadio() {
+    private fun maybeAppendRadio(force: Boolean = false) {
         val s = _state.value
         if (radioLoading || radioJob?.isActive == true) return
         val token = radioContinuation ?: return
-        if (s.queueIndex < s.queue.lastIndex - 2) return
+        if (!force && s.queueIndex < s.queue.lastIndex - 2) return
         val seed = radioSeed ?: s.track ?: return
         val epoch = radioEpoch
         radioLoading = true
@@ -2301,6 +2595,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         radioAdvancePending = false
         val newQueue = current.queue + selected
         _state.update { it.copy(queue = newQueue) }
+        if (_state.value.radioActive) {
+            _state.update {
+                it.copy(radioTracks = RadioList.merge(it.radioTracks, selected))
+            }
+        }
         com.openfy.core.Log.write("player: radio +${selected.size} faixas")
         if (wasAtEnd && advance && !current.busy) {
             play(selected.first(), newQueue, eventSource, keepRadio = true, queueIndex = current.queue.size)
@@ -3114,6 +3413,44 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     fun playRecapTrack(track: Track) {
         val tracks = _state.value.recap?.topTracks ?: emptyList()
         play(track, tracks.ifEmpty { listOf(track) }, "recap")
+    }
+
+    /** Gera o PNG 1080×1920 do recap e abre o compartilhamento do Android. */
+    fun shareRecap() {
+        val s = _state.value
+        val recap = s.recap ?: return
+        val name = s.profile?.displayName.orEmpty()
+        val accent = s.accentHex.takeIf { it.isNotBlank() }
+            ?.let { runCatching { android.graphics.Color.parseColor(it) }.getOrNull() }
+            ?: 0xFF2FBFA0.toInt()
+        val accent2 = s.accent2Hex.takeIf { it.isNotBlank() }
+            ?.let { runCatching { android.graphics.Color.parseColor(it) }.getOrNull() }
+            ?: 0xFF19D3E6.toInt()
+        viewModelScope.launch {
+            val file = runCatching {
+                withContext(Dispatchers.IO) {
+                    RecapShareCard.share(
+                        context = getApplication(),
+                        month = recap.month,
+                        userName = name,
+                        listening = recap.listening,
+                        topTracks = recap.topTracks.map { it.title },
+                        topArtists = recap.artists.map { it.artist },
+                        accent = accent,
+                        accent2 = accent2,
+                    )
+                }
+            }.getOrNull()
+            _state.update {
+                it.copy(
+                    message = if (file != null) {
+                        "Imagem do recap pronta para compartilhar."
+                    } else {
+                        "Não foi possível gerar a imagem do recap."
+                    },
+                )
+            }
+        }
     }
 
     fun requestShareCode(playlistId: String) {

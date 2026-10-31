@@ -33,12 +33,16 @@ android {
     namespace = "com.openfy.android"
     compileSdk = 37
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     defaultConfig {
         applicationId = "com.openfy.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 19
-        versionName = "0.8.0"
+        versionCode = 20
+        versionName = "0.9.0"
 
         buildConfigField("String", "SUPABASE_URL", "\"${localValue("openfy.supabase.url")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${localValue("openfy.supabase.anonKey")}\"")
@@ -46,8 +50,7 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            if (keystoreProps.isNotEmpty()) {
+        create("release") {            if (keystoreProps.isNotEmpty()) {
                 storeFile = file(keystoreProps.getProperty("storeFile"))
                 storePassword = keystoreProps.getProperty("storePassword")
                 keyAlias = keystoreProps.getProperty("keyAlias")

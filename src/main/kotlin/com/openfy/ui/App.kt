@@ -149,6 +149,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.lerp
@@ -186,6 +187,7 @@ import com.openfy.core.ProfileStatsCards
 import com.openfy.core.ProfileStatsData
 import com.openfy.core.ProfileStatsVisibility
 import com.openfy.core.ProfileStyle
+import com.openfy.core.RadioList
 import com.openfy.core.RecapArtist
 import com.openfy.core.RecapDay
 import com.openfy.core.RecapSnapshot
@@ -195,7 +197,13 @@ import com.openfy.core.Screen
 import com.openfy.core.SearchMode
 import com.openfy.core.Track
 import com.openfy.core.formatTime
+import com.openfy.core.artistOfMonth
+import com.openfy.core.averageMinutesPerActiveDay
+import com.openfy.core.dateLabel
+import com.openfy.core.mostPlayedDay
 import com.openfy.data.LyricLine
+import com.openfy.data.RemoteProfile
+import com.openfy.data.RemotePublicPlaylist
 import com.openfy.data.UpdateInstaller
 import com.openfy.data.UpdateStatus
 import com.openfy.player.Player
@@ -581,16 +589,6 @@ private fun ImportDialog(c: AppController) {
     var url by remember { mutableStateOf("") }
     var joinCode by remember { mutableStateOf("") }
 
-    fun pickCsv() {
-        val chooser = javax.swing.JFileChooser().apply {
-            dialogTitle = "Escolha o CSV exportado do Spotify (Exportify)"
-            fileFilter = javax.swing.filechooser.FileNameExtensionFilter("CSV", "csv")
-        }
-        if (chooser.showOpenDialog(null) == javax.swing.JFileChooser.APPROVE_OPTION) {
-            chooser.selectedFile?.let { c.importCsvFile(it) }
-        }
-    }
-
     fun pickBackup() {
         val chooser = javax.swing.JFileChooser().apply {
             dialogTitle = "Escolha o backup JSON"
@@ -639,13 +637,14 @@ private fun ImportDialog(c: AppController) {
         text = {
             Column {
                 Text(
-                    "YouTube Music por link",
+                    "Importar por link",
                     color = Tokens.textHigh,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    "Playlist ou álbum público. Ex.: music.youtube.com/playlist?list=...",
+                    "Cole o link de uma playlist ou álbum público do YouTube Music, ou de uma " +
+                        "playlist pública do Spotify. As faixas entram na sua conta e aparecem no celular.",
                     color = Tokens.textLow,
                     fontSize = 11.sp,
                 )
@@ -656,14 +655,18 @@ private fun ImportDialog(c: AppController) {
                         onValueChange = { url = it },
                         singleLine = true,
                         placeholder = {
-                            Text("Cole o link aqui", color = Tokens.textLow, fontSize = 12.sp)
+                            Text(
+                                "Link do YouTube Music ou Spotify",
+                                color = Tokens.textLow,
+                                fontSize = 12.sp,
+                            )
                         },
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f).trackInputFocus(),
                     )
                     Spacer(Modifier.width(8.dp))
                     Button(
-                        onClick = { c.importYtmUrl(url) },
+                        onClick = { c.importLink(url) },
                         enabled = !busy && url.isNotBlank(),
                         shape = RoundedCornerShape(8.dp),
                     ) {
@@ -714,22 +717,19 @@ private fun ImportDialog(c: AppController) {
 
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    "Spotify (CSV do Exportify), backup ou playlist do Openfy",
+                    "Backup ou playlist do Openfy",
                     color = Tokens.textHigh,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    "O CSV é casado com o catálogo do YouTube Music. O backup JSON guarda playlists e curtidas. " +
+                    "O backup JSON guarda playlists e curtidas. " +
                         "O arquivo .openfyplaylist é uma playlist pronta para outra pessoa abrir no Openfy.",
                     color = Tokens.textLow,
                     fontSize = 11.sp,
                 )
                 Spacer(Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = { pickCsv() }, enabled = !busy) {
-                        Text("CSV do Spotify", fontSize = 12.sp)
-                    }
                     TextButton(onClick = { pickBackup() }, enabled = !busy) {
                         Text("Importar backup", fontSize = 12.sp)
                     }
@@ -800,6 +800,7 @@ private fun sharePlaylist(c: AppController, id: String, name: String) {
 
 @Composable
 private fun Sidebar(c: AppController, screen: Screen, playlists: List<Playlist>) {
+    val radioTracks by c.player.radioTracks.collectAsState()
     Column(
         Modifier.width(236.dp).fillMaxHeight()
             .clip(RoundedCornerShape(14.dp))
@@ -828,6 +829,10 @@ private fun Sidebar(c: AppController, screen: Screen, playlists: List<Playlist>)
         NavItem("Explorar", Icons.Filled.Explore, screen is Screen.Explore) { c.go(Screen.Explore) }
         NavItem("Em alta", Icons.AutoMirrored.Filled.TrendingUp, screen is Screen.Charts) { c.go(Screen.Charts) }
         NavItem("Perfil", Icons.Filled.Person, screen is Screen.Profile) { c.openProfile() }
+        NavItem("Comunidade", Icons.Filled.Public, screen is Screen.Community) { c.openCommunity() }
+        if (radioTracks.isNotEmpty()) {
+            NavItem("Rádio", Icons.Filled.Radio, screen is Screen.Radio) { c.openRadio() }
+        }
 
         Spacer(Modifier.height(12.dp))
         Row(
@@ -1153,6 +1158,8 @@ private fun Content(c: AppController, target: Screen) {
         }
         Screen.TopPlayed -> TopPlayedScreen(c)
         Screen.Recap -> RecapScreen(c)
+        Screen.Radio -> RadioScreen(c)
+        Screen.Community -> CommunityScreen(c)
         is Screen.PlaylistView -> PlaylistScreen(c, target.id)
         is Screen.ArtistView -> ArtistScreen(c, target.id)
         is Screen.RemoteCollection -> RemoteCollectionScreen(c, target.id)
@@ -1270,44 +1277,6 @@ private fun HomeScreen(c: AppController) {
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(Icons.Filled.PlayArrow, "Tocar mix", tint = Tokens.ink, modifier = Modifier.size(30.dp))
-                    }
-                }
-            }
-        }
-        item {
-            Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
-                Text(
-                    "VIBES & CLIMA",
-                    color = Tokens.accent,
-                    fontSize = 11.sp,
-                    letterSpacing = 1.5.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-                Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    val vibes = listOf(
-                        "⚡ Treino",
-                        "🎯 Foco",
-                        "🌙 Relax",
-                        "🎉 Festa",
-                        "🚗 Viagem",
-                        "🌧️ Noite",
-                    )
-                    vibes.forEach { vibe ->
-                        val cleanName = vibe.substringAfter(" ")
-                        Button(
-                            onClick = { c.startVibeMix(cleanName) },
-                            shape = RoundedCornerShape(20.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Tokens.panel,
-                                contentColor = Tokens.textHigh,
-                            ),
-                        ) {
-                            Text(vibe, fontSize = 12.sp)
-                        }
                     }
                 }
             }
@@ -2815,6 +2784,38 @@ private fun PlaylistScreen(c: AppController, id: String) {
                         Spacer(Modifier.width(6.dp))
                         Text("Excluir", color = Tokens.textLow)
                     }
+                    Box {
+                        var visibilityMenu by remember { mutableStateOf(false) }
+                        TextButton(onClick = { visibilityMenu = true }) {
+                            Icon(
+                                Icons.Filled.Public,
+                                null,
+                                modifier = Modifier.size(16.dp),
+                                tint = Tokens.textLow,
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text("Visibilidade", color = Tokens.textLow)
+                        }
+                        DropdownMenu(
+                            expanded = visibilityMenu,
+                            onDismissRequest = { visibilityMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Playlist pública") },
+                                onClick = {
+                                    visibilityMenu = false
+                                    c.publishPlaylist(id, true)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Playlist privada") },
+                                onClick = {
+                                    visibilityMenu = false
+                                    c.publishPlaylist(id, false)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -3009,6 +3010,8 @@ private fun RecapScreen(c: AppController) {
     val label = monthLabel(month)
     val summary = snapshot?.summary
     val previous = snapshot?.previous
+    val accentArgb = Tokens.accent.toArgb()
+    val accent2Argb = Tokens.accent2.toArgb()
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
         item {
@@ -3032,6 +3035,12 @@ private fun RecapScreen(c: AppController) {
                 }
                 TextButton(onClick = { c.loadRecap(month, force = true) }) {
                     Text("Atualizar", color = Tokens.textLow)
+                }
+                TextButton(
+                    onClick = { c.exportRecapImage(accentArgb, accent2Argb) },
+                    enabled = snapshot != null,
+                ) {
+                    Text("Baixar imagem", color = Tokens.accent)
                 }
             }
         }
@@ -3124,6 +3133,31 @@ private fun RecapScreen(c: AppController) {
                 StatTile("Conclusão", "${((summary?.completionRate ?: 0.0) * 100).roundToInt()}%", Modifier.weight(1f))
                 StatTile("Puladas", "${((summary?.skipRate ?: 0.0) * 100).roundToInt()}%", Modifier.weight(1f))
                 StatTile("Curtidas", "${snapshot?.liked ?: 0}", Modifier.weight(1f))
+            }
+        }
+
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                val busiest = snapshot?.mostPlayedDay()
+                StatTile(
+                    "Dia mais ouvido",
+                    busiest?.let { "${it.dateLabel()} · ${it.playedMs / 60_000} min" } ?: "—",
+                    Modifier.weight(1f),
+                )
+                StatTile(
+                    "Média por dia",
+                    "${snapshot?.averageMinutesPerActiveDay() ?: 0} min",
+                    Modifier.weight(1f),
+                )
+                StatTile(
+                    "Artista do mês",
+                    snapshot?.artistOfMonth()?.name ?: "—",
+                    Modifier.weight(1f),
+                )
+                StatTile("Descobertas", "${snapshot?.firstTimeTracks?.size ?: 0}", Modifier.weight(1f))
             }
         }
 
@@ -3337,6 +3371,360 @@ private fun DownloadsScreen(c: AppController) {
     }
 }
 
+// ------------------------------------------------------------------ radio
+@Composable
+private fun RadioScreen(c: AppController) {
+    val tracks by c.player.radioTracks.collectAsState()
+    val title by c.player.radioTitle.collectAsState()
+    val preparing by c.player.radioPreparing.collectAsState()
+    val likedIds by c.player.likedIds.collectAsState()
+    val playlists by c.playlists.collectAsState()
+    val seed by c.player.radioSeedTrack.collectAsState()
+    var saveOpen by remember { mutableStateOf(false) }
+    var name by remember { mutableStateOf("") }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Cover(
+                seed?.thumbnail ?: tracks.firstOrNull()?.thumbnail.orEmpty(),
+                96.dp,
+                12.dp,
+            )
+            Spacer(Modifier.width(16.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "RÁDIO",
+                    color = Tokens.accent,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    title.ifBlank { "Rádio" },
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Tokens.textHigh,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(RadioList.subtitle(tracks.size), color = Tokens.textLow, fontSize = 12.sp)
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { c.playRadio(false) }, enabled = tracks.isNotEmpty()) {
+                Text("Tocar")
+            }
+            TextButton(onClick = { c.playRadio(true) }, enabled = tracks.isNotEmpty()) {
+                Text("Aleatório", color = Tokens.accent)
+            }
+            TextButton(
+                onClick = {
+                    name = RadioList.defaultPlaylistName(seed?.title ?: tracks.firstOrNull()?.title)
+                    saveOpen = true
+                },
+                enabled = tracks.isNotEmpty(),
+            ) {
+                Text("Salvar playlist", color = Tokens.textLow)
+            }
+            TextButton(onClick = { c.downloadRadio() }, enabled = tracks.isNotEmpty()) {
+                Text("Baixar", color = Tokens.textLow)
+            }
+            TextButton(onClick = { c.loadMoreRadio() }, enabled = !preparing) {
+                Text("Mais faixas", color = Tokens.textLow)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        when {
+            preparing -> Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = Tokens.accent,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Montando a rádio…", color = Tokens.textLow, fontSize = 12.sp)
+            }
+            tracks.isEmpty() -> Text(
+                "Não foi possível montar a rádio agora.",
+                color = Tokens.textLow,
+                fontSize = 13.sp,
+            )
+            else -> LazyColumn(Modifier.weight(1f).padding(top = 10.dp)) {
+                itemsIndexed(tracks, key = { _, track -> track.id }) { index, track ->
+                    TrackRow(
+                        c = c,
+                        track = track,
+                        index = index,
+                        liked = track.id in likedIds,
+                        onPlay = { c.playTracks(tracks, index) },
+                        onLike = { c.toggleLike(track) },
+                        onPlayNext = { c.playNext(track) },
+                        onQueue = { c.playLater(track) },
+                        onRadio = { c.startTrackRadio(track) },
+                        playlists = playlists,
+                        onAddTo = { playlistId -> c.addToPlaylist(playlistId, track) },
+                    )
+                }
+                item { Spacer(Modifier.height(24.dp)) }
+            }
+        }
+    }
+
+    if (saveOpen) {
+        AlertDialog(
+            onDismissRequest = { saveOpen = false },
+            containerColor = Tokens.panelHigh,
+            titleContentColor = Tokens.textHigh,
+            title = { Text("Salvar rádio como playlist", fontSize = 16.sp) },
+            text = {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(80) },
+                    singleLine = true,
+                    label = { Text("Nome") },
+                    shape = RoundedCornerShape(8.dp),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        saveOpen = false
+                        c.saveRadioPlaylist(name)
+                    },
+                ) { Text("Salvar", color = Tokens.accent) }
+            },
+            dismissButton = {
+                TextButton(onClick = { saveOpen = false }) {
+                    Text("Cancelar", color = Tokens.textLow)
+                }
+            },
+        )
+    }
+}
+
+// ------------------------------------------------------------------ community
+@Composable
+private fun CommunityScreen(c: AppController) {
+    val account by c.account.state.collectAsState()
+    var tab by remember { mutableStateOf(0) }
+    var query by remember { mutableStateOf("") }
+
+    val people = when (tab) {
+        0 -> account.following
+        1 -> account.followers
+        else -> account.communityResults
+    }
+    val followingIds = remember(account.following) { account.following.mapTo(HashSet()) { it.id } }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+        Text(
+            "Comunidade",
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold,
+            color = Tokens.textHigh,
+            modifier = Modifier.padding(top = 8.dp, bottom = 10.dp),
+        )
+        if (account.session == null) {
+            Text(
+                "Entre na conta para seguir pessoas e ver as playlists públicas delas.",
+                color = Tokens.textLow,
+                fontSize = 13.sp,
+            )
+            return@Column
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Seguindo", "Seguidores", "Descobrir").forEachIndexed { index, label ->
+                TextButton(onClick = { tab = index }) {
+                    Text(
+                        label,
+                        color = if (tab == index) Tokens.accent else Tokens.textLow,
+                        fontWeight = if (tab == index) FontWeight.SemiBold else FontWeight.Normal,
+                        fontSize = 13.sp,
+                    )
+                }
+            }
+        }
+        if (tab == 2) {
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = {
+                        query = it
+                        c.searchPeople(it)
+                    },
+                    singleLine = true,
+                    placeholder = {
+                        Text("Nome ou @handle", color = Tokens.textLow, fontSize = 12.sp)
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.width(320.dp).trackInputFocus(),
+                )
+            }
+        }
+        if (account.communityBusy) {
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(
+                    Modifier.size(14.dp),
+                    strokeWidth = 2.dp,
+                    color = Tokens.accent,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Carregando…", color = Tokens.textLow, fontSize = 12.sp)
+            }
+        }
+        account.communityStatus?.let { status ->
+            if (people.isEmpty()) {
+                Text(
+                    status,
+                    color = Tokens.textLow,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        }
+        LazyColumn(Modifier.weight(1f).padding(top = 6.dp)) {
+            if (tab != 2) {
+                items(people, key = { it.id }) { person ->
+                    PersonRow(
+                        person = person,
+                        following = person.id in followingIds,
+                        busy = account.communityBusy,
+                        onFollow = { c.setFollow(person, person.id !in followingIds) },
+                    )
+                }
+                if (tab == 0) {
+                    item {
+                        Text(
+                            "Playlists públicas de quem você segue",
+                            color = Tokens.textHigh,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(top = 16.dp, bottom = 6.dp),
+                        )
+                    }
+                    if (account.publicPlaylists.isEmpty()) {
+                        item {
+                            Text(
+                                "Ninguém que você segue publicou playlists ainda.",
+                                color = Tokens.textLow,
+                                fontSize = 12.sp,
+                            )
+                        }
+                    }
+                    items(account.publicPlaylists, key = { "pl-${it.id}" }) { playlist ->
+                        val owner = account.following.firstOrNull { it.id == playlist.ownerId }
+                        PublicPlaylistRow(
+                            c = c,
+                            playlist = playlist,
+                            owner = owner?.displayName?.ifBlank { owner.handle }.orEmpty(),
+                        )
+                    }
+                }
+            } else {
+                items(people, key = { "d-${it.id}" }) { person ->
+                    PersonRow(
+                        person = person,
+                        following = person.id in followingIds,
+                        busy = account.communityBusy,
+                        onFollow = { c.setFollow(person, person.id !in followingIds) },
+                    )
+                }
+                if (query.length >= 2 && people.isEmpty() && !account.communityBusy) {
+                    item {
+                        Text(
+                            "Ninguém encontrado com esse nome ou @handle.",
+                            color = Tokens.textLow,
+                            fontSize = 12.sp,
+                        )
+                    }
+                }
+            }
+            item { Spacer(Modifier.height(24.dp)) }
+        }
+    }
+}
+
+@Composable
+private fun PersonRow(
+    person: RemoteProfile,
+    following: Boolean,
+    busy: Boolean,
+    onFollow: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Cover(person.avatarUrl, 40.dp, 20.dp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                person.displayName.ifBlank { person.handle },
+                color = Tokens.textHigh,
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                "@${person.handle}",
+                color = Tokens.textLow,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        TextButton(onClick = onFollow, enabled = !busy) {
+            Text(
+                if (following) "Deixar de seguir" else "Seguir",
+                color = if (following) Tokens.textLow else Tokens.accent,
+                fontSize = 12.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PublicPlaylistRow(
+    c: AppController,
+    playlist: RemotePublicPlaylist,
+    owner: String,
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Cover(playlist.coverUrl, 44.dp, 8.dp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                playlist.name,
+                color = Tokens.textHigh,
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                owner.ifBlank { "Playlist pública" },
+                color = Tokens.textLow,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        TextButton(onClick = { c.playPublicPlaylist(playlist.id) }) {
+            Text("Ouvir", color = Tokens.accent, fontSize = 12.sp)
+        }
+        TextButton(onClick = { c.copyPublicPlaylist(playlist.id, playlist.name) }) {
+            Text("Copiar para minha conta", color = Tokens.textLow, fontSize = 12.sp)
+        }
+    }
+}
+
 // ------------------------------------------------------------------ profile
 private fun profilePresetAccent(id: String): Color = when (ColorPalette.fromId(id)) {
     ColorPalette.OPENFY -> Color(0xFF2FBFA0)
@@ -3425,6 +3813,34 @@ private fun ProfileScreen(c: AppController) {
     var cardRowHeightPx by remember { mutableStateOf(with(profileDensity) { 44.dp.toPx() }) }
 
     LaunchedEffect(Unit) { c.account.loadProfileStats() }
+
+    // Bio salva sozinha (o botão continua para nome/foto/capa).
+    LaunchedEffect(bio, editing) {
+        if (editing && bio != extras.bio) {
+            kotlinx.coroutines.delay(800)
+            c.updateProfile { it.copy(bio = bio) }
+        }
+    }
+
+    // Só fecha o painel quando o servidor confirmou; erro fica visível para corrigir.
+    LaunchedEffect(account.profileStatus) {
+        when (account.profileStatus) {
+            "Perfil atualizado." -> {
+                editing = false
+                avatarFile = null
+                coverFile = null
+                removeAvatar = false
+                removeCover = false
+            }
+            "Perfil sincronizado." -> c.account.clearProfileStatus()
+        }
+    }
+    LaunchedEffect(account.profileStatus) {
+        if (account.profileStatus == "Perfil atualizado.") {
+            kotlinx.coroutines.delay(4_000)
+            c.account.clearProfileStatus()
+        }
+    }
 
     val order = ProfileStatsCards.sanitizeOrder(extras.statsOrder)
     val hidden = extras.statsHidden.toSet()
@@ -4013,11 +4429,6 @@ private fun ProfileScreen(c: AppController) {
                             coverFile,
                             removeAvatar,
                         )
-                        avatarFile = null
-                        coverFile = null
-                        removeAvatar = false
-                        removeCover = false
-                        editing = false
                     },
                     enabled = !account.profileBusy,
                 ) {
