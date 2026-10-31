@@ -78,6 +78,21 @@
       statusEl.className = 'small' + (kind ? ' ' + kind : '');
     }
 
+    // O Supabase responde em inglês; os erros comuns ficam em português.
+    function friendly(raw) {
+      const text = String(raw || '');
+      if (/invalid|expired|not found|token/i.test(text)) {
+        return 'Este link expirou ou já foi usado. Peça um novo e-mail em Ajustes → Conta → Esqueci minha senha.';
+      }
+      if (/password/i.test(text)) {
+        return 'A senha não foi aceita. Use pelo menos 6 caracteres e tente de novo.';
+      }
+      if (/network|fetch|failed to fetch/i.test(text)) {
+        return 'Falha de conexão. Confira a internet e tente de novo.';
+      }
+      return text || 'Não foi possível concluir. Tente de novo.';
+    }
+
     function busy(on) {
       saveEl.disabled = on;
       saveEl.textContent = on ? 'Salvando…' : 'Salvar senha';
@@ -100,7 +115,7 @@
     } else if (errorText) {
       let text = errorText;
       try { text = decodeURIComponent(errorText.replace(/\+/g, ' ')); } catch { /* texto já decodificado */ }
-      say(text, 'err');
+      say(friendly(text), 'err');
     } else {
       say('Link inválido ou incompleto. Peça um novo e-mail em Ajustes → Conta → Esqueci minha senha.', 'err');
     }
@@ -145,7 +160,7 @@
         form.hidden = true;
         say('Senha alterada. Abra o Openfy e entre com a nova senha.', 'ok');
       } catch (err) {
-        say(err.message || 'Falha de conexão. Tente de novo.', 'err');
+        say(friendly(err && err.message), 'err');
       } finally {
         busy(false);
       }
