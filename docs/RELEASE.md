@@ -54,9 +54,27 @@ Get-FileHash build\compose\binaries\main\msi\Openfy-*.msi -Algorithm SHA256
 ## 5. Site e docs
 
 - [ ] Atualizar `site/` com a nova versão e link do instalador.
+- [ ] **Publicar o manifesto `site/update-desktop.json`** (ordem importa: binário
+  **antes** do JSON):
+  ```json
+  {
+    "version": "0.4.0",
+    "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.4.0/Openfy-0.4.0.exe",
+    "size": 175373312,
+    "sha256": "3e3283…cbb0",
+    "notes": "resumo curto em uma linha"
+  }
+  ```
+  `size` tem que ser o tamanho exato (o app cancela o download se faltar byte) e
+  `sha256` é conferido antes de abrir o instalador. Se a URL ainda não existir, o
+  app recebe 404 e cai no fallback do GitHub — o manifesto fica mentindo por
+  alguns minutos.
+- [ ] Commitar o manifesto na branch `gh-pages` (worktree `openfy-pages`).
 - [ ] Atualizar a tabela de releases no `README.md`
-  (ex.: `Desktop 0.2.9: https://github.com/Leo-bsb/openfy/releases/tag/v0.2.9`).
+  (ex.: `Desktop 0.4.0: https://github.com/Leo-bsb/openfy/releases/tag/v0.4.0`).
 - [ ] Anotar a versão em `docs/` se houver changelog da sprint.
+- [ ] Android: repetir o mesmo para `site/update-android.json` e o APK em
+  `site/downloads/`.
 
 ## 6. Conferência final
 
