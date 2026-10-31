@@ -1,7 +1,7 @@
 {
-  "version": "0.8.0",
-  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.8.0.apk",
-  "size": 18481580,
-  "sha256": "36f39ddf7af44d2a30e84876559a2b110821292890266312d851228c4a71e3a5",
-  "notes": "Cores RGB livres no tema e no perfil, recuperacao de senha por e-mail, arrastar e soltar com indicador de destino, radio nos tres pontinhos, verificador de atualizacao pelo manifesto do site e equalizador de 10 bandas."
+  "version": "0.9.0",
+  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.0.apk",
+  "size": 18530732,
+  "sha256": "1ee6269ad82965b160266290dcd2ad415c9bd9b115236054a4b037665d79c903",
+  "notes": "Radio como playlist temporaria com tocar/aleatorio/salvar/baixar, comunidade com seguir e playlists publicas, busca novas do perfil, importacao por link do Spotify e recap com imagem."
 }

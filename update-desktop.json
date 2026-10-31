@@ -1,7 +1,7 @@
 {
-  "version": "0.4.0",
-  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.4.0/Openfy-0.4.0.exe",
-  "size": 175373312,
-  "sha256": "3e3283742fdd115e0a29ca506a91dc21531986809f9fa3d7806c8a684f83cbb0",
-  "notes": "Cores RGB livres no tema e no perfil, recuperacao de senha por e-mail, arrastar e soltar com indicador de destino, radio nos tres pontinhos, verificador de atualizacao pelo manifesto do site e equalizador de 10 bandas."
+  "version": "0.5.0",
+  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.5.0/Openfy-0.5.0.exe",
+  "size": 175557632,
+  "sha256": "912554c8394b0d9895bf29f11607a520595c97bf2721eae5435554b04afabc15",
+  "notes": "Radio como playlist temporaria com tocar/aleatorio/salvar/baixar, comunidade com seguir e playlists publicas, busca novas do perfil, importacao por link do Spotify e recap com imagem."
 }
