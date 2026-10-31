@@ -568,10 +568,24 @@ class SupabaseApi {
             contentType(ContentType.Application.Json)
             setBody(ShareCodeBody(playlistId))
         }
-        if (!response.status.isSuccess()) decodeError(response)
-        val text = response.bodyAsText().trim()
-        if (text.isEmpty()) return null  // PostgREST pode devolver corpo vazio para null
-        return json.decodeFromString<String?>(text)?.takeIf { it.isNotBlank() }
+        if (response.status.isSuccess()) {
+            val text = response.bodyAsText().trim()
+            if (text.isNotEmpty()) {
+                val code = runCatching { json.decodeFromString<String?>(text) }.getOrNull()
+                if (!code.isNullOrBlank()) return code
+            }
+        }
+        // Schema antigo (sem a migration 0002): a coluna ainda pode ser lida pelo dono.
+        return runCatching {
+            val rows = client.get("$baseUrl/rest/v1/playlists") {
+                header("apikey", anonKey)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                parameter("select", "share_code")
+                parameter("id", "eq.$playlistId")
+                parameter("limit", "1")
+            }
+            decoded<List<ShareCodeRow>>(rows).firstOrNull()?.shareCode
+        }.getOrNull()?.takeIf { it.isNotBlank() }
     }
 
     suspend fun joinPlaylist(accessToken: String, code: String): String {

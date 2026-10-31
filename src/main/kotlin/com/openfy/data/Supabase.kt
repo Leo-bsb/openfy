@@ -105,6 +105,9 @@ data class FollowBody(
 data class VisibilityPatch(val visibility: String)
 
 @Serializable
+data class ShareCodeRow(@SerialName("share_code") val shareCode: String = "")
+
+@Serializable
 data class RemotePublicPlaylist(
     val id: String,
     @SerialName("owner_id") val ownerId: String = "",
@@ -750,10 +753,25 @@ class SupabaseApi {
             contentType(ContentType.Application.Json)
             setBody(ShareCodeBody(playlistId))
         }
-        if (!response.status.isSuccess()) fail(response)
-        val text = response.bodyAsText().trim()
-        if (text.isEmpty()) return null  // PostgREST pode devolver corpo vazio para null
-        return json.decodeFromString<String?>(text)?.takeIf { it.isNotBlank() }
+        if (response.status.value in 200..299) {
+            val text = response.bodyAsText().trim()
+            if (text.isNotEmpty()) {
+                val code = runCatching { json.decodeFromString<String?>(text) }.getOrNull()
+                if (!code.isNullOrBlank()) return code
+            }
+        }
+        // Schema antigo (sem a migration 0002): a coluna ainda pode ser lida pelo dono.
+        val rows = runCatching {
+            decode<List<ShareCodeRow>>(
+                client.get("$baseUrl/rest/v1/playlists") {
+                    auth(accessToken)
+                    parameter("select", "share_code")
+                    parameter("id", "eq.$playlistId")
+                    parameter("limit", "1")
+                },
+            )
+        }.getOrDefault(emptyList())
+        return rows.firstOrNull()?.shareCode?.takeIf { it.isNotBlank() }
     }
 
     /** Sobe a capa para o bucket público e devolve a URL usada pelos outros aparelhos. */

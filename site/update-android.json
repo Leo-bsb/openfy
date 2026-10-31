@@ -1,7 +1,7 @@
 {
-  "version": "0.9.0",
-  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.0.apk",
+  "version": "0.9.1",
+  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.1.apk",
   "size": 18530732,
-  "sha256": "1ee6269ad82965b160266290dcd2ad415c9bd9b115236054a4b037665d79c903",
-  "notes": "Radio como playlist temporaria com tocar/aleatorio/salvar/baixar, comunidade com seguir e playlists publicas, busca novas do perfil, importacao por link do Spotify e recap com imagem."
+  "sha256": "ff6e0f328b7afa1b856528b1191506bf69d2290830f8d670f1bb3c00e299a813",
+  "notes": "Corrige convite e compartilhamento de playlist, evita o erro de permissao ao sincronizar playlists de outra conta e adiciona as novidades dos artistas mais ouvidos."
 }

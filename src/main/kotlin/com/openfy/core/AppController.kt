@@ -149,6 +149,9 @@ class AppController(
 
     val sleepUntil = MutableStateFlow<Long?>(null)
     val stats = MutableStateFlow<Stats?>(null)
+    val newReleases = MutableStateFlow<List<MediaCard>>(emptyList())
+    private var newReleasesAt = 0L
+    private var newReleasesJob: Job? = null
     val topPlayed = MutableStateFlow<List<Track>>(emptyList())
     val recapMonth = MutableStateFlow(YearMonth.now())
     val recapMonths = MutableStateFlow<List<YearMonth>>(emptyList())
@@ -1568,6 +1571,34 @@ class AppController(
         }
     }
 
+    /**
+     * Lançamentos recentes dos artistas mais ouvidos: uma busca por nome para
+     * achar o canal e a página do artista, que já lista álbuns/singles.
+     */
+    fun loadNewReleases(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && newReleases.value.isNotEmpty() && now - newReleasesAt < RELEASES_TTL_MS) return
+        if (newReleasesJob?.isActive == true) return
+        newReleasesJob = scope.launch {
+            val names = withContext(Dispatchers.IO) { db.topArtists(3).map { it.first } }
+            if (names.isEmpty()) return@launch
+            val cards = names.flatMap { name ->
+                runCatching {
+                    val artist = yt.search(name, SearchMode.ARTISTS).artists.firstOrNull()
+                        ?: return@runCatching emptyList()
+                    yt.artist(artist.id).sections
+                        .flatMap { it.cards }
+                        .filter { it.kind == MediaKind.ALBUM || it.kind == MediaKind.PLAYLIST }
+                        .take(2)
+                }.getOrDefault(emptyList())
+            }.distinctBy { it.id }.take(10)
+            if (cards.isNotEmpty()) {
+                newReleases.value = cards
+                newReleasesAt = System.currentTimeMillis()
+            }
+        }
+    }
+
     fun loadTopPlayed() {
         scope.launch {
             val tracks = withContext(Dispatchers.IO) {
@@ -2170,6 +2201,7 @@ class AppController(
         const val AUTO_SIMILAR = 6
         const val AUTO_MAX_DOWNLOADS = 250
         const val AUTO_INTERVAL_MS = 2 * 60 * 60 * 1000L
+        const val RELEASES_TTL_MS = 6 * 60 * 60 * 1000L
         const val SETTINGS_UPDATED_KEY = "settings.updatedAt"
     }
 }

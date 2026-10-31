@@ -210,6 +210,7 @@ data class AuthUiState(
     val communityQuery: String = "",
     val communityResults: List<Profile> = emptyList(),
     val communityOpen: Boolean = false,
+    val newReleases: List<MediaCard> = emptyList(),
     val recapMonth: String = YearMonth.now().atDay(1).toString(),
     val recapMonths: List<String> = emptyList(),
     val recap: RecapData? = null,
@@ -378,6 +379,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var shuffleSnapshotIndex = store.shuffleSnapshotIndex()
     private var radioContinuation: String? = null
     private var radioTracksContinuation: String? = null
+    private var newReleasesJob: Job? = null
+    private var newReleasesAt = 0L
     private var radioLoading = false
     private var radioSeed: Track? = null
     private var playlistContextId: String? = null
@@ -966,10 +969,21 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         if (tracks.isNotEmpty()) api.pushTracks(token, tracks)
 
         if (playlists.isNotEmpty()) {
-            api.upsertPlaylists(
-                token,
-                playlists.map { PushPlaylist(it.id, it.name, it.coverUrl, it.deleted) },
-            )
+            val rows = playlists.map { PushPlaylist(it.id, it.name, it.coverUrl, it.deleted) }
+            val batch = runCatching { api.upsertPlaylists(token, rows) }
+            if (batch.isFailure) {
+                // Playlist de outra conta (ou de onde saímos) derruba o lote;
+                // sobe uma a uma e ignora as recusadas em vez de falhar o sync.
+                rows.forEach { row ->
+                    runCatching { api.upsertPlaylists(token, listOf(row)) }
+                        .onFailure {
+                            com.openfy.core.Log.write(
+                                "sync: playlist ${row.id} não subiu (${it.message}); " +
+                                    "mantida só neste aparelho",
+                            )
+                        }
+                }
+            }
             syncStore.removePlaylists(playlists.map { it.id })
         }
 
@@ -984,7 +998,17 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     deleted = item.deleted,
                 )
             }
-            api.upsertPlaylistItems(token, pushed)
+            val itemsBatch = runCatching { api.upsertPlaylistItems(token, pushed) }
+            if (itemsBatch.isFailure) {
+                pushed.forEach { row ->
+                    runCatching { api.upsertPlaylistItems(token, listOf(row)) }
+                        .onFailure {
+                            com.openfy.core.Log.write(
+                                "sync: item ${row.id} não subiu (${it.message}); ignorado",
+                            )
+                        }
+                }
+            }
             syncStore.removeItems(items.map { it.playlistId to it.trackId })
         }
 
@@ -3415,6 +3439,42 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         play(track, tracks.ifEmpty { listOf(track) }, "recap")
     }
 
+    /** Lançamentos recentes dos artistas mais ouvidos (cache de 6 h). */
+    fun loadNewReleases(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && _state.value.newReleases.isNotEmpty() && now - newReleasesAt < RELEASES_TTL_MS) {
+            return
+        }
+        if (newReleasesJob?.isActive == true) return
+        val snapshot = _state.value
+        val names = (snapshot.profileStats?.topArtists.orEmpty().map { it.name } +
+            snapshot.recentTracks.map { it.artist.substringBefore(",").trim() })
+            .filter { it.isNotBlank() }
+            .distinct()
+            .take(3)
+        if (names.isEmpty()) return
+        newReleasesJob = viewModelScope.launch {
+            val cards = withContext(Dispatchers.IO) {
+                names.flatMap { name ->
+                    runCatching {
+                        val artist = youtube.search(name, SearchMode.ARTISTS).artists.firstOrNull()
+                            ?: return@runCatching emptyList()
+                        youtube.artist(artist.id).sections
+                            .flatMap { it.cards }
+                            .filter {
+                                it.kind == MediaKind.ALBUM || it.kind == MediaKind.PLAYLIST
+                            }
+                            .take(2)
+                    }.getOrDefault(emptyList())
+                }.distinctBy { it.id }.take(10)
+            }
+            if (cards.isNotEmpty()) {
+                newReleasesAt = System.currentTimeMillis()
+                _state.update { it.copy(newReleases = cards) }
+            }
+        }
+    }
+
     /** Gera o PNG 1080×1920 do recap e abre o compartilhamento do Android. */
     fun shareRecap() {
         val s = _state.value
@@ -4522,6 +4582,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val BYTES_PER_MB = 1024L * 1024L
+        const val RELEASES_TTL_MS = 6 * 60 * 60 * 1000L
 
         /** Faixas por lote; o DownloadEngine limita as conexões simultâneas. */
         const val DOWNLOAD_BATCH = 4

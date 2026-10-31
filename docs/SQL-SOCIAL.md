@@ -10,6 +10,13 @@ públicas de quem você segue. Duas coisas dependem do servidor:
    bio/cores ficam num snapshot privado (`activities`, `is_public = false`).
    Nada quebra sem isso.
 
+> **Convite/colaboração não depende mais deste SQL.** A migration 0002 (RPC
+> `playlist_share_code`) não está aplicada no projeto; o app agora lê
+> `playlists.share_code` direto quando a RPC responde 404, então convite e
+> compartilhamento voltam a funcionar. Aplicar a 0002 é recomendado por
+> segurança (hoje qualquer pessoa autenticada que veja uma playlist pública
+> consegue ler o `share_code` dela).
+
 Rode no **SQL Editor** do projeto (role `postgres`), depois recarregue o schema:
 
 ```sql

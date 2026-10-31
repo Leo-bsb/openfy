@@ -37,6 +37,7 @@ parava de ler e a UI travava depois de alguns minutos de uso.
 - [x] Rádio por faixa e por artista, com autoplay e prefetch da próxima página
 - [x] Rádio como playlist temporária: monta a lista sem tocar, com Tocar/Aleatório/Salvar/Baixar (desktop e Android)
 - [x] Comunidade: seguir pessoas, ver seguidores e as playlists públicas de quem você segue
+- [x] Novidades: lançamentos recentes dos artistas mais ouvidos na página inicial
 - [x] Extração de áudio via `innertubex-desktop:v0.11.0` (sem PoToken/WebView)
 - [x] Streaming com Range/seek através do servidor local
 - [x] Fila, aleatório, repetir (off/all/one), volume
@@ -275,13 +276,13 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.5.0.exe
-dist\Openfy-0.5.0.msi
-dist\Openfy-Android-0.9.0.apk
+dist\Openfy-0.5.1.exe
+dist\Openfy-0.5.1.msi
+dist\Openfy-Android-0.9.1.apk
 ```
 
 Páginas (GitHub Pages): https://leo-bsb.github.io/openfy/
-APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.0.apk
+APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.1.apk
 Manifesto de atualização do Android: https://leo-bsb.github.io/openfy/update-android.json
 Manifesto de atualização do desktop: https://leo-bsb.github.io/openfy/update-desktop.json
 Recuperação de senha: https://leo-bsb.github.io/openfy/recover.html
@@ -291,8 +292,8 @@ https://leo-bsb.github.io/openfy/oauth/google.html ·
 Privacidade/termos: seções `#privacidade` e `#termos` da página inicial
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.5.0 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.5.0
-Android 0.9.0 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.0.apk
+Desktop 0.5.1 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.5.1
+Android 0.9.1 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.1.apk
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -312,8 +313,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.5.0.exe`
-- `build\compose\binaries\main\msi\Openfy-0.5.0.msi`
+- `build\compose\binaries\main\exe\Openfy-0.5.1.exe`
+- `build\compose\binaries\main\msi\Openfy-0.5.1.msi`
 
 Rodar em desenvolvimento:
 

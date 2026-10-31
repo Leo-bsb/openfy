@@ -121,6 +121,9 @@ data class FollowBody(
 data class VisibilityPatch(val visibility: String)
 
 @Serializable
+data class ShareCodeRow(@SerialName("share_code") val shareCode: String = "")
+
+@Serializable
 data class RemotePlaylistItem(
     val id: String = "",
     @SerialName("playlist_id") val playlistId: String = "",

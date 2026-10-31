@@ -107,10 +107,21 @@ class SyncEngine(
         )
 
         if (localPlaylists.isNotEmpty()) {
-            api.pushPlaylists(
-                token,
-                localPlaylists.map { PushPlaylist(it.id, it.name, it.deleted, it.coverUrl) },
-            )
+            val rows = localPlaylists.map { PushPlaylist(it.id, it.name, it.deleted, it.coverUrl) }
+            val batch = runCatching { api.pushPlaylists(token, rows) }
+            if (batch.isFailure) {
+                // Uma playlist que não é desta conta (ou de onde o usuário saiu)
+                // derruba o lote inteiro; sobe uma a uma e ignora as recusadas.
+                rows.forEach { row ->
+                    runCatching { api.pushPlaylists(token, listOf(row)) }
+                        .onFailure {
+                            Log.write(
+                                "sync: playlist ${row.id} não subiu (${it.message}); " +
+                                    "mantida só neste aparelho",
+                            )
+                        }
+                }
+            }
             withContext(Dispatchers.IO) {
                 localPlaylists.forEach { db.clearPlaylistDirty(it.id, it.updatedAt) }
             }
@@ -127,7 +138,18 @@ class SyncEngine(
                     deleted = item.deleted,
                 )
             }
-            api.pushItems(token, pushedItems.map { it.second })
+            val pushedRows = pushedItems.map { it.second }
+            val itemsBatch = runCatching { api.pushItems(token, pushedRows) }
+            if (itemsBatch.isFailure) {
+                pushedRows.forEach { row ->
+                    runCatching { api.pushItems(token, listOf(row)) }
+                        .onFailure {
+                            Log.write(
+                                "sync: item ${row.id} não subiu (${it.message}); ignorado",
+                            )
+                        }
+                }
+            }
             withContext(Dispatchers.IO) {
                 pushedItems.forEach { (item, pushed) ->
                     db.setRemoteItemId(item.playlistId, item.trackId, pushed.id)

@@ -1173,7 +1173,10 @@ private fun HomeScreen(c: AppController) {
     val playlists by c.playlists.collectAsState()
     val topPlayed by c.topPlayed.collectAsState()
     val account by c.account.state.collectAsState()
+    val newReleases by c.newReleases.collectAsState()
     val remotePlayback = account.remotePlayback
+
+    LaunchedEffect(Unit) { c.loadNewReleases() }
 
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
         item {
@@ -1313,6 +1316,24 @@ private fun HomeScreen(c: AppController) {
                     )
                 }
                 Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = Tokens.textLow, modifier = Modifier.size(20.dp))
+            }
+        }
+        if (newReleases.isNotEmpty()) {
+            item {
+                Text(
+                    "Novidades dos seus artistas",
+                    color = Tokens.textHigh,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 6.dp, bottom = 10.dp),
+                )
+            }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    items(newReleases, key = { "new-${it.id}" }) { card ->
+                        MediaCardTile(card) { c.openMedia(card) }
+                    }
+                }
             }
         }
         if (recent.isEmpty() && liked.isEmpty() && playlists.isEmpty()) {

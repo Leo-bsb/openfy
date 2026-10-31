@@ -433,6 +433,8 @@ private fun HomeScreen(
     val title = state.profile?.displayName?.takeIf { it.isNotBlank() }
         ?: session.email.substringBefore("@").ifBlank { "Openfy" }
 
+    LaunchedEffect(Unit) { viewModel.loadNewReleases() }
+
     LazyColumn(
         modifier.fillMaxSize().padding(horizontal = 18.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -663,6 +665,25 @@ private fun HomeScreen(
                         tint = OpenfyAccent,
                         modifier = Modifier.size(28.dp),
                     )
+                }
+            }
+        }
+
+        if (state.newReleases.isNotEmpty()) {
+            item {
+                Text(
+                    "Novidades dos seus artistas",
+                    color = OpenfyTextHigh,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(state.newReleases, key = { "new-${it.id}" }) { card ->
+                        ArtistMediaCard(card) { viewModel.openMediaCard(card) }
+                    }
                 }
             }
         }
