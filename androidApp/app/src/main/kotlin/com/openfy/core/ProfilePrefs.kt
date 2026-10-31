@@ -14,6 +14,10 @@ data class ProfileExtras(
     val bio: String = "",
     val coverUrl: String = "",
     val accent: String = "openfy",
+    /** "#RRGGBB" — quando preenchido, vence o preset. */
+    val accentHex: String = "",
+    /** Segundo tom do gradiente; vazio = accentHex. */
+    val accent2Hex: String = "",
     val style: ProfileStyle = ProfileStyle(),
     val statsVisibility: String = ProfileStatsVisibility.PRIVATE,
     val statsOrder: List<String> = ProfileStatsCards.defaultOrder,
@@ -26,6 +30,8 @@ data class ProfileExtras(
         val cleanCover = coverUrl.trim().take(URL_LIMIT)
         val cleanAccent = accent.takeIf { id -> ColorPalette.entries.any { it.id == id } }
             ?: ColorPalette.OPENFY.id
+        val cleanAccentHex = cleanHex(accentHex)
+        val cleanAccent2Hex = cleanHex(accent2Hex)
         val cleanPins = pins
             .asSequence()
             .filter { it.id.isNotBlank() && it.title.isNotBlank() }
@@ -46,6 +52,8 @@ data class ProfileExtras(
             bio = cleanBio,
             coverUrl = cleanCover,
             accent = cleanAccent,
+            accentHex = cleanAccentHex,
+            accent2Hex = cleanAccent2Hex,
             statsVisibility = ProfileStatsVisibility.sanitize(statsVisibility),
             statsOrder = ProfileStatsCards.sanitizeOrder(statsOrder),
             statsHidden = ProfileStatsCards.sanitizeHidden(statsHidden),
@@ -57,6 +65,14 @@ data class ProfileExtras(
         const val BIO_LIMIT = 280
         const val PIN_LIMIT = 10
         const val URL_LIMIT = 2048
+
+        private val HEX_PATTERN = Regex("^#[0-9a-fA-F]{6}$")
+
+        /** Normaliza "#RRGGBB" para minúsculas; qualquer outro formato vira "". */
+        fun cleanHex(value: String): String {
+            val clean = value.trim()
+            return if (HEX_PATTERN.matches(clean)) clean.lowercase() else ""
+        }
     }
 }
 

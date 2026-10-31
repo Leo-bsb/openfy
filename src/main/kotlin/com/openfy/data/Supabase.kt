@@ -9,6 +9,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
@@ -260,6 +261,22 @@ private data class LoginBody(val email: String, val password: String)
 private data class RefreshBody(@SerialName("refresh_token") val refreshToken: String)
 
 @Serializable
+private data class RecoverBody(
+    val email: String,
+    @SerialName("redirect_to") val redirectTo: String,
+)
+
+@Serializable
+private data class RecoveryVerifyBody(
+    val type: String = "recovery",
+    val token: String,
+    val email: String,
+)
+
+@Serializable
+private data class PasswordBody(val password: String)
+
+@Serializable
 private data class MemberRow(@SerialName("playlist_id") val playlistId: String)
 
 @Serializable
@@ -347,6 +364,38 @@ class SupabaseApi {
                 header(HttpHeaders.Authorization, "Bearer $accessToken")
             }
         }
+    }
+
+    /** Dispara o e-mail de recuperação; o link volta para a página estática do site. */
+    suspend fun recover(email: String, redirectTo: String) {
+        ensure(
+            client.post("$baseUrl/auth/v1/recover") {
+                header("apikey", key)
+                contentType(ContentType.Application.Json)
+                setBody(RecoverBody(email.trim(), redirectTo))
+            },
+        )
+    }
+
+    /** Troca o código do e-mail por uma sessão temporária de recuperação. */
+    suspend fun verifyRecovery(email: String, token: String): RemoteAuthSession =
+        decode(
+            client.post("$baseUrl/auth/v1/verify") {
+                header("apikey", key)
+                contentType(ContentType.Application.Json)
+                setBody(RecoveryVerifyBody(token = token.trim(), email = email.trim()))
+            },
+        )
+
+    suspend fun updatePassword(accessToken: String, password: String) {
+        ensure(
+            client.put("$baseUrl/auth/v1/user") {
+                header("apikey", key)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                contentType(ContentType.Application.Json)
+                setBody(PasswordBody(password))
+            },
+        )
     }
 
     suspend fun profile(accessToken: String, userId: String): RemoteProfile? {

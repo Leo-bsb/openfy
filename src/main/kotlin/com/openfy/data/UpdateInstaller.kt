@@ -11,6 +11,7 @@ import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
 import java.time.Duration
 
 /**
@@ -73,6 +74,16 @@ object UpdateInstaller {
             Files.deleteIfExists(temp)
             error("Download incompleto ($written de $total bytes).")
         }
+        if (release.size > 0 && written != release.size) {
+            Files.deleteIfExists(temp)
+            error("O instalador tem $written bytes; o manifesto informa ${release.size}.")
+        }
+        if (release.sha256.isNotBlank() &&
+            !sha256(temp).equals(release.sha256, ignoreCase = true)
+        ) {
+            Files.deleteIfExists(temp)
+            error("O instalador baixado não confere com o hash do manifesto.")
+        }
         try {
             Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
         } catch (error: Exception) {
@@ -83,11 +94,24 @@ object UpdateInstaller {
         target
     }
 
+    /** SHA-256 do arquivo em hex minúsculo, usado para conferir o manifesto. */
+    private fun sha256(file: Path): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(file).use { input ->
+            val buffer = ByteArray(128 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
     /**
      * Cria o auxiliar que espera o PID atual sair e abre o instalador. O
      * instalador do jpackage é interativo: mostra o assistente normal.
-     */
-    fun launchAfterExit(installer: Path): Boolean {
+     */    fun launchAfterExit(installer: Path): Boolean {
         val pid = ProcessHandle.current().pid()
         val dir = installer.parent ?: return false
         val script = dir.resolve("instalar-openfy.bat")

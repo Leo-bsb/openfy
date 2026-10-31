@@ -6,6 +6,16 @@ estão em edição por outras frentes — se o número andar, localize pelo sím
 Medições marcadas como "medido" (tamanhos por `Get-Item`/ZIP; bytes/evento no
 `openfy.db` local); projeções, como "(estimativa)".
 
+> **Decisão de 2026-10-30: a conta de apoiador está cancelada.** Não haverá plano
+> pago, código de resgate, tabela `supporters` nem migration `0004_supporters.sql`.
+> Tudo o que estava previsto para o pacote apoiador — cores RGB livres no tema e no
+> perfil, mais bandas no equalizador, GIF/clipe de perfil, estatísticas e rádio —
+> entra na **conta base**, para todos. O documento abaixo fica como registro da
+> análise (custos, egress, limites do extrator); as seções 1, 3 e o roadmap por
+> entitlement **não devem ser implementados**. O que continua valendo dele é o
+> diagnóstico de peso/sync (seção 2) e as recomendações de mídia (seção 3.1 sobre
+> clipe de vídeo).
+
 ## Resumo e decisão
 
 1. **Apoiador é viável sem service_role no cliente e sem CLI**: tabela de códigos

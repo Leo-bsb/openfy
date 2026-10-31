@@ -10,6 +10,7 @@ import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.request.patch
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
@@ -107,6 +108,40 @@ class SupabaseApi {
             setBody(RefreshRequest(refreshToken))
         }
         return decoded(response)
+    }
+
+    /** Envia o e-mail de recuperação de senha com o link de volta para o site. */
+    suspend fun recover(email: String, redirectTo: String) {
+        requireConfigured()
+        val response = client.post("$baseUrl/auth/v1/recover") {
+            header("apikey", anonKey)
+            contentType(ContentType.Application.Json)
+            setBody(RecoverRequest(email.trim(), redirectTo))
+        }
+        if (!response.status.isSuccess()) decodeError(response)
+    }
+
+    /** Troca o código do e-mail por uma sessão de recuperação. */
+    suspend fun verifyRecovery(email: String, token: String): AuthSession {
+        requireConfigured()
+        val response = client.post("$baseUrl/auth/v1/verify") {
+            header("apikey", anonKey)
+            contentType(ContentType.Application.Json)
+            setBody(VerifyRecoveryRequest(token = token.trim(), email = email.trim()))
+        }
+        return decoded(response)
+    }
+
+    /** Define a nova senha usando a sessão de recuperação. */
+    suspend fun updatePassword(accessToken: String, password: String) {
+        requireConfigured()
+        val response = client.put("$baseUrl/auth/v1/user") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            contentType(ContentType.Application.Json)
+            setBody(UpdatePasswordRequest(password))
+        }
+        if (!response.status.isSuccess()) decodeError(response)
     }
 
     suspend fun logout(accessToken: String) {

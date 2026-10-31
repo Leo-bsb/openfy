@@ -37,6 +37,22 @@ data class RefreshRequest(
 )
 
 @Serializable
+data class RecoverRequest(
+    val email: String,
+    @SerialName("redirect_to") val redirectTo: String,
+)
+
+@Serializable
+data class VerifyRecoveryRequest(
+    val type: String = "recovery",
+    val token: String,
+    val email: String,
+)
+
+@Serializable
+data class UpdatePasswordRequest(val password: String)
+
+@Serializable
 data class Profile(
     val id: String = "",
     val handle: String = "",

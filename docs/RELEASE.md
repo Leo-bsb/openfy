@@ -1,9 +1,12 @@
 # RELEASE — checklist do desktop
 
-Versão atual: **0.2.9** (mesmo número em `BuildInfo.VERSION`, `version` e
+Versão atual: **0.4.0** (mesmo número em `BuildInfo.VERSION`, `version` e
 `packageVersion` no `build.gradle.kts`). O verificador de atualizações do app
-(`UpdateChecker`) compara com a maior tag `vX.Y.Z` estável publicada aqui;
-tags com sufixo (`-android`) e prereleases/drafts são ignoradas.
+(`UpdateChecker`) consulta primeiro o manifesto
+`https://leo-bsb.github.io/openfy/update-desktop.json`; se ele falhar, cai nas
+releases do GitHub comparando com a maior tag `vX.Y.Z` estável. Tags com sufixo
+(`-android`) e prereleases/drafts são ignoradas — a release do desktop precisa
+usar `vX.Y.Z` puro.
 
 Sem code signing: não temos certificado, então o instalador é distribuído cru
 e o Windows pode exibir aviso do SmartScreen. O hash publicado é a prova de

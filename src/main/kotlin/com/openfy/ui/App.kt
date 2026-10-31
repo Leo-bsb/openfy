@@ -20,6 +20,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.TooltipArea
 import androidx.compose.foundation.TooltipPlacement
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.hoverable
@@ -38,6 +39,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -140,6 +142,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -379,6 +382,8 @@ fun OpenfyApp(c: AppController, onExit: () -> Unit) {
     val offline by c.offline.collectAsState()
     val importOpen by c.importDialogOpen.collectAsState()
     val palette by c.palette.collectAsState()
+    val accentHex by c.accentHex.collectAsState()
+    val accent2Hex by c.accent2Hex.collectAsState()
 
     // Instalador do desktop pronto: fecha o app para o auxiliar rodar o .exe.
     val exitForUpdate by c.updateExitRequested.collectAsState()
@@ -405,7 +410,7 @@ fun OpenfyApp(c: AppController, onExit: () -> Unit) {
         if (message != null) lastMessage = message
     }
 
-    OpenfyTheme(palette) {
+    OpenfyTheme(palette, accentHex, accent2Hex) {
         Box(Modifier.fillMaxSize().background(Tokens.ink)) {
             // Brilho ambiente no topo, no tom da marca.
             Box(
@@ -1567,6 +1572,117 @@ private fun ReorderHandle(
     }
 }
 
+/** Linha de destino do arrasto; fica acima (ou abaixo) da faixa que vai receber o item. */
+@Composable
+private fun DropTargetLine(modifier: Modifier = Modifier) {
+    Box(
+        modifier.fillMaxWidth().height(2.dp).background(
+            Brush.horizontalGradient(
+                listOf(
+                    Tokens.accent,
+                    Tokens.accent.copy(alpha = 0.35f),
+                    Color.Transparent,
+                ),
+            ),
+        ),
+    )
+}
+
+/** Índice de destino a partir do deslocamento vertical do arrasto. */
+private fun dropTargetIndex(
+    dragIndex: Int?,
+    dragOffset: Float,
+    rowHeightPx: Float,
+    lastIndex: Int,
+): Int? {
+    if (dragIndex == null || lastIndex < 0) return null
+    val steps = (dragOffset / rowHeightPx.coerceAtLeast(1f)).roundToInt()
+    return (dragIndex + steps).coerceIn(0, lastIndex)
+}
+
+/** Seletor RGB livre: prévia, sliders R/G/B e campo hex. */
+@Composable
+private fun RgbColorPicker(
+    label: String,
+    value: String,
+    fallback: Color,
+    onChange: (String) -> Unit,
+) {
+    val start = parseHexColor(value) ?: fallback
+    var red by remember(value, fallback) { mutableStateOf((start.red * 255).roundToInt()) }
+    var green by remember(value, fallback) { mutableStateOf((start.green * 255).roundToInt()) }
+    var blue by remember(value, fallback) { mutableStateOf((start.blue * 255).roundToInt()) }
+    var hexText by remember(value, fallback) { mutableStateOf(colorToHex(start)) }
+    val current = Color(red, green, blue)
+
+    fun sync(r: Int, g: Int, b: Int) {
+        hexText = colorToHex(Color(r, g, b))
+    }
+
+    Column(Modifier.width(230.dp).padding(vertical = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(32.dp).clip(RoundedCornerShape(8.dp)).background(current)
+                    .border(1.dp, Tokens.line, RoundedCornerShape(8.dp)),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(label, color = Tokens.textHigh, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        }
+        listOf("R" to 0, "G" to 1, "B" to 2).forEach { (channel, index) ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(channel, color = Tokens.textLow, fontSize = 10.sp, modifier = Modifier.width(12.dp))
+                Slider(
+                    value = when (index) {
+                        0 -> red.toFloat()
+                        1 -> green.toFloat()
+                        else -> blue.toFloat()
+                    },
+                    onValueChange = { raw ->
+                        val component = raw.roundToInt().coerceIn(0, 255)
+                        when (index) {
+                            0 -> red = component
+                            1 -> green = component
+                            else -> blue = component
+                        }
+                        sync(red, green, blue)
+                    },
+                    onValueChangeFinished = { onChange(colorToHex(Color(red, green, blue))) },
+                    valueRange = 0f..255f,
+                    colors = openfySliderColors(),
+                    modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+                )
+                Text(
+                    when (index) {
+                        0 -> "$red"
+                        1 -> "$green"
+                        else -> "$blue"
+                    },
+                    color = Tokens.textLow,
+                    fontSize = 10.sp,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.width(28.dp),
+                )
+            }
+        }
+        OutlinedTextField(
+            value = hexText,
+            onValueChange = { text ->
+                hexText = text.take(7)
+                parseHexColor(hexText)?.let { color ->
+                    red = (color.red * 255).roundToInt()
+                    green = (color.green * 255).roundToInt()
+                    blue = (color.blue * 255).roundToInt()
+                    onChange(colorToHex(color))
+                }
+            },
+            singleLine = true,
+            label = { Text("Hex", color = Tokens.textLow, fontSize = 10.sp) },
+            textStyle = TextStyle(color = Tokens.textHigh, fontSize = 12.sp),
+            modifier = Modifier.fillMaxWidth().trackInputFocus(),
+        )
+    }
+}
+
 /** Ações rápidas dos cards da Home (sem abrir a faixa). */
 private data class CoverCardMenu(
     val onPlayNext: () -> Unit,
@@ -2556,11 +2672,11 @@ private fun PlaylistScreen(c: AppController, id: String) {
     val downloadedIds by c.downloadedIds.collectAsState()
     val downloadingIds by c.downloadingIds.collectAsState()
 
-    var ordering by remember(id) { mutableStateOf(false) }
     var dragIndex by remember { mutableStateOf<Int?>(null) }
     var dragOffset by remember { mutableStateOf(0f) }
     val density = LocalDensity.current
     var rowHeightPx by remember { mutableStateOf(with(density) { 56.dp.toPx() }) }
+    val targetIndex = dropTargetIndex(dragIndex, dragOffset, rowHeightPx, tracks.lastIndex)
 
     Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
         Row(Modifier.padding(top = 10.dp, bottom = 16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2689,21 +2805,6 @@ private fun PlaylistScreen(c: AppController, id: String) {
                             )
                         }
                     }
-                    if (tracks.size > 1) {
-                        TextButton(onClick = { ordering = !ordering }) {
-                            Icon(
-                                Icons.Filled.DragHandle,
-                                null,
-                                modifier = Modifier.size(16.dp),
-                                tint = if (ordering) Tokens.accent else Tokens.textLow,
-                            )
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                if (ordering) "Concluir ordem" else "Ordenar",
-                                color = if (ordering) Tokens.accent else Tokens.textLow,
-                            )
-                        }
-                    }
                     TextButton(onClick = { meta?.let { c.askRenamePlaylist(it) } }, enabled = meta != null) {
                         Icon(Icons.Filled.Edit, null, modifier = Modifier.size(16.dp), tint = Tokens.textLow)
                         Spacer(Modifier.width(6.dp))
@@ -2718,26 +2819,17 @@ private fun PlaylistScreen(c: AppController, id: String) {
             }
         }
         HorizontalDivider(color = Tokens.line)
-        if (ordering) {
-            Text(
-                "Arraste pelo ícone ⠿ para mudar a ordem. A nova ordem sincroniza com o celular.",
-                color = Tokens.textLow,
-                fontSize = 11.sp,
-                modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
-            )
-        }
         LazyColumn(Modifier.weight(1f)) {
             itemsIndexed(tracks, key = { _, t -> t.id }) { index, track ->
                 val dragging = dragIndex == index
-                Row(
-                    Modifier.fillMaxWidth()
-                        .zIndex(if (dragging) 1f else 0f)
-                        .offset { IntOffset(0, if (dragging) dragOffset.roundToInt() else 0) }
-                        .background(if (dragging) Tokens.panelHigh else Color.Transparent)
-                        .onSizeChanged { rowHeightPx = it.height.toFloat() },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (ordering) {
+                Box(Modifier.fillMaxWidth().zIndex(if (dragging) 1f else 0f)) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .offset { IntOffset(0, if (dragging) dragOffset.roundToInt() else 0) }
+                            .background(if (dragging) Tokens.panelHigh else Color.Transparent)
+                            .onSizeChanged { rowHeightPx = it.height.toFloat() },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         ReorderHandle(
                             onDragStart = {
                                 dragIndex = index
@@ -2745,13 +2837,9 @@ private fun PlaylistScreen(c: AppController, id: String) {
                             },
                             onDrag = { dragOffset += it },
                             onDragEnd = {
-                                val steps = (dragOffset / rowHeightPx).roundToInt()
-                                if (steps != 0) {
-                                    c.moveInPlaylist(
-                                        id,
-                                        index,
-                                        (index + steps).coerceIn(0, tracks.lastIndex),
-                                    )
+                                val target = targetIndex
+                                if (target != null && target != index) {
+                                    c.moveInPlaylist(id, index, target)
                                 }
                                 dragIndex = null
                                 dragOffset = 0f
@@ -2761,21 +2849,29 @@ private fun PlaylistScreen(c: AppController, id: String) {
                                 dragOffset = 0f
                             },
                         )
+                        Box(Modifier.weight(1f)) {
+                            TrackRow(
+                                c = c,
+                                track = track,
+                                index = index,
+                                liked = track.id in likedIds,
+                                onPlay = { c.playTracks(tracks, index) },
+                                onLike = { c.toggleLike(track) },
+                                onPlayNext = { c.playNext(track) },
+                                onQueue = { c.playLater(track) },
+                                onRadio = { c.startTrackRadio(track) },
+                                playlists = playlists,
+                                onAddTo = { playlistId -> c.addToPlaylist(playlistId, track) },
+                                onRemove = { c.removeFromPlaylist(id, track.id) },
+                            )
+                        }
                     }
-                    Box(Modifier.weight(1f)) {
-                        TrackRow(
-                            c = c,
-                            track = track,
-                            index = index,
-                            liked = track.id in likedIds,
-                            onPlay = { c.playTracks(tracks, index) },
-                            onLike = { c.toggleLike(track) },
-                            onPlayNext = { c.playNext(track) },
-                            onQueue = { c.playLater(track) },
-                            onRadio = { c.startTrackRadio(track) },
-                            playlists = playlists,
-                            onAddTo = { playlistId -> c.addToPlaylist(playlistId, track) },
-                            onRemove = { c.removeFromPlaylist(id, track.id) },
+                    if (targetIndex == index && dragIndex != null && targetIndex != dragIndex) {
+                        DropTargetLine(
+                            Modifier.align(
+                                if (targetIndex > dragIndex!!) Alignment.BottomCenter
+                                else Alignment.TopCenter,
+                            ),
                         )
                     }
                 }
@@ -3242,13 +3338,22 @@ private fun DownloadsScreen(c: AppController) {
 }
 
 // ------------------------------------------------------------------ profile
-private fun profileAccent(id: String): Color = when (ColorPalette.fromId(id)) {
+private fun profilePresetAccent(id: String): Color = when (ColorPalette.fromId(id)) {
     ColorPalette.OPENFY -> Color(0xFF2FBFA0)
     ColorPalette.VIOLET -> Color(0xFFA78BFA)
     ColorPalette.ROSE -> Color(0xFFF472B6)
     ColorPalette.AMBER -> Color(0xFFF5A524)
     ColorPalette.ICE -> Color(0xFF7DD3FC)
 }
+
+/** Cor do perfil: o hex livre vence o preset; sem hex, cai no preset escolhido. */
+private fun profileAccent(extras: ProfileExtras): Color =
+    parseHexColor(extras.accentHex) ?: profilePresetAccent(extras.accent)
+
+private fun profileAccent2(extras: ProfileExtras): Color =
+    parseHexColor(extras.accent2Hex)
+        ?: parseHexColor(extras.accentHex)
+        ?: profilePresetAccent(extras.accent)
 
 private fun chooseProfileImage(title: String): File? {
     val chooser = javax.swing.JFileChooser().apply {
@@ -3296,7 +3401,8 @@ private fun ProfileScreen(c: AppController) {
     val profile = account.profile
     val extras = account.profileExtras
     val stats = account.profileStats
-    val accent = profileAccent(extras.accent)
+    val accent = profileAccent(extras)
+    val accent2 = profileAccent2(extras)
     val displayName = nameOrFallback(profile?.displayName, session.email)
     val handle = profile?.handle?.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
 
@@ -3323,6 +3429,8 @@ private fun ProfileScreen(c: AppController) {
     val order = ProfileStatsCards.sanitizeOrder(extras.statsOrder)
     val hidden = extras.statsHidden.toSet()
     val visibleCards = order.filter { it !in hidden }
+    val pinTarget = dropTargetIndex(pinDragIndex, pinDragOffset, pinRowHeightPx, extras.pins.lastIndex)
+    val cardTarget = dropTargetIndex(cardDragIndex, cardDragOffset, cardRowHeightPx, order.lastIndex)
 
     Column(
         Modifier.fillMaxSize().padding(horizontal = 24.dp)
@@ -3355,6 +3463,7 @@ private fun ProfileScreen(c: AppController) {
                 url = extras.coverUrl,
                 gradient = extras.style.coverGradient,
                 accent = accent,
+                accent2 = accent2,
                 glow = extras.style.glow,
                 motion = extras.style.motion,
             )
@@ -3539,6 +3648,14 @@ private fun ProfileScreen(c: AppController) {
                         onDown = { c.moveProfilePin(pin.id, 1) },
                         onRemove = { c.removeProfilePin(pin.id) },
                     )
+                    if (pinTarget == index && pinDragIndex != null && pinTarget != pinDragIndex) {
+                        DropTargetLine(
+                            Modifier.align(
+                                if (pinTarget > pinDragIndex!!) Alignment.BottomCenter
+                                else Alignment.TopCenter,
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -3623,12 +3740,52 @@ private fun ProfileScreen(c: AppController) {
             }
 
             SettingsSection("Cor e efeitos") {
-                SettingsRow("Cor do perfil", "Destaques, gráficos e detalhes.") {
+                SettingsRow("Cor do perfil", "Destaques, gráficos e detalhes. O preset baseia o resto.") {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         ColorPalette.entries.forEach { preset ->
-                            SearchChip(preset.label, extras.accent == preset.id) {
-                                c.updateProfile { it.copy(accent = preset.id) }
+                            SearchChip(preset.label, extras.accentHex.isBlank() && extras.accent == preset.id) {
+                                c.updateProfile {
+                                    it.copy(accent = preset.id, accentHex = "", accent2Hex = "")
+                                }
                             }
+                        }
+                    }
+                }
+                Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                    Text(
+                        "Cor personalizada",
+                        color = Tokens.textHigh,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        "Escolha qualquer tom RGB; o segundo vira o fim do gradiente.",
+                        color = Tokens.textLow,
+                        fontSize = 11.sp,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        RgbColorPicker(
+                            label = "Destaque",
+                            value = extras.accentHex,
+                            fallback = accent,
+                        ) { hex ->
+                            c.updateProfile { it.copy(accentHex = hex) }
+                        }
+                        RgbColorPicker(
+                            label = "Segundo tom",
+                            value = extras.accent2Hex,
+                            fallback = accent2,
+                        ) { hex ->
+                            c.updateProfile { it.copy(accent2Hex = hex) }
+                        }
+                    }
+                    if (extras.accentHex.isNotBlank()) {
+                        TextButton(
+                            onClick = {
+                                c.updateProfile { it.copy(accentHex = "", accent2Hex = "") }
+                            },
+                        ) {
+                            Text("Voltar ao preset", color = Tokens.accent2, fontSize = 12.sp)
                         }
                     }
                 }
@@ -3684,75 +3841,86 @@ private fun ProfileScreen(c: AppController) {
                 Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                     order.forEachIndexed { index, id ->
                         val dragging = cardDragIndex == index
-                        Row(
-                            Modifier.fillMaxWidth()
-                                .zIndex(if (dragging) 1f else 0f)
-                                .offset { IntOffset(0, if (dragging) cardDragOffset.roundToInt() else 0) }
-                                .background(if (dragging) Tokens.panelHigh else Color.Transparent)
-                                .onSizeChanged { cardRowHeightPx = it.height.toFloat() }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                        Box(
+                            Modifier.fillMaxWidth().zIndex(if (dragging) 1f else 0f),
                         ) {
-                            ReorderHandle(
-                                onDragStart = {
-                                    cardDragIndex = index
-                                    cardDragOffset = 0f
-                                },
-                                onDrag = { cardDragOffset += it },
-                                onDragEnd = {
-                                    val steps = (cardDragOffset / cardRowHeightPx).roundToInt()
-                                    var moved = 0
-                                    while (moved < kotlin.math.abs(steps)) {
-                                        c.moveProfileCard(id, if (steps > 0) 1 else -1)
-                                        moved++
-                                    }
-                                    cardDragIndex = null
-                                    cardDragOffset = 0f
-                                },
-                                onDragCancel = {
-                                    cardDragIndex = null
-                                    cardDragOffset = 0f
-                                },
-                            )
-                            Text(
-                                ProfileStatsCards.label(id),
-                                color = Tokens.textHigh,
-                                fontSize = 12.sp,
-                                modifier = Modifier.weight(1f),
-                            )
-                            IconButton(
-                                onClick = { c.moveProfileCard(id, -1) },
-                                enabled = index > 0,
-                                modifier = Modifier.size(28.dp),
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .offset { IntOffset(0, if (dragging) cardDragOffset.roundToInt() else 0) }
+                                    .background(if (dragging) Tokens.panelHigh else Color.Transparent)
+                                    .onSizeChanged { cardRowHeightPx = it.height.toFloat() }
+                                    .padding(vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Icon(
-                                    Icons.Filled.KeyboardArrowUp,
-                                    "Mover para cima",
-                                    tint = if (index > 0) Tokens.textLow else Tokens.textLow.copy(alpha = 0.3f),
-                                    modifier = Modifier.size(16.dp),
-                                )
-                            }
-                            IconButton(
-                                onClick = { c.moveProfileCard(id, 1) },
-                                enabled = index < order.lastIndex,
-                                modifier = Modifier.size(28.dp),
-                            ) {
-                                Icon(
-                                    Icons.Filled.KeyboardArrowDown,
-                                    "Mover para baixo",
-                                    tint = if (index < order.lastIndex) {
-                                        Tokens.textLow
-                                    } else {
-                                        Tokens.textLow.copy(alpha = 0.3f)
+                                ReorderHandle(
+                                    onDragStart = {
+                                        cardDragIndex = index
+                                        cardDragOffset = 0f
                                     },
-                                    modifier = Modifier.size(16.dp),
+                                    onDrag = { cardDragOffset += it },
+                                    onDragEnd = {
+                                        val steps = (cardDragOffset / cardRowHeightPx).roundToInt()
+                                        var moved = 0
+                                        while (moved < kotlin.math.abs(steps)) {
+                                            c.moveProfileCard(id, if (steps > 0) 1 else -1)
+                                            moved++
+                                        }
+                                        cardDragIndex = null
+                                        cardDragOffset = 0f
+                                    },
+                                    onDragCancel = {
+                                        cardDragIndex = null
+                                        cardDragOffset = 0f
+                                    },
+                                )
+                                Text(
+                                    ProfileStatsCards.label(id),
+                                    color = Tokens.textHigh,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                IconButton(
+                                    onClick = { c.moveProfileCard(id, -1) },
+                                    enabled = index > 0,
+                                    modifier = Modifier.size(28.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Filled.KeyboardArrowUp,
+                                        "Mover para cima",
+                                        tint = if (index > 0) Tokens.textLow else Tokens.textLow.copy(alpha = 0.3f),
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { c.moveProfileCard(id, 1) },
+                                    enabled = index < order.lastIndex,
+                                    modifier = Modifier.size(28.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Filled.KeyboardArrowDown,
+                                        "Mover para baixo",
+                                        tint = if (index < order.lastIndex) {
+                                            Tokens.textLow
+                                        } else {
+                                            Tokens.textLow.copy(alpha = 0.3f)
+                                        },
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                }
+                                Switch(
+                                    checked = id !in hidden,
+                                    onCheckedChange = { c.toggleProfileCard(id, it) },
+                                    colors = openfySwitchColors(),
                                 )
                             }
-                            Switch(
-                                checked = id !in hidden,
-                                onCheckedChange = { c.toggleProfileCard(id, it) },
-                                colors = openfySwitchColors(),
-                            )
+                            if (cardTarget == index && cardDragIndex != null && cardTarget != cardDragIndex) {
+                                DropTargetLine(
+                                    Modifier.align(
+                                        if (cardTarget > cardDragIndex!!) Alignment.BottomCenter
+                                        else Alignment.TopCenter,
+                                    ),
+                                )
+                            }
                         }
                     }
                 }
@@ -3891,6 +4059,7 @@ private fun ProfileCover(
     url: String,
     gradient: Boolean,
     accent: Color,
+    accent2: Color = accent,
     glow: Boolean,
     motion: Boolean = false,
 ) {
@@ -3925,6 +4094,7 @@ private fun ProfileCover(
                     brush = Brush.linearGradient(
                         colors = listOf(
                             accent.copy(alpha = if (glow) 0.55f else 0.35f),
+                            accent2.copy(alpha = if (glow) 0.30f else 0.18f),
                             panelHighColor,
                             inkColor,
                         ),
@@ -3949,6 +4119,7 @@ private fun ProfileCover(
                         Brush.linearGradient(
                             listOf(
                                 accent.copy(alpha = if (glow) 0.42f else 0.28f),
+                                accent2.copy(alpha = 0.18f),
                                 Color.Transparent,
                                 inkColor.copy(alpha = 0.35f),
                             ),
@@ -4216,6 +4387,10 @@ private fun SettingsScreen(c: AppController) {
     val closeToTray by c.closeToTray.collectAsState()
     val downloadedSize by c.downloadsSize.collectAsState()
     val palette by c.palette.collectAsState()
+    val accentHex by c.accentHex.collectAsState()
+    val accent2Hex by c.accent2Hex.collectAsState()
+    var customAccent by remember(accentHex) { mutableStateOf(accentHex) }
+    var customAccent2 by remember(accent2Hex) { mutableStateOf(accent2Hex) }
     val playerLayout by c.playerLayout.collectAsState()
     val coverGradient by c.coverGradient.collectAsState()
     val discordEnabled by c.discordEnabled.collectAsState()
@@ -4224,6 +4399,7 @@ private fun SettingsScreen(c: AppController) {
     val discordStatus by c.discord.status.collectAsState()
     var appIdDraft by remember { mutableStateOf(discordAppId) }
     var eqOpen by remember { mutableStateOf(false) }
+    var resetOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(discordAppId) { appIdDraft = discordAppId }
 
@@ -4277,7 +4453,7 @@ private fun SettingsScreen(c: AppController) {
                     colors = openfySwitchColors(),
                 )
             }
-            SettingsRow("Equalizador", "5 bandas + presets") {
+            SettingsRow("Equalizador", "10 bandas + presets") {
                 TextButton(onClick = { eqOpen = true }) {
                     Text("Abrir", color = Tokens.accent)
                 }
@@ -4285,13 +4461,77 @@ private fun SettingsScreen(c: AppController) {
         }
 
         SettingsSection("Aparência") {
+            val fallbackAccent = Tokens.accent
+            val fallbackAccent2 = Tokens.accent2
             SettingsRow(
                 "Paleta de cores",
                 "Aplicada em todo o app e salva para as próximas aberturas.",
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     ColorPalette.entries.forEach { preset ->
-                        SearchChip(preset.label, palette == preset) { c.setPalette(preset) }
+                        SearchChip(preset.label, accentHex.isBlank() && palette == preset) {
+                            c.setPalette(preset)
+                        }
+                    }
+                }
+            }
+            Column(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Cor personalizada",
+                        color = Tokens.textHigh,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Box(
+                        Modifier.size(18.dp).clip(CircleShape)
+                            .background(parseHexColor(accentHex) ?: Tokens.accent),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        accentHex.ifBlank {
+                            ColorPalette.entries.firstOrNull { it == palette }?.label.orEmpty()
+                        },
+                        color = Tokens.textLow,
+                        fontSize = 11.sp,
+                    )
+                }
+                Text(
+                    "Qualquer cor RGB, com um segundo tom para o gradiente.",
+                    color = Tokens.textLow,
+                    fontSize = 11.sp,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    RgbColorPicker(
+                        label = "Destaque",
+                        value = customAccent,
+                        fallback = fallbackAccent,
+                    ) { customAccent = it }
+                    RgbColorPicker(
+                        label = "Segundo tom",
+                        value = customAccent2,
+                        fallback = fallbackAccent2,
+                    ) { customAccent2 = it }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = {
+                            val primary = parseHexColor(customAccent)?.let { colorToHex(it) }
+                                ?: colorToHex(fallbackAccent)
+                            val secondary = parseHexColor(customAccent2)?.let { colorToHex(it) }
+                                ?: primary
+                            c.setCustomPalette(primary, secondary)
+                        },
+                    ) {
+                        Text("Aplicar")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton(
+                        onClick = { c.setPalette(palette) },
+                        enabled = accentHex.isNotBlank() || accent2Hex.isNotBlank(),
+                    ) {
+                        Text("Voltar ao preset", color = Tokens.accent2)
                     }
                 }
             }
@@ -4377,6 +4617,15 @@ private fun SettingsScreen(c: AppController) {
                                 if (creatingAccount) "Já tenho conta" else "Criar conta",
                                 color = Tokens.accent2,
                             )
+                        }
+                        Spacer(Modifier.width(4.dp))
+                        TextButton(
+                            onClick = {
+                                c.account.clearFeedback()
+                                resetOpen = true
+                            },
+                        ) {
+                            Text("Esqueci minha senha", color = Tokens.textLow)
                         }
                     }
                 } else {
@@ -4521,7 +4770,7 @@ private fun SettingsScreen(c: AppController) {
             val exitRequested by c.updateExitRequested.collectAsState()
             SettingsRow(
                 "Verificar ao abrir",
-                "Procura versões novas no GitHub, no máximo 1x por dia.",
+                "Procura no manifesto do site e, se preciso, nas releases do GitHub, no máximo 1x por dia.",
             ) {
                 Switch(
                     checked = autoUpdate,
@@ -4624,6 +4873,134 @@ private fun SettingsScreen(c: AppController) {
         )
     }
     if (eqOpen) EqualizerDialog(c) { eqOpen = false }
+    if (resetOpen) {
+        PasswordResetDialog(
+            c = c,
+            initialEmail = accountEmail.ifBlank { account.session?.email.orEmpty() },
+        ) { resetOpen = false }
+    }
+}
+
+@Composable
+private fun PasswordResetDialog(
+    c: AppController,
+    initialEmail: String,
+    onClose: () -> Unit,
+) {
+    val account by c.account.state.collectAsState()
+    var email by remember { mutableStateOf(initialEmail) }
+    var code by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var sent by remember { mutableStateOf(false) }
+
+    fun close() {
+        c.account.clearFeedback()
+        onClose()
+    }
+
+    AlertDialog(
+        onDismissRequest = { close() },
+        modifier = Modifier.width(480.dp),
+        containerColor = Tokens.panelHigh,
+        titleContentColor = Tokens.textHigh,
+        title = { Text("Recuperar senha", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column {
+                Text(
+                    "Enviamos um link para o e-mail da conta; ele abre a página de recuperação do Openfy.",
+                    color = Tokens.textLow,
+                    fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = { Text("E-mail") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth().trackInputFocus(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        sent = true
+                        c.account.requestPasswordReset(email)
+                    },
+                    enabled = !account.busy,
+                ) {
+                    if (account.busy) {
+                        CircularProgressIndicator(
+                            Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = Tokens.ink,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text("Enviar e-mail de recuperação")
+                }
+                if (sent) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Abra o link do e-mail para escolher a senha no navegador ou cole abaixo o " +
+                            "código que veio na mensagem.",
+                        color = Tokens.textLow,
+                        fontSize = 11.sp,
+                    )
+                }
+                HorizontalDivider(color = Tokens.line, modifier = Modifier.padding(vertical = 12.dp))
+                Text(
+                    "Já tenho o código",
+                    color = Tokens.textHigh,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it.take(64) },
+                    label = { Text("Código do e-mail") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().trackInputFocus(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Nova senha (mínimo 6)") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth().trackInputFocus(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = { c.account.confirmPasswordReset(email, code, password) },
+                    enabled = !account.busy && code.isNotBlank() && password.length >= 6,
+                ) {
+                    if (account.busy) {
+                        CircularProgressIndicator(
+                            Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = Tokens.ink,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text("Definir nova senha")
+                }
+                account.status?.let {
+                    Text(it, color = Tokens.accent, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+                }
+                account.error?.let {
+                    Text(it, color = Color(0xFFFF8A80), fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { close() }) {
+                Text("Fechar", color = Tokens.accent, fontSize = 13.sp)
+            }
+        },
+    )
 }
 
 @Composable
@@ -4779,7 +5156,7 @@ private fun TrackRow(
                     menuOpen = false; onQueue()
                 })
                 onRadio?.let {
-                    DropdownMenuItem(text = { Text("Iniciar rádio") }, onClick = {
+                    DropdownMenuItem(text = { Text("Rádio desta música") }, onClick = {
                         menuOpen = false; it()
                     })
                 }
@@ -4834,6 +5211,7 @@ private fun QueuePanel(c: AppController, queue: List<Track>, onClose: () -> Unit
     var dragOffset by remember { mutableStateOf(0f) }
     val density = LocalDensity.current
     var rowHeightPx by remember { mutableStateOf(with(density) { 46.dp.toPx() }) }
+    val targetIndex = dropTargetIndex(dragIndex, dragOffset, rowHeightPx, queue.lastIndex)
 
     Column(
         Modifier.width(300.dp).fillMaxHeight()
@@ -4909,42 +5287,60 @@ private fun QueuePanel(c: AppController, queue: List<Track>, onClose: () -> Unit
         LazyColumn(Modifier.weight(1f)) {
             itemsIndexed(queue, key = { i, t -> "q-$i-${t.id}" }) { i, track ->
                 val dragging = dragIndex == i
-                Box(
-                    Modifier.fillMaxWidth()
-                        .zIndex(if (dragging) 1f else 0f)
-                        .offset { IntOffset(0, if (dragging) dragOffset.roundToInt() else 0) }
-                        .onSizeChanged { rowHeightPx = it.height.toFloat() },
-                ) {
-                    QueueRow(
-                        c = c,
-                        track = track,
-                        index = i,
-                        isCurrent = i == idx,
-                        dragModifier = Modifier.pointerInput(queue.size, i) {
-                            detectDragGestures(
-                                onDragStart = {
-                                    dragIndex = i
-                                    dragOffset = 0f
-                                },
-                                onDrag = { change, amount ->
-                                    change.consume()
-                                    dragOffset += amount.y
-                                },
-                                onDragEnd = {
-                                    val steps = (dragOffset / rowHeightPx).roundToInt()
-                                    if (steps != 0) {
-                                        c.moveInQueue(i, (i + steps).coerceIn(0, queue.lastIndex))
-                                    }
-                                    dragIndex = null
-                                    dragOffset = 0f
-                                },
-                                onDragCancel = {
-                                    dragIndex = null
-                                    dragOffset = 0f
-                                },
-                            )
-                        },
-                    )
+                Box(Modifier.fillMaxWidth().zIndex(if (dragging) 1f else 0f)) {
+                    Box(
+                        Modifier.fillMaxWidth()
+                            .alpha(if (dragging) 0.9f else 1f)
+                            .offset { IntOffset(0, if (dragging) dragOffset.roundToInt() else 0) }
+                            .background(if (dragging) Tokens.panelHigh else Color.Transparent)
+                            .onSizeChanged { rowHeightPx = it.height.toFloat() },
+                    ) {
+                        QueueRow(
+                            c = c,
+                            track = track,
+                            index = i,
+                            isCurrent = i == idx,
+                            dragModifier = Modifier.pointerInput(queue.size, i) {
+                                detectDragGestures(
+                                    onDragStart = {
+                                        dragIndex = i
+                                        dragOffset = 0f
+                                    },
+                                    onDrag = { change, amount ->
+                                        change.consume()
+                                        dragOffset += amount.y
+                                    },
+                                    onDragEnd = {
+                                        val from = dragIndex
+                                        val target = dropTargetIndex(
+                                            from,
+                                            dragOffset,
+                                            rowHeightPx,
+                                            queue.lastIndex,
+                                        )
+                                        if (from != null && target != null && target != from) {
+                                            c.moveInQueue(from, target)
+                                        }
+                                        dragIndex = null
+                                        dragOffset = 0f
+                                    },
+                                    onDragCancel = {
+                                        dragIndex = null
+                                        dragOffset = 0f
+                                    },
+                                )
+                            },
+                        )
+                    }
+                    val dragFrom = dragIndex
+                    if (targetIndex == i && dragFrom != null && targetIndex != dragFrom) {
+                        DropTargetLine(
+                            Modifier.align(
+                                if (targetIndex > dragFrom) Alignment.BottomCenter
+                                else Alignment.TopCenter,
+                            ),
+                        )
+                    }
                 }
             }
         }
@@ -5028,6 +5424,14 @@ private fun QueueRow(
                 DropdownMenuItem(
                     text = { Text("Tocar agora") },
                     onClick = { menuOpen = false; c.playQueueAt(index) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Tocar em seguida") },
+                    onClick = { menuOpen = false; c.playNext(track) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Rádio desta música") },
+                    onClick = { menuOpen = false; c.startTrackRadio(track) },
                 )
                 val downloaded = track.id in downloadedIds
                 val downloading = track.id in downloadingIds
@@ -5213,14 +5617,6 @@ private fun NowPlayingBar(c: AppController, queueOpen: Boolean, onQueue: () -> U
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ToggleIconButton(
-                Icons.Filled.Radio,
-                if (radioActive) "Encerrar rádio (ativa)" else "Iniciar rádio da música",
-                active = radioActive,
-                onClick = { c.toggleCurrentTrackRadio() },
-                size = 30.dp,
-                iconSize = 17.dp,
-            )
-            ToggleIconButton(
                 Icons.Filled.Tune,
                 "Equalizador",
                 active = eqOn,
@@ -5388,13 +5784,13 @@ private fun NowPlayingScreen(c: AppController) {
     val shuffle by c.player.shuffle.collectAsState()
     val repeat by c.player.repeat.collectAsState()
     val likedIds by c.player.likedIds.collectAsState()
-    val radioActive by c.player.radioActive.collectAsState()
     val queued by c.queueOpen.collectAsState()
     val queueTitle by c.player.queueTitle.collectAsState()
     val lyrics by c.lyrics.collectAsState()
     val lyricsLoading by c.lyricsLoading.collectAsState()
     val sleepUntil by c.sleepUntil.collectAsState()
     val eqOn by c.player.eqEnabled.collectAsState()
+    val radio by c.player.radioActive.collectAsState()
     val layout by c.playerLayout.collectAsState()
     val coverGradient by c.coverGradient.collectAsState()
 
@@ -5443,6 +5839,21 @@ private fun NowPlayingScreen(c: AppController) {
                     )
                 }
                 Spacer(Modifier.weight(1f))
+                if (radio) {
+                    Row(
+                        Modifier.padding(end = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.Radio,
+                            "Rádio ativa",
+                            tint = Tokens.accent,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Rádio", fontSize = 11.sp, color = Tokens.accent)
+                    }
+                }
                 ToggleIconButton(
                     Icons.AutoMirrored.Filled.QueueMusic,
                     "Fila",
@@ -5642,14 +6053,6 @@ private fun NowPlayingScreen(c: AppController) {
                     }
                 }
                 ToggleIconButton(
-                    Icons.Filled.Radio,
-                    if (radioActive) "Encerrar rádio (ativa)" else "Iniciar rádio da música",
-                    active = radioActive,
-                    onClick = { c.toggleCurrentTrackRadio() },
-                    size = 38.dp,
-                    iconSize = 22.dp,
-                )
-                ToggleIconButton(
                     Icons.Filled.Tune,
                     "Equalizador",
                     active = eqOn,
@@ -5752,7 +6155,7 @@ private fun EqualizerDialog(c: AppController, onClose: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onClose,
-        modifier = Modifier.width(460.dp),
+        modifier = Modifier.width(520.dp),
         containerColor = Tokens.panelHigh,
         titleContentColor = Tokens.textHigh,
         title = {
@@ -5760,10 +6163,14 @@ private fun EqualizerDialog(c: AppController, onClose: () -> Unit) {
                 Icon(Icons.Filled.Tune, null, tint = Tokens.accent, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("Equalizador", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { c.resetEq() }) {
+                    Text("Zerar", color = Tokens.textLow, fontSize = 12.sp)
+                }
             }
         },
         text = {
-            Column {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("Ativar", color = Tokens.textHigh, fontSize = 13.sp)
                     Spacer(Modifier.weight(1f))
@@ -5771,22 +6178,29 @@ private fun EqualizerDialog(c: AppController, onClose: () -> Unit) {
                 }
                 Spacer(Modifier.height(6.dp))
                 Player.EQ_FREQS.forEachIndexed { index, freq ->
-                    val label = if (freq >= 1000) "${freq / 1000} kHz" else "$freq Hz"
+                    val label = when (freq) {
+                        1000 -> "1k"
+                        2000 -> "2k"
+                        4000 -> "4k"
+                        8000 -> "8k"
+                        16000 -> "16k"
+                        else -> "$freq"
+                    }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(label, color = Tokens.textLow, fontSize = 11.sp, modifier = Modifier.width(56.dp))
+                        Text(label, color = Tokens.textLow, fontSize = 10.sp, modifier = Modifier.width(34.dp))
                         Slider(
                             value = gains.getOrElse(index) { 0 }.toFloat(),
                             onValueChange = { c.setEqGain(index, it.roundToInt()) },
                             valueRange = -12f..12f,
                             colors = openfySliderColors(),
-                            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+                            modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
                         )
                         Text(
                             "${if (gains.getOrElse(index) { 0 } > 0) "+" else ""}${gains.getOrElse(index) { 0 }}",
                             color = Tokens.textLow,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             textAlign = TextAlign.End,
-                            modifier = Modifier.width(34.dp),
+                            modifier = Modifier.width(30.dp),
                         )
                     }
                 }

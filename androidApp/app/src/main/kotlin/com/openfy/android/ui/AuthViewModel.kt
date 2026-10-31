@@ -164,6 +164,8 @@ data class AuthUiState(
     val shuffle: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val palette: ColorPalette = ColorPalette.OPENFY,
+    val accentHex: String = "",
+    val accent2Hex: String = "",
     val playerLayout: PlayerLayout = PlayerLayout.CENTER,
     val coverGradient: Boolean = true,
     val recentTracks: List<Track> = emptyList(),
@@ -184,6 +186,7 @@ data class AuthUiState(
     val updateInfo: com.openfy.android.data.AppUpdater.UpdateInfo? = null,
     val updateChecking: Boolean = false,
     val updateDownloading: Float? = null,
+    val updateError: String? = null,
     val queueUndo: QueueUndoState? = null,
     val pendingSyncCount: Int = 0,
     val lyrics: List<LyricLine> = emptyList(),
@@ -191,7 +194,7 @@ data class AuthUiState(
     val lyricsError: String? = null,
     val sleepUntil: Long? = null,
     val eqEnabled: Boolean = false,
-    val eqGains: List<Int> = listOf(0, 0, 0, 0, 0),
+    val eqGains: List<Int> = List(10) { 0 },
     val radioActive: Boolean = false,
     val recapMonth: String = YearMonth.now().atDay(1).toString(),
     val recapMonths: List<String> = emptyList(),
@@ -240,6 +243,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             shuffle = store.shuffle(),
             repeatMode = store.repeatMode(),
             palette = store.palette(),
+            accentHex = store.accentHex().orEmpty(),
+            accent2Hex = store.accent2Hex().orEmpty(),
             playerLayout = store.playerLayout(),
             coverGradient = store.coverGradient(),
             recentTracks = historyStore.recentTracks(24).ifEmpty { store.recentTracks() },
@@ -1122,7 +1127,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val layout = PlayerLayout.fromId(settings.playerLayout)
         val quality = if (settings.audioQuality == "LOW") "LOW" else "HIGH"
         val crossfade = settings.crossfadeSeconds.coerceIn(0, 15)
-        val gains = settings.eqGains.takeIf { it.size == 5 } ?: listOf(0, 0, 0, 0, 0)
+        val gains = EqualizerController.resampleGains(settings.eqGains)
+        // Cor livre é local: se outra máquina escolheu um preset, ele vence aqui.
+        val keepCustomAccent = palette == _state.value.palette
+        if (!keepCustomAccent) {
+            store.setAccentHex(null)
+            store.setAccent2Hex(null)
+        }
         store.setPalette(palette)
         store.setPlayerLayout(layout)
         store.setCoverGradient(settings.coverGradient)
@@ -1138,6 +1149,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _state.update {
             it.copy(
                 palette = palette,
+                accentHex = if (keepCustomAccent) it.accentHex else "",
+                accent2Hex = if (keepCustomAccent) it.accent2Hex else "",
                 playerLayout = layout,
                 coverGradient = settings.coverGradient,
                 autoDownload = settings.autoDownload,
@@ -1634,6 +1647,92 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    /** Envia o e-mail de recuperação com link para a página do site. */
+    fun requestPasswordReset(email: String) {
+        val clean = email.trim()
+        if (clean.isBlank()) {
+            _state.update { it.copy(error = "Informe o e-mail da conta para recuperar a senha.") }
+            return
+        }
+        if (_state.value.busy) return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null, message = null) }
+            runCatching { api.recover(clean, recoverRedirect) }
+                .onSuccess {
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            message = "Enviamos um link de recuperação para $clean. " +
+                                "Confira também a pasta de spam. O link abre a página do site.",
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            error = "Falha ao enviar a recuperação: " +
+                                (error.message ?: error.javaClass.simpleName),
+                        )
+                    }
+                }
+        }
+    }
+
+    /**
+     * Alternativa ao link: o código do e-mail vira uma sessão temporária, a
+     * senha é trocada e o app entra já com a senha nova.
+     */
+    fun confirmPasswordReset(email: String, code: String, newPassword: String) {
+        val cleanEmail = email.trim()
+        val cleanCode = code.trim()
+        if (cleanEmail.isBlank() || cleanCode.isBlank()) {
+            _state.update { it.copy(error = "Informe o e-mail e o código recebido.") }
+            return
+        }
+        if (newPassword.length < 6) {
+            _state.update { it.copy(error = "A nova senha precisa ter pelo menos 6 caracteres.") }
+            return
+        }
+        if (_state.value.busy) return
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, error = null, message = null) }
+            runCatching {
+                val recovery = api.verifyRecovery(cleanEmail, cleanCode)
+                api.updatePassword(recovery.accessToken, newPassword)
+                // A senha já foi trocada; se o login automático falhar, mantém a
+                // sessão da recuperação em vez de fingir que nada aconteceu.
+                runCatching { api.signIn(cleanEmail, newPassword) }.getOrNull() ?: recovery
+            }.onSuccess { auth ->
+                val stored = store.save(auth, emailFallback = cleanEmail)
+                _state.update {
+                    it.copy(
+                        session = stored,
+                        loading = true,
+                        busy = false,
+                        message = "Senha atualizada. Entrando na conta…",
+                    )
+                }
+                loadHome(stored)
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        busy = false,
+                        error = "Falha ao definir a nova senha: " +
+                            (error.message ?: error.javaClass.simpleName),
+                    )
+                }
+            }
+        }
+    }
+
+    private val recoverRedirect: String
+        get() {
+            val site = com.openfy.android.BuildConfig.SITE_URL.trimEnd('/')
+                .ifBlank { "https://leo-bsb.github.io/openfy" }
+            return "$site/recover.html"
+        }
 
     fun refreshLibrary() {
         val session = _state.value.session ?: return
@@ -2802,8 +2901,29 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setPalette(value: ColorPalette) {
         store.setPalette(value)
-        _state.update { it.copy(palette = value) }
+        store.setAccentHex(null)
+        store.setAccent2Hex(null)
+        _state.update { it.copy(palette = value, accentHex = "", accent2Hex = "") }
         markSettingsChanged()
+    }
+
+    /** Cor livre "#RRGGBB"; vazio volta a usar o preset. Não vai para o Supabase. */
+    fun setCustomPalette(accentHex: String, accent2Hex: String) {
+        val accent = com.openfy.core.ProfileExtras.cleanHex(accentHex)
+        val accent2 = com.openfy.core.ProfileExtras.cleanHex(accent2Hex)
+        if (accent.isBlank()) {
+            _state.update { it.copy(error = "Informe uma cor de destaque no formato #RRGGBB.") }
+            return
+        }
+        store.setAccentHex(accent)
+        store.setAccent2Hex(accent2)
+        _state.update {
+            it.copy(
+                accentHex = accent,
+                accent2Hex = accent2,
+                message = "Cor personalizada aplicada.",
+            )
+        }
     }
 
     fun setPlayerLayout(value: PlayerLayout) {
@@ -3830,6 +3950,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 shuffle = store.shuffle(),
                 repeatMode = store.repeatMode(),
                 palette = store.palette(),
+                accentHex = store.accentHex().orEmpty(),
+                accent2Hex = store.accent2Hex().orEmpty(),
                 playerLayout = store.playerLayout(),
                 coverGradient = store.coverGradient(),
                 eqEnabled = store.eqEnabled(),
@@ -3849,15 +3971,22 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     fun checkForUpdates(silent: Boolean = false) {
         if (_state.value.updateChecking || _state.value.updateDownloading != null) return
-        _state.update { it.copy(updateChecking = true) }
+        _state.update { it.copy(updateChecking = true, updateError = null) }
         viewModelScope.launch {
-            val info = runCatching { com.openfy.android.data.AppUpdater.check() }.getOrNull()
+            val result = runCatching { com.openfy.android.data.AppUpdater.check() }
+            val info = result.getOrNull()
+            val reason = result.exceptionOrNull()?.let {
+                it.message?.takeIf { message -> message.isNotBlank() }
+                    ?: it.javaClass.simpleName
+            }
             _state.update {
                 it.copy(
                     updateChecking = false,
                     updateInfo = info,
+                    updateError = if (info == null) reason else null,
                     message = when {
                         info != null -> "Atualização ${info.version} disponível."
+                        reason != null -> if (silent) it.message else "Falha ao verificar: $reason"
                         silent -> it.message
                         else -> "Você já está na versão mais recente (${it.appVersion})."
                     },

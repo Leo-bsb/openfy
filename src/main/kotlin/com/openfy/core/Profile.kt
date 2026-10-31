@@ -15,6 +15,8 @@ data class ProfileExtras(
     val bio: String = "",
     val coverUrl: String = "",
     val accent: String = "openfy",
+    val accentHex: String = "",
+    val accent2Hex: String = "",
     val style: ProfileStyle = ProfileStyle(),
     val statsVisibility: String = ProfileStatsVisibility.PRIVATE,
     val statsOrder: List<String> = ProfileStatsCards.defaultOrder,
@@ -28,6 +30,8 @@ data class ProfileExtras(
         val cleanCover = coverUrl.trim().take(URL_LIMIT)
         val cleanAccent = accent.takeIf { id -> ColorPalette.entries.any { it.id == id } }
             ?: ColorPalette.OPENFY.id
+        val cleanAccentHex = sanitizeHex(accentHex)
+        val cleanAccent2Hex = sanitizeHex(accent2Hex)
         val cleanPins = pins
             .asSequence()
             .filter { it.id.isNotBlank() && it.title.isNotBlank() }
@@ -48,6 +52,8 @@ data class ProfileExtras(
             bio = cleanBio,
             coverUrl = cleanCover,
             accent = cleanAccent,
+            accentHex = cleanAccentHex,
+            accent2Hex = cleanAccent2Hex,
             statsVisibility = ProfileStatsVisibility.sanitize(statsVisibility),
             statsOrder = ProfileStatsCards.sanitizeOrder(statsOrder),
             statsHidden = ProfileStatsCards.sanitizeHidden(statsHidden),
@@ -59,6 +65,10 @@ data class ProfileExtras(
         const val BIO_LIMIT = 280
         const val PIN_LIMIT = 10
         const val URL_LIMIT = 2048
+        private val HEX_COLOR = Regex("""^#[0-9a-fA-F]{6}$""")
+
+        fun sanitizeHex(value: String): String =
+            value.trim().takeIf { HEX_COLOR.matches(it) }?.lowercase() ?: ""
     }
 }
 

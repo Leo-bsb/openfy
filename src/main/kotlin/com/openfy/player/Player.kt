@@ -966,8 +966,11 @@ class Player(
 
     private fun restoreEq() {
         eqEnabled.value = runCatching { db.get("eq.enabled")?.toBooleanStrict() }.getOrNull() ?: false
-        val gains = db.get("eq.gains")?.split(',')?.mapNotNull { it.toIntOrNull() }
-        if (gains != null && gains.size == EQ_FREQS.size) eqGains.value = gains
+        val stored = db.get("eq.gains")?.split(',')?.mapNotNull { it.toIntOrNull() }.orEmpty()
+        if (stored.isNotEmpty()) {
+            eqGains.value = resampleEqGains(stored)
+            if (stored.size != EQ_FREQS.size) saveEq()
+        }
         if (eqEnabled.value) applyEq()
     }
 
@@ -1134,15 +1137,36 @@ class Player(
     }
 
     companion object {
-        val EQ_FREQS = listOf(60, 230, 910, 3600, 14000)
+        val EQ_FREQS = listOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
 
         val EQ_PRESETS = linkedMapOf(
-            "Flat" to listOf(0, 0, 0, 0, 0),
-            "Pop" to listOf(-1, 2, 3, 1, -1),
-            "Rock" to listOf(4, 2, -1, 2, 4),
-            "Graves" to listOf(7, 4, 0, -1, -2),
-            "Vocal" to listOf(-3, -1, 4, 4, 1),
+            "Flat" to List(10) { 0 },
+            "Pop" to listOf(-1, 0, 2, 3, 3, 2, 0, -1, -1, -2),
+            "Rock" to listOf(4, 3, 2, 0, -1, -1, 1, 2, 3, 4),
+            "Graves" to listOf(7, 6, 5, 3, 1, 0, -1, -2, -2, -3),
+            "Vocal" to listOf(-3, -3, -2, -1, 1, 4, 5, 4, 2, 0),
+            "Eletrônica" to listOf(5, 4, 1, 0, -2, 1, 2, 3, 5, 6),
+            "Noturno" to listOf(-4, -3, -2, 0, 1, 2, 1, 0, -2, -4),
         )
+
+        /**
+         * Gains salvos por versões antigas podem ter outra quantidade de bandas.
+         * Reamostra por interpolação linear para o EQ atual em vez de descartar.
+         */
+        fun resampleEqGains(source: List<Int>, target: Int = EQ_FREQS.size): List<Int> {
+            if (target <= 0) return emptyList()
+            if (source.isEmpty()) return List(target) { 0 }
+            if (source.size == target) return source.map { it.coerceIn(-12, 12) }
+            if (source.size == 1) return List(target) { source[0].coerceIn(-12, 12) }
+            return List(target) { index ->
+                val position = index * (source.size - 1).toFloat() / (target - 1)
+                val low = position.toInt()
+                val high = (low + 1).coerceAtMost(source.lastIndex)
+                val fraction = position - low
+                val value = source[low] * (1 - fraction) + source[high] * fraction
+                value.roundToInt().coerceIn(-12, 12)
+            }
+        }
 
         private const val RADIO_PREFETCH = 5
         private const val RADIO_INITIAL = 20

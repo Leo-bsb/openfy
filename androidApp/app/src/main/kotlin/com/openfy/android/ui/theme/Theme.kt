@@ -70,6 +70,16 @@ private val DefaultTokens = OpenfyTokens(
 
 private val LocalOpenfyTokens = staticCompositionLocalOf { DefaultTokens }
 
+private val HexPattern = Regex("^#[0-9a-fA-F]{6}$")
+
+/** Converte "#RRGGBB" em [Color]; devolve null para qualquer outro formato. */
+fun rgbHexColor(value: String): Color? {
+    val clean = value.trim()
+    if (!HexPattern.matches(clean)) return null
+    val rgb = clean.substring(1).toLong(16)
+    return Color(0xFF000000L or rgb)
+}
+
 val OpenfyInk: Color
     @Composable @ReadOnlyComposable get() = LocalOpenfyTokens.current.ink
 
@@ -131,9 +141,34 @@ private fun ColorPalette.toTokens(): OpenfyTokens = when (this) {
 @Composable
 fun OpenfyTheme(
     palette: ColorPalette = ColorPalette.OPENFY,
+    accentHex: String = "",
+    accent2Hex: String = "",
     content: @Composable () -> Unit,
 ) {
-    val tokens = remember(palette) { palette.toTokens() }
+    val tokens = remember(palette, accentHex, accent2Hex) {
+        val base = palette.toTokens()
+        val customAccent = rgbHexColor(accentHex)
+        val customAccent2 = rgbHexColor(accent2Hex) ?: customAccent
+        if (customAccent == null && customAccent2 == null) {
+            base
+        } else {
+            val finalAccent = customAccent ?: base.accent
+            val finalAccent2 = customAccent2 ?: base.accent2
+            OpenfyTokens(
+                ink = base.ink,
+                panel = base.panel,
+                panelHigh = base.panelHigh,
+                line = base.line,
+                textHigh = base.textHigh,
+                textLow = base.textLow,
+                accent = finalAccent,
+                accent2 = finalAccent2,
+                active = finalAccent2,
+                heroTop = lerp(finalAccent, base.ink, 0.82f),
+                heroMid = lerp(finalAccent, base.ink, 0.94f),
+            )
+        }
+    }
     val scheme = remember(tokens) { tokens.colorScheme() }
     CompositionLocalProvider(LocalOpenfyTokens provides tokens) {
         MaterialTheme(

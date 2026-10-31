@@ -283,7 +283,7 @@ class Mpv(
         com.openfy.core.Log.write("mpv: filtros aplicados ($chain)")
     }
 
-    /** Equalizador de 5 bandas via filtros do FFmpeg no mpv. */
+    /** Equalizador por bandas via filtros do FFmpeg no mpv. */
     fun setEqualizer(frequencies: List<Int>, gains: List<Int>) {
         setAudioFilters(
             frequencies.zip(gains).map { (freq, gain) ->

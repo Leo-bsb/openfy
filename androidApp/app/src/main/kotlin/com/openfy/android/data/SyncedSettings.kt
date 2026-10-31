@@ -15,7 +15,7 @@ data class SyncedSettings(
     val audioQuality: String = "HIGH",
     val crossfadeSeconds: Int = 6,
     val eqEnabled: Boolean = false,
-    val eqGains: List<Int> = listOf(0, 0, 0, 0, 0),
+    val eqGains: List<Int> = List(10) { 0 },
     val autoplayRadio: Boolean = true,
     val updatedAt: Long = 0L,
 )

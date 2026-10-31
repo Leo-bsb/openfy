@@ -113,6 +113,9 @@ class AppController(
     val audioQuality = MutableStateFlow("HIGH")
     val closeToTray = MutableStateFlow(true)
     val palette = MutableStateFlow(ColorPalette.OPENFY)
+    /** Cor livre do tema; quando preenchida vence o preset. */
+    val accentHex = MutableStateFlow("")
+    val accent2Hex = MutableStateFlow("")
     val playerLayout = MutableStateFlow(PlayerLayout.CENTER)
     val coverGradient = MutableStateFlow(true)
 
@@ -233,6 +236,8 @@ class AppController(
         yt.setQuality(audioQuality.value)
         closeToTray.value = runCatching { db.get("window.closeToTray")?.toBooleanStrict() }.getOrNull() ?: true
         palette.value = ColorPalette.fromId(db.get("ui.palette"))
+        accentHex.value = ProfileExtras.sanitizeHex(db.get("ui.accentHex").orEmpty())
+        accent2Hex.value = ProfileExtras.sanitizeHex(db.get("ui.accent2Hex").orEmpty())
         playerLayout.value = PlayerLayout.fromId(db.get("ui.player.layout"))
         coverGradient.value = runCatching {
             db.get("ui.player.coverGradient")?.toBooleanStrict()
@@ -1739,6 +1744,11 @@ class AppController(
         markSettingsChanged()
     }
 
+    fun resetEq() {
+        player.resetEq()
+        markSettingsChanged()
+    }
+
     /** Marca o relógio local e agenda o envio dos ajustes para a conta. */
     private fun markSettingsChanged() {
         scope.launch(Dispatchers.IO) {
@@ -1756,11 +1766,15 @@ class AppController(
         val layout = PlayerLayout.fromId(settings.playerLayout)
         val quality = if (settings.audioQuality == "LOW") "LOW" else "HIGH"
         val crossfade = settings.crossfadeSeconds.coerceIn(0, 15)
-        val gains = settings.eqGains
-            .takeIf { it.size == Player.EQ_FREQS.size }
-            ?: List(Player.EQ_FREQS.size) { 0 }
+        val gains = Player.resampleEqGains(settings.eqGains)
         db.put(SETTINGS_UPDATED_KEY, settings.updatedAt.toString())
         db.put("ui.palette", selectedPalette.id)
+        if (selectedPalette != palette.value) {
+            db.put("ui.accentHex", "")
+            db.put("ui.accent2Hex", "")
+            accentHex.value = ""
+            accent2Hex.value = ""
+        }
         palette.value = selectedPalette
         db.put("ui.player.layout", layout.id)
         playerLayout.value = layout
@@ -1783,7 +1797,27 @@ class AppController(
 
     fun setPalette(value: ColorPalette) {
         palette.value = value
-        scope.launch(Dispatchers.IO) { db.put("ui.palette", value.id) }
+        accentHex.value = ""
+        accent2Hex.value = ""
+        scope.launch(Dispatchers.IO) {
+            db.put("ui.palette", value.id)
+            db.put("ui.accentHex", "")
+            db.put("ui.accent2Hex", "")
+        }
+        markSettingsChanged()
+    }
+
+    /** Cor livre escolhida no seletor RGB; o preset fica como base dos demais tons. */
+    fun setCustomPalette(accentHex: String, accent2Hex: String) {
+        val primary = ProfileExtras.sanitizeHex(accentHex)
+        if (primary.isBlank()) return
+        val secondary = ProfileExtras.sanitizeHex(accent2Hex)
+        this.accentHex.value = primary
+        this.accent2Hex.value = secondary
+        scope.launch(Dispatchers.IO) {
+            db.put("ui.accentHex", primary)
+            db.put("ui.accent2Hex", secondary)
+        }
         markSettingsChanged()
     }
 

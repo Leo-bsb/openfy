@@ -4,8 +4,12 @@ Estas páginas são estáticas. Elas servem para:
 
 - landing/download;
 - convite de playlist (`join.html?code=...`);
+- recuperação de senha (`recover.html`, ver `docs/RECUPERACAO-SENHA.md`);
 - callback OAuth com PKCE (`oauth/spotify.html`, `oauth/google.html`);
-- privacidade/termos.
+- privacidade/termos;
+- manifestos de atualização lidos pelos apps:
+  - `update-desktop.json` (desktop: versão, `.exe`, tamanho e SHA-256);
+  - `update-android.json` (Android: versão, `.apk`, tamanho e SHA-256).
 
 ## Publicar
 
@@ -27,8 +31,29 @@ Opção B — pasta `/docs` na branch principal:
 - Spotify: `https://leo-bsb.github.io/openfy/oauth/spotify.html`
 - Google: `https://leo-bsb.github.io/openfy/oauth/google.html`
 - Convite: `https://leo-bsb.github.io/openfy/join.html?code=CODIGO`
+- Recuperação de senha: `https://leo-bsb.github.io/openfy/recover.html` (precisa
+  estar nas *Redirect URLs* do Supabase, junto com
+  `https://leo-bsb.github.io/openfy/**`)
 
 O esquema `openfy://` não precisa de domínio e é o que abre o app instalado.
+
+## Manifestos de atualização
+
+O app lê o JSON direto do Pages, com cache-buster (`?t=<epoch>`) e
+`Cache-Control: no-cache`. Publique o manifesto **depois** do binário existir:
+um `url` apontando para release/asset inexistente faz o download falhar com
+404. O `size` precisa ser o valor exato do arquivo; o `sha256` é opcional no
+Android e conferido no desktop quando presente.
+
+```json
+{
+  "version": "0.4.0",
+  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.4.0/Openfy-0.4.0.exe",
+  "size": 175373312,
+  "sha256": "b887620c…",
+  "notes": "resumo curto em uma linha"
+}
+```
 
 ## Segurança
 

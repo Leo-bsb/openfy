@@ -117,8 +117,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
@@ -183,6 +185,7 @@ import com.openfy.android.ui.theme.OpenfyPanelHigh
 import com.openfy.android.ui.theme.OpenfyTextHigh
 import com.openfy.android.ui.theme.OpenfyTextLow
 import com.openfy.android.ui.theme.OpenfyTheme
+import com.openfy.android.ui.theme.rgbHexColor
 import java.time.Instant
 import java.time.YearMonth
 import java.time.ZoneId
@@ -202,7 +205,11 @@ fun OpenfyApp(viewModel: AuthViewModel = viewModel()) {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    OpenfyTheme(palette = state.palette) {
+    OpenfyTheme(
+        palette = state.palette,
+        accentHex = state.accentHex,
+        accent2Hex = state.accent2Hex,
+    ) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             when {
                 state.loading -> LoadingScreen()
@@ -1440,6 +1447,17 @@ private fun ArtistLinkText(
 }
 
 /**
+ * Lado da linha de destino durante o arrasto: `true` desenha embaixo (a faixa
+ * desce), `false` em cima (sobe) e `null` quando não há destino ou ele é a
+ * própria origem. A reordenação é remove+insert, então descer cai *depois* da
+ * linha de destino.
+ */
+internal fun dropLineBelow(dragFrom: Int?, target: Int?): Boolean? {
+    if (dragFrom == null || target == null || dragFrom == target) return null
+    return target > dragFrom
+}
+
+/**
  * "A & B", "A feat. B" e "A, B" viram nomes clicáveis separados. Vírgulas que
  * fazem parte do nome ("Tyler, The Creator") ficam inteiras.
  */
@@ -2021,12 +2039,15 @@ private fun PlaylistDetailScreen(
     var menuOpen by remember { mutableStateOf(false) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
-    var orderMode by remember { mutableStateOf(false) }
     var draggingId by remember { mutableStateOf<String?>(null) }
     var dragOffsetY by remember { mutableStateOf(0f) }
-    val rowHeightPx = with(LocalDensity.current) { 63.dp.toPx() }
+    val playlistDensity = LocalDensity.current
+    var rowHeightPx by remember { mutableStateOf(with(playlistDensity) { 63.dp.toPx() }) }
     val orderedItems = remember(state.playlistItems) { state.playlistItems.sortedBy { it.rank } }
     val tracksById = remember(state.playlistTracks) { state.playlistTracks.associateBy { it.id } }
+    val draggingIndex = draggingId
+        ?.let { id -> orderedItems.indexOfFirst { it.id == id } }
+        ?.takeIf { it >= 0 }
     val liveItems by rememberUpdatedState(orderedItems)
     Column(modifier.fillMaxSize().padding(horizontal = 18.dp)) {
         Row(
@@ -2131,13 +2152,6 @@ private fun PlaylistDetailScreen(
                     )
                 }
             }
-            TextButton(onClick = { orderMode = !orderMode }) {
-                Text(
-                    if (orderMode) "Pronto" else "Ordenar",
-                    color = if (orderMode) OpenfyAccent else OpenfyTextLow,
-                    fontSize = 11.sp,
-                )
-            }
             IconButton(
                 onClick = { viewModel.playOpenedPlaylist() },
                 enabled = state.playlistTracks.isNotEmpty(),
@@ -2162,70 +2176,91 @@ private fun PlaylistDetailScreen(
                 modifier = Modifier.padding(top = 12.dp),
             )
         }
-        if (orderMode && !state.playlistLoading) {
-            Text(
-                "Segure o ⋮⋮ e arraste para reordenar. Solte para salvar.",
-                color = OpenfyTextLow,
-                fontSize = 11.sp,
-                modifier = Modifier.padding(bottom = 6.dp),
-            )
-        }
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(orderedItems, key = { item -> item.id }) { item ->
-                val track = tracksById[item.trackId] ?: return@items
+            itemsIndexed(orderedItems, key = { _, item -> item.id }) { index, item ->
+                val track = tracksById[item.trackId] ?: return@itemsIndexed
                 val dragging = draggingId == item.id
+                val indicatorColor = OpenfyAccent
+                val target = draggingIndex?.let { from ->
+                    (from + (dragOffsetY / rowHeightPx).roundToInt())
+                        .coerceIn(0, orderedItems.lastIndex)
+                }
+                val lineBelow = dropLineBelow(draggingIndex, target)
+                val showIndicatorTop = lineBelow == false && target == index
+                val showIndicatorBottom = lineBelow == true && target == index
                 Row(
                     Modifier.fillMaxWidth()
                         .zIndex(if (dragging) 1f else 0f)
-                        .offset { IntOffset(0, if (dragging) dragOffsetY.roundToInt() else 0) },
+                        .offset { IntOffset(0, if (dragging) dragOffsetY.roundToInt() else 0) }
+                        .alpha(if (dragging) 0.9f else 1f)
+                        .background(if (dragging) OpenfyPanelHigh else Color.Transparent)
+                        .onSizeChanged { rowHeightPx = it.height.toFloat() }
+                        .drawBehind {
+                            val height = 3.dp.toPx()
+                            val brush = Brush.horizontalGradient(
+                                listOf(indicatorColor, Color.Transparent),
+                            )
+                            if (showIndicatorTop) {
+                                drawRect(
+                                    brush = brush,
+                                    topLeft = Offset(0f, 0f),
+                                    size = Size(size.width, height),
+                                )
+                            }
+                            if (showIndicatorBottom) {
+                                drawRect(
+                                    brush = brush,
+                                    topLeft = Offset(0f, size.height - height),
+                                    size = Size(size.width, height),
+                                )
+                            }
+                        },
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (orderMode) {
-                        Box(
-                            Modifier
-                                .size(34.dp)
-                                .clip(CircleShape)
-                                .pointerInput(item.id) {
-                                    var startIndex = -1
-                                    detectDragGesturesAfterLongPress(
-                                        onDragStart = {
-                                            draggingId = item.id
-                                            dragOffsetY = 0f
-                                            startIndex = liveItems.indexOfFirst { it.id == item.id }
-                                        },
-                                        onDrag = { change, amount ->
-                                            change.consume()
-                                            dragOffsetY += amount.y
-                                        },
-                                        onDragEnd = {
-                                            if (startIndex >= 0) {
-                                                val steps = (dragOffsetY / rowHeightPx).roundToInt()
-                                                if (steps != 0) {
-                                                    val target = (startIndex + steps)
-                                                        .coerceIn(0, liveItems.lastIndex)
-                                                    viewModel.movePlaylistTrackTo(item, target)
-                                                }
+                    Box(
+                        Modifier
+                            .size(34.dp)
+                            .clip(CircleShape)
+                            .pointerInput(item.id) {
+                                var startIndex = -1
+                                detectDragGesturesAfterLongPress(
+                                    onDragStart = {
+                                        draggingId = item.id
+                                        dragOffsetY = 0f
+                                        startIndex = liveItems.indexOfFirst { it.id == item.id }
+                                    },
+                                    onDrag = { change, amount ->
+                                        change.consume()
+                                        dragOffsetY += amount.y
+                                    },
+                                    onDragEnd = {
+                                        if (startIndex >= 0) {
+                                            val steps = (dragOffsetY / rowHeightPx).roundToInt()
+                                            if (steps != 0) {
+                                                val target = (startIndex + steps)
+                                                    .coerceIn(0, liveItems.lastIndex)
+                                                viewModel.movePlaylistTrackTo(item, target)
                                             }
-                                            startIndex = -1
-                                            draggingId = null
-                                            dragOffsetY = 0f
-                                        },
-                                        onDragCancel = {
-                                            startIndex = -1
-                                            draggingId = null
-                                            dragOffsetY = 0f
-                                        },
-                                    )
-                                },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Icon(
-                                Icons.Filled.DragHandle,
-                                "Arrastar para reordenar",
-                                tint = OpenfyTextLow,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
+                                        }
+                                        startIndex = -1
+                                        draggingId = null
+                                        dragOffsetY = 0f
+                                    },
+                                    onDragCancel = {
+                                        startIndex = -1
+                                        draggingId = null
+                                        dragOffsetY = 0f
+                                    },
+                                )
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            Icons.Filled.DragHandle,
+                            "Arrastar para reordenar",
+                            tint = OpenfyTextLow,
+                            modifier = Modifier.size(20.dp),
+                        )
                     }
                     Box(Modifier.weight(1f)) {
                         TrackRow(
@@ -2834,13 +2869,14 @@ private fun recapMonthLabel(value: String): String {
 }
 
 // ------------------------------------------------------------------ profile
-private fun profileAccent(id: String): Color = when (ColorPalette.fromId(id)) {
-    ColorPalette.OPENFY -> Color(0xFF2FBFA0)
-    ColorPalette.VIOLET -> Color(0xFFA78BFA)
-    ColorPalette.ROSE -> Color(0xFFF472B6)
-    ColorPalette.AMBER -> Color(0xFFF5A524)
-    ColorPalette.ICE -> Color(0xFF7DD3FC)
-}
+private fun profileAccent(extras: ProfileExtras): Color =
+    rgbHexColor(extras.accentHex) ?: when (ColorPalette.fromId(extras.accent)) {
+        ColorPalette.OPENFY -> Color(0xFF2FBFA0)
+        ColorPalette.VIOLET -> Color(0xFFA78BFA)
+        ColorPalette.ROSE -> Color(0xFFF472B6)
+        ColorPalette.AMBER -> Color(0xFFF5A524)
+        ColorPalette.ICE -> Color(0xFF7DD3FC)
+    }
 
 private fun formatProfileMinutes(minutes: Long): String {
     if (minutes < 60) return "$minutes min"
@@ -2860,7 +2896,8 @@ private fun ProfileScreen(
     val profile = state.profile
     val extras = state.profileExtras
     val stats = state.profileStats
-    val accent = profileAccent(extras.accent)
+    val accent = profileAccent(extras)
+    val accent2 = rgbHexColor(extras.accent2Hex) ?: accent
     // Cores do tema capturadas na composição: o drawBehind da capa não é
     // @Composable e não pode ler os getters de Theme.kt diretamente.
     val themeInk = OpenfyInk
@@ -2885,6 +2922,11 @@ private fun ProfileScreen(
     }
     val profileDensity = LocalDensity.current
     var profileRowHeightPx by remember { mutableStateOf(with(profileDensity) { 44.dp.toPx() }) }
+    var draggingCardId by remember { mutableStateOf<String?>(null) }
+    var cardDragOffsetY by remember { mutableStateOf(0f) }
+    var draggingPinId by remember { mutableStateOf<String?>(null) }
+    var pinDragOffsetY by remember { mutableStateOf(0f) }
+    var pinRowHeightPx by remember { mutableStateOf(with(profileDensity) { 44.dp.toPx() }) }
 
     var editing by remember { mutableStateOf(false) }
     var name by remember(editing, profile?.displayName) {
@@ -2982,6 +3024,7 @@ private fun ProfileScreen(
                                     accent.copy(
                                         alpha = if (extras.style.glow) 0.55f else 0.32f,
                                     ),
+                                    accent2.copy(alpha = 0.24f),
                                     themePanelHigh,
                                     themeInk,
                                 ),
@@ -2992,7 +3035,7 @@ private fun ProfileScreen(
                             Brush.linearGradient(
                                 colors = listOf(
                                     accent.copy(alpha = accentAlpha),
-                                    accent.copy(alpha = accentAlpha * 0.4f),
+                                    accent2.copy(alpha = accentAlpha * 0.4f),
                                     Color.Transparent,
                                 ),
                                 start = Offset(0f, 0f),
@@ -3019,7 +3062,7 @@ private fun ProfileScreen(
             ) {
                 Box(
                     Modifier.size(82.dp).clip(CircleShape)
-                        .background(accent.copy(alpha = 0.3f))
+                        .background(Brush.linearGradient(listOf(accent, accent2)))
                         .padding(3.dp),
                 ) {
                     Box(
@@ -3217,6 +3260,38 @@ private fun ProfileScreen(
                         )
                     }
                     Text("${row.plays} plays", color = OpenfyTextLow, fontSize = 10.sp)
+                    Box {
+                        var menuOpen by remember { mutableStateOf(false) }
+                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Filled.MoreVert,
+                                "Mais ações da faixa",
+                                tint = OpenfyTextLow,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Tocar em seguida") },
+                                leadingIcon = { Icon(Icons.Filled.PlaylistPlay, null) },
+                                onClick = {
+                                    menuOpen = false
+                                    viewModel.playNext(row.track)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Rádio desta música") },
+                                leadingIcon = { Icon(Icons.Filled.Radio, null) },
+                                onClick = {
+                                    menuOpen = false
+                                    viewModel.startRadioFor(row.track)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -3230,19 +3305,50 @@ private fun ProfileScreen(
                 modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
             )
             extras.pins.forEachIndexed { index, pin ->
+                val pinFrom = draggingPinId
+                    ?.let { id -> extras.pins.indexOfFirst { it.id == id } }
+                    ?: -1
+                val pinTarget = if (pinFrom >= 0) {
+                    (pinFrom + (pinDragOffsetY / pinRowHeightPx).roundToInt())
+                        .coerceIn(0, extras.pins.lastIndex)
+                } else {
+                    -1
+                }
                 ProfilePinRow(
                     pin = pin,
                     editing = editing,
                     accent = accent,
+                    dragging = draggingPinId == pin.id,
+                    dragOffsetY = if (draggingPinId == pin.id) pinDragOffsetY else 0f,
+                    showIndicatorTop = pinTarget == index &&
+                        dropLineBelow(pinFrom.takeIf { it >= 0 }, pinTarget.takeIf { it >= 0 }) == false,
+                    showIndicatorBottom = pinTarget == index &&
+                        dropLineBelow(pinFrom.takeIf { it >= 0 }, pinTarget.takeIf { it >= 0 }) == true,
+                    onDragStart = {
+                        draggingPinId = pin.id
+                        pinDragOffsetY = 0f
+                    },
+                    onDragMove = { pinDragOffsetY += it },
+                    onDragEnd = {
+                        val steps = (pinDragOffsetY / pinRowHeightPx).roundToInt()
+                        if (steps != 0) {
+                            val delta = if (steps > 0) 1 else -1
+                            repeat(abs(steps)) { viewModel.moveProfilePin(pin.id, delta) }
+                        }
+                        draggingPinId = null
+                        pinDragOffsetY = 0f
+                    },
+                    onDragCancel = {
+                        draggingPinId = null
+                        pinDragOffsetY = 0f
+                    },
+                    onHeightChanged = { pinRowHeightPx = it },
                     onPlay = {
                         viewModel.playTracks(extras.pins.map { it.toTrack() }, index, "profile")
                     },
+                    onRadio = { viewModel.startRadioFor(pin.toTrack()) },
                     onUp = { viewModel.moveProfilePin(pin.id, -1) },
                     onDown = { viewModel.moveProfilePin(pin.id, 1) },
-                    onDragSteps = { steps ->
-                        val delta = if (steps > 0) 1 else -1
-                        repeat(abs(steps)) { viewModel.moveProfilePin(pin.id, delta) }
-                    },
                     onRemove = { viewModel.removeProfilePin(pin.id) },
                 )
             }
@@ -3351,9 +3457,43 @@ private fun ProfileScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     items(ColorPalette.entries) { preset ->
-                        AppearanceChip(preset.label, extras.accent == preset.id) {
-                            viewModel.updateProfileExtras { it.copy(accent = preset.id) }
+                        AppearanceChip(
+                            preset.label,
+                            extras.accent == preset.id && extras.accentHex.isBlank(),
+                        ) {
+                            viewModel.updateProfileExtras {
+                                it.copy(accent = preset.id, accentHex = "", accent2Hex = "")
+                            }
                         }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text("Cor personalizada", color = OpenfyTextHigh, fontSize = 12.sp)
+                Text(
+                    "Quando preenchida, vence o preset. Sincroniza com o desktop pelo perfil.",
+                    color = OpenfyTextLow,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+                RgbColorPicker(
+                    label = "Destaque",
+                    value = extras.accentHex,
+                    fallback = accent,
+                ) { hex ->
+                    viewModel.updateProfileExtras { it.copy(accentHex = hex) }
+                }
+                RgbColorPicker(
+                    label = "Segundo tom",
+                    value = extras.accent2Hex,
+                    fallback = accent,
+                ) { hex ->
+                    viewModel.updateProfileExtras { it.copy(accent2Hex = hex) }
+                }
+                if (extras.accentHex.isNotBlank() || extras.accent2Hex.isNotBlank()) {
+                    TextButton(onClick = {
+                        viewModel.updateProfileExtras { it.copy(accentHex = "", accent2Hex = "") }
+                    }) {
+                        Text("Limpar cor personalizada", color = OpenfyTextLow, fontSize = 11.sp)
                     }
                 }
                 ProfileSwitchRow(
@@ -3404,32 +3544,74 @@ private fun ProfileScreen(
 
             ProfileCard("Cartões de estatística") {
                 order.forEachIndexed { index, id ->
+                    val dragging = draggingCardId == id
+                    val indicatorColor = OpenfyAccent
+                    val from = draggingCardId?.let { order.indexOf(it) } ?: -1
+                    val target = if (from >= 0) {
+                        (from + (cardDragOffsetY / profileRowHeightPx).roundToInt())
+                            .coerceIn(0, order.lastIndex)
+                    } else {
+                        -1
+                    }
+                    val lineBelow = dropLineBelow(from.takeIf { it >= 0 }, target.takeIf { it >= 0 })
+                    val showIndicatorTop = lineBelow == false && target == index
+                    val showIndicatorBottom = lineBelow == true && target == index
                     Row(
                         Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                            .onSizeChanged { profileRowHeightPx = it.height.toFloat() },
+                            .zIndex(if (dragging) 1f else 0f)
+                            .offset { IntOffset(0, if (dragging) cardDragOffsetY.roundToInt() else 0) }
+                            .alpha(if (dragging) 0.9f else 1f)
+                            .background(if (dragging) OpenfyPanelHigh else Color.Transparent)
+                            .onSizeChanged { profileRowHeightPx = it.height.toFloat() }
+                            .drawBehind {
+                                val height = 3.dp.toPx()
+                                val brush = Brush.horizontalGradient(
+                                    listOf(indicatorColor, Color.Transparent),
+                                )
+                                if (showIndicatorTop) {
+                                    drawRect(
+                                        brush = brush,
+                                        topLeft = Offset(0f, 0f),
+                                        size = Size(size.width, height),
+                                    )
+                                }
+                                if (showIndicatorBottom) {
+                                    drawRect(
+                                        brush = brush,
+                                        topLeft = Offset(0f, size.height - height),
+                                        size = Size(size.width, height),
+                                    )
+                                }
+                            },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Box(
                             Modifier.size(26.dp).pointerInput(id) {
-                                var accumulated = 0f
                                 detectDragGesturesAfterLongPress(
-                                    onDragStart = { accumulated = 0f },
+                                    onDragStart = {
+                                        draggingCardId = id
+                                        cardDragOffsetY = 0f
+                                    },
                                     onDrag = { change, amount ->
                                         change.consume()
-                                        accumulated += amount.y
+                                        cardDragOffsetY += amount.y
                                     },
                                     onDragEnd = {
                                         val steps =
-                                            (accumulated / profileRowHeightPx).roundToInt()
+                                            (cardDragOffsetY / profileRowHeightPx).roundToInt()
                                         if (steps != 0) {
                                             val delta = if (steps > 0) 1 else -1
                                             repeat(abs(steps)) {
                                                 viewModel.moveProfileCard(id, delta)
                                             }
                                         }
-                                        accumulated = 0f
+                                        draggingCardId = null
+                                        cardDragOffsetY = 0f
                                     },
-                                    onDragCancel = { accumulated = 0f },
+                                    onDragCancel = {
+                                        draggingCardId = null
+                                        cardDragOffsetY = 0f
+                                    },
                                 )
                             },
                             contentAlignment = Alignment.Center,
@@ -3658,17 +3840,49 @@ private fun ProfilePinRow(
     pin: ProfilePin,
     editing: Boolean,
     accent: Color,
+    dragging: Boolean,
+    dragOffsetY: Float,
+    showIndicatorTop: Boolean,
+    showIndicatorBottom: Boolean,
+    onDragStart: () -> Unit,
+    onDragMove: (Float) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
+    onHeightChanged: (Float) -> Unit,
     onPlay: () -> Unit,
+    onRadio: () -> Unit,
     onUp: () -> Unit,
     onDown: () -> Unit,
-    onDragSteps: (Int) -> Unit,
     onRemove: () -> Unit,
 ) {
-    val pinDensity = LocalDensity.current
-    var rowHeightPx by remember { mutableStateOf(with(pinDensity) { 44.dp.toPx() }) }
+    val indicatorColor = OpenfyAccent
     Row(
         Modifier.fillMaxWidth().padding(vertical = 2.dp)
-            .onSizeChanged { rowHeightPx = it.height.toFloat() },
+            .zIndex(if (dragging) 1f else 0f)
+            .offset { IntOffset(0, if (dragging) dragOffsetY.roundToInt() else 0) }
+            .alpha(if (dragging) 0.9f else 1f)
+            .background(if (dragging) OpenfyPanelHigh else Color.Transparent)
+            .onSizeChanged { onHeightChanged(it.height.toFloat()) }
+            .drawBehind {
+                val height = 3.dp.toPx()
+                val brush = Brush.horizontalGradient(
+                    listOf(indicatorColor, Color.Transparent),
+                )
+                if (showIndicatorTop) {
+                    drawRect(
+                        brush = brush,
+                        topLeft = Offset(0f, 0f),
+                        size = Size(size.width, height),
+                    )
+                }
+                if (showIndicatorBottom) {
+                    drawRect(
+                        brush = brush,
+                        topLeft = Offset(0f, size.height - height),
+                        size = Size(size.width, height),
+                    )
+                }
+            },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CoverImage(pin.thumbnail, 40.dp, 7.dp)
@@ -3698,19 +3912,14 @@ private fun ProfilePinRow(
         if (editing) {
             Box(
                 Modifier.size(26.dp).pointerInput(pin.id) {
-                    var accumulated = 0f
                     detectDragGesturesAfterLongPress(
-                        onDragStart = { accumulated = 0f },
+                        onDragStart = { onDragStart() },
                         onDrag = { change, amount ->
                             change.consume()
-                            accumulated += amount.y
+                            onDragMove(amount.y)
                         },
-                        onDragEnd = {
-                            val steps = (accumulated / rowHeightPx).roundToInt()
-                            if (steps != 0) onDragSteps(steps)
-                            accumulated = 0f
-                        },
-                        onDragCancel = { accumulated = 0f },
+                        onDragEnd = { onDragEnd() },
+                        onDragCancel = { onDragCancel() },
                     )
                 },
                 contentAlignment = Alignment.Center,
@@ -3754,6 +3963,27 @@ private fun ProfilePinRow(
                     tint = accent,
                     modifier = Modifier.size(20.dp),
                 )
+            }
+            Box {
+                var menuOpen by remember { mutableStateOf(false) }
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(30.dp)) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        "Mais ações da faixa fixada",
+                        tint = OpenfyTextLow,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Rádio desta música") },
+                        leadingIcon = { Icon(Icons.Filled.Radio, null) },
+                        onClick = {
+                            menuOpen = false
+                            onRadio()
+                        },
+                    )
+                }
             }
         }
     }
@@ -3832,6 +4062,8 @@ private fun SettingsScreen(
     onOpenProfile: () -> Unit = {},
 ) {
     val session = state.session ?: return
+    var customAccent by remember(state.accentHex) { mutableStateOf(state.accentHex) }
+    var customAccent2 by remember(state.accent2Hex) { mutableStateOf(state.accent2Hex) }
     Column(
         modifier.fillMaxSize()
             .verticalScroll(rememberScrollState())
@@ -3941,11 +4173,19 @@ private fun SettingsScreen(
                     }
                     else -> {
                         Text(
-                            "Procura releases novas no GitHub e instala o APK sem passar pela loja.",
+                            "Procura o manifesto do site e releases do GitHub e instala o APK sem passar pela loja.",
                             color = OpenfyTextLow,
                             fontSize = 11.sp,
                             modifier = Modifier.padding(top = 4.dp),
                         )
+                        state.updateError?.let { reason ->
+                            Text(
+                                "Falha ao verificar: $reason",
+                                color = MaterialTheme.colorScheme.error,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
                         TextButton(
                             onClick = { viewModel.checkForUpdates() },
                             enabled = !state.updateChecking,
@@ -4149,6 +4389,38 @@ private fun SettingsScreen(
                     }
                 }
                 Spacer(Modifier.height(10.dp))
+                Text("Cor personalizada", color = OpenfyTextHigh, fontSize = 13.sp)
+                Text(
+                    "Vence a paleta acima. Use #RRGGBB ou ajuste os canais RGB.",
+                    color = OpenfyTextLow,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+                RgbColorPicker(
+                    label = "Destaque",
+                    value = customAccent,
+                    fallback = OpenfyAccent,
+                ) { customAccent = it }
+                RgbColorPicker(
+                    label = "Segundo tom",
+                    value = customAccent2,
+                    fallback = OpenfyAccent2,
+                ) { customAccent2 = it }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Button(
+                        onClick = { viewModel.setCustomPalette(customAccent, customAccent2) },
+                        enabled = rgbHexColor(customAccent) != null && !state.busy,
+                    ) {
+                        Text("Aplicar")
+                    }
+                    TextButton(onClick = { viewModel.setPalette(state.palette) }) {
+                        Text("Voltar ao preset", color = OpenfyTextLow, fontSize = 12.sp)
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
                 Text("Layout do player", color = OpenfyTextHigh, fontSize = 13.sp)
                 Row(
                     Modifier.fillMaxWidth().padding(top = 6.dp),
@@ -4200,6 +4472,99 @@ private fun SettingsScreen(
             }
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun RgbColorPicker(
+    label: String,
+    value: String,
+    fallback: Color,
+    modifier: Modifier = Modifier,
+    onChange: (String) -> Unit,
+) {
+    val initial = rgbHexColor(value) ?: fallback
+    var red by remember(value) { mutableStateOf((initial.red * 255).roundToInt().coerceIn(0, 255)) }
+    var green by remember(value) { mutableStateOf((initial.green * 255).roundToInt().coerceIn(0, 255)) }
+    var blue by remember(value) { mutableStateOf((initial.blue * 255).roundToInt().coerceIn(0, 255)) }
+    var hexText by remember(value) { mutableStateOf(value.lowercase()) }
+    val preview = Color(red, green, blue)
+
+    fun hexOf(r: Int, g: Int, b: Int): String = "#%02x%02x%02x".format(r, g, b)
+
+    fun commit() {
+        val hex = hexOf(red, green, blue)
+        hexText = hex
+        onChange(hex)
+    }
+
+    Column(modifier.fillMaxWidth().padding(top = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = OpenfyTextHigh, fontSize = 12.sp)
+            Spacer(Modifier.weight(1f))
+            Box(
+                Modifier.size(32.dp).clip(CircleShape).background(preview),
+            )
+        }
+        RgbSliderRow("R", red, { red = it }) { commit() }
+        RgbSliderRow("G", green, { green = it }) { commit() }
+        RgbSliderRow("B", blue, { blue = it }) { commit() }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = hexText,
+                onValueChange = { text ->
+                    val clean = text.take(7)
+                    hexText = clean
+                    val parsed = rgbHexColor(clean)
+                    if (parsed != null) {
+                        red = (parsed.red * 255).roundToInt().coerceIn(0, 255)
+                        green = (parsed.green * 255).roundToInt().coerceIn(0, 255)
+                        blue = (parsed.blue * 255).roundToInt().coerceIn(0, 255)
+                        onChange(parsedHex(clean))
+                    }
+                },
+                label = { Text("#RRGGBB") },
+                singleLine = true,
+                isError = hexText.isNotBlank() && rgbHexColor(hexText) == null,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(Modifier.width(8.dp))
+            TextButton(onClick = { commit() }) {
+                Text("Usar", color = OpenfyAccent, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+private fun parsedHex(value: String): String = value.trim().lowercase()
+
+@Composable
+private fun RgbSliderRow(
+    label: String,
+    value: Int,
+    onChange: (Int) -> Unit,
+    onFinished: () -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            color = OpenfyTextLow,
+            fontSize = 11.sp,
+            modifier = Modifier.width(16.dp),
+        )
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { onChange(it.roundToInt().coerceIn(0, 255)) },
+            onValueChangeFinished = onFinished,
+            valueRange = 0f..255f,
+            modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
+        )
+        Text(
+            "$value",
+            color = OpenfyTextLow,
+            fontSize = 11.sp,
+            modifier = Modifier.width(30.dp),
+        )
     }
 }
 
@@ -4533,23 +4898,6 @@ private fun PlayerOverlay(
                         modifier = Modifier.size(24.dp),
                     )
                 }
-                IconButton(
-                    onClick = {
-                        if (state.radioActive) viewModel.stopRadio() else viewModel.startTrackRadio()
-                    },
-                    enabled = track != null && !state.busy,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(if (state.radioActive) OpenfyAccent.copy(alpha = 0.22f) else Color.Transparent),
-                ) {
-                    Icon(
-                        Icons.Filled.Radio,
-                        if (state.radioActive) "Desligar rádio (ativa)" else "Rádio a partir desta faixa",
-                        tint = if (state.radioActive) OpenfyAccent else OpenfyTextLow,
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
                 TextButton(onClick = { queueOpen = true }) {
                     Icon(
                         Icons.Filled.QueueMusic,
@@ -4687,6 +5035,14 @@ private fun QueueDialog(
                     color = OpenfyTextLow,
                     fontSize = 10.sp,
                 )
+                if (state.radioActive) {
+                    TextButton(
+                        onClick = { viewModel.stopRadio() },
+                        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+                    ) {
+                        Text("Encerrar rádio", color = OpenfyAccent, fontSize = 11.sp)
+                    }
+                }
             }
         },
         text = {
@@ -4773,11 +5129,41 @@ private fun QueueDialog(
                     LazyColumn(Modifier.heightIn(max = 420.dp)) {
                     itemsIndexed(state.queue, key = { i, t -> "queue-$i-${t.id}" }) { index, track ->
                         val dragging = draggingIndex == index
+                        val indicatorColor = OpenfyAccent
+                        val target = draggingIndex?.let { from ->
+                            (from + (dragOffsetY / queueRowHeightPx).roundToInt())
+                                .coerceIn(0, state.queue.lastIndex)
+                        }
+                        val lineBelow = dropLineBelow(draggingIndex, target)
+                        val showIndicatorTop = lineBelow == false && target == index
+                        val showIndicatorBottom = lineBelow == true && target == index
                         Row(
                             Modifier.fillMaxWidth()
                                 .zIndex(if (dragging) 1f else 0f)
                                 .offset { IntOffset(0, if (dragging) dragOffsetY.roundToInt() else 0) }
+                                .alpha(if (dragging) 0.9f else 1f)
+                                .background(if (dragging) OpenfyPanelHigh else Color.Transparent)
                                 .onSizeChanged { queueRowHeightPx = it.height.toFloat() }
+                                .drawBehind {
+                                    val height = 3.dp.toPx()
+                                    val brush = Brush.horizontalGradient(
+                                        listOf(indicatorColor, Color.Transparent),
+                                    )
+                                    if (showIndicatorTop) {
+                                        drawRect(
+                                            brush = brush,
+                                            topLeft = Offset(0f, 0f),
+                                            size = Size(size.width, height),
+                                        )
+                                    }
+                                    if (showIndicatorBottom) {
+                                        drawRect(
+                                            brush = brush,
+                                            topLeft = Offset(0f, size.height - height),
+                                            size = Size(size.width, height),
+                                        )
+                                    }
+                                }
                                 .clickable {
                                     viewModel.playQueueIndex(index)
                                     onDismiss()
@@ -4858,17 +5244,49 @@ private fun QueueDialog(
                                     )
                                 }
                             }
-                            Box(
-                                Modifier.size(36.dp).clip(CircleShape)
-                                    .clickable { viewModel.removeQueueIndex(index) },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Icon(
-                                    Icons.Filled.Delete,
-                                    "Remover da fila",
-                                    tint = OpenfyTextLow,
-                                    modifier = Modifier.size(18.dp),
-                                )
+                            Box {
+                                var menuOpen by remember { mutableStateOf(false) }
+                                Box(
+                                    Modifier.size(36.dp).clip(CircleShape)
+                                        .clickable { menuOpen = true },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(
+                                        Icons.Filled.MoreVert,
+                                        "Mais ações da faixa",
+                                        tint = OpenfyTextLow,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = menuOpen,
+                                    onDismissRequest = { menuOpen = false },
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Tocar em seguida") },
+                                        leadingIcon = { Icon(Icons.Filled.PlaylistPlay, null) },
+                                        onClick = {
+                                            menuOpen = false
+                                            viewModel.playNext(track)
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Rádio desta música") },
+                                        leadingIcon = { Icon(Icons.Filled.Radio, null) },
+                                        onClick = {
+                                            menuOpen = false
+                                            viewModel.startRadioFor(track)
+                                        },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Remover da fila") },
+                                        leadingIcon = { Icon(Icons.Filled.Delete, null) },
+                                        onClick = {
+                                            menuOpen = false
+                                            viewModel.removeQueueIndex(index)
+                                        },
+                                    )
+                                }
                             }
                         }
                     }
@@ -5001,36 +5419,48 @@ private fun EqualizerDialog(
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                EqualizerController.BAND_FREQS.forEachIndexed { index, freq ->
-                    val label = if (freq >= 1000) "${freq / 1000} kHz" else "$freq Hz"
-                    val gain = state.eqGains.getOrElse(index) { 0 }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            label,
-                            color = OpenfyTextLow,
-                            fontSize = 11.sp,
-                            modifier = Modifier.width(54.dp),
-                        )
-                        Slider(
-                            value = gain.toFloat(),
-                            onValueChange = { viewModel.setEqGain(index, it.roundToInt()) },
-                            valueRange = -12f..12f,
-                            modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
-                        )
-                        Text(
-                            "${if (gain > 0) "+" else ""}$gain",
-                            color = OpenfyTextLow,
-                            fontSize = 11.sp,
-                            modifier = Modifier.width(30.dp),
-                        )
+                Column(
+                    Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()),
+                ) {
+                    EqualizerController.BAND_FREQS.forEachIndexed { index, freq ->
+                        val label = if (freq >= 1000) "${freq / 1000}k" else "$freq"
+                        val gain = state.eqGains.getOrElse(index) { 0 }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                label,
+                                color = OpenfyTextLow,
+                                fontSize = 11.sp,
+                                modifier = Modifier.width(54.dp),
+                            )
+                            Slider(
+                                value = gain.toFloat(),
+                                onValueChange = { viewModel.setEqGain(index, it.roundToInt()) },
+                                valueRange = -12f..12f,
+                                modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
+                            )
+                            Text(
+                                "${if (gain > 0) "+" else ""}$gain",
+                                color = OpenfyTextLow,
+                                fontSize = 11.sp,
+                                modifier = Modifier.width(30.dp),
+                            )
+                        }
                     }
                 }
                 Spacer(Modifier.height(4.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    items(EqualizerController.PRESETS.keys.toList()) { name ->
-                        TextButton(onClick = { viewModel.applyEqPreset(name) }) {
-                            Text(name, color = OpenfyAccent, fontSize = 12.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    LazyRow(
+                        Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        items(EqualizerController.PRESETS.keys.toList()) { name ->
+                            TextButton(onClick = { viewModel.applyEqPreset(name) }) {
+                                Text(name, color = OpenfyAccent, fontSize = 12.sp)
+                            }
                         }
+                    }
+                    TextButton(onClick = { viewModel.applyEqPreset("Flat") }) {
+                        Text("Zerar", color = OpenfyTextLow, fontSize = 12.sp)
                     }
                 }
             }
@@ -5329,6 +5759,7 @@ private fun LoginScreen(state: AuthUiState, viewModel: AuthViewModel) {
     var password by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
     var creating by remember { mutableStateOf(false) }
+    var resetOpen by remember { mutableStateOf(false) }
 
     Box(
         Modifier.fillMaxSize()
@@ -5403,9 +5834,24 @@ private fun LoginScreen(state: AuthUiState, viewModel: AuthViewModel) {
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    if (!creating) {
+                        TextButton(
+                            onClick = { resetOpen = true },
+                            enabled = !state.busy,
+                            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+                        ) {
+                            Text("Esqueci minha senha", color = OpenfyAccent2, fontSize = 12.sp)
+                        }
+                    }
                     state.error?.let {
                         Spacer(Modifier.height(10.dp))
                         Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                    }
+                    if (state.error == null) {
+                        state.message?.let {
+                            Spacer(Modifier.height(10.dp))
+                            Text(it, color = OpenfyAccent2, fontSize = 12.sp)
+                        }
                     }
                     Spacer(Modifier.height(18.dp))
                     Button(
@@ -5449,4 +5895,123 @@ private fun LoginScreen(state: AuthUiState, viewModel: AuthViewModel) {
             )
         }
     }
+    if (resetOpen) {
+        PasswordResetDialog(
+            initialEmail = email,
+            busy = state.busy,
+            feedback = state.error ?: state.message,
+            onDismiss = { resetOpen = false },
+            onSend = { viewModel.requestPasswordReset(it) },
+            onConfirm = { resetEmail, code, newPassword ->
+                viewModel.confirmPasswordReset(resetEmail, code, newPassword)
+            },
+        )
+    }
+}
+
+@Composable
+private fun PasswordResetDialog(
+    initialEmail: String,
+    busy: Boolean,
+    feedback: String?,
+    onDismiss: () -> Unit,
+    onSend: (String) -> Unit,
+    onConfirm: (String, String, String) -> Unit,
+) {
+    var resetEmail by remember(initialEmail) { mutableStateOf(initialEmail) }
+    var code by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        containerColor = OpenfyPanelHigh,
+        title = { Text("Recuperar senha", color = OpenfyTextHigh) },
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                Text(
+                    "Enviamos um link para o e-mail cadastrado. Ele abre a página do site " +
+                        "onde você define a nova senha. Se preferir, use o código do e-mail.",
+                    color = OpenfyTextLow,
+                    fontSize = 11.sp,
+                )
+                feedback?.let { text ->
+                    Text(
+                        text,
+                        color = if (text.startsWith("Falha")) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            OpenfyAccent2
+                        },
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = resetEmail,
+                    onValueChange = { resetEmail = it },
+                    label = { Text("E-mail") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(6.dp))
+                TextButton(
+                    onClick = { onSend(resetEmail) },
+                    enabled = !busy && resetEmail.isNotBlank(),
+                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+                ) {
+                    if (busy) {
+                        CircularProgressIndicator(
+                            Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = OpenfyTextLow,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text("Enviar e-mail de recuperação", color = OpenfyAccent, fontSize = 12.sp)
+                }
+                Spacer(Modifier.height(10.dp))
+                Text("Já tenho o código", color = OpenfyTextHigh, fontSize = 13.sp)
+                Text(
+                    "Use o código de 6 dígitos do e-mail. Ele vale por pouco tempo.",
+                    color = OpenfyTextLow,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it },
+                    label = { Text("Código do e-mail") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = newPassword,
+                    onValueChange = { newPassword = it },
+                    label = { Text("Nova senha") },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(6.dp))
+                Button(
+                    onClick = { onConfirm(resetEmail, code, newPassword) },
+                    enabled = !busy && resetEmail.isNotBlank() && code.isNotBlank() &&
+                        newPassword.length >= 6,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Definir nova senha")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) {
+                Text("Fechar", color = OpenfyAccent)
+            }
+        },
+    )
 }

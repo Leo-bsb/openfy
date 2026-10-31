@@ -8,6 +8,7 @@ import com.openfy.core.ProfileExtras
 import com.openfy.core.ProfileStatsData
 import com.openfy.core.RepeatMode
 import com.openfy.core.Track
+import com.openfy.android.playback.EqualizerController
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
@@ -82,6 +83,8 @@ class SessionStore(context: Context) {
     fun clear() {
         val crossfade = crossfadeSeconds()
         val palette = palette()
+        val accentHex = accentHex()
+        val accent2Hex = accent2Hex()
         val layout = playerLayout()
         val gradient = coverGradient()
         val eqEnabled = eqEnabled()
@@ -92,6 +95,8 @@ class SessionStore(context: Context) {
         prefs.edit().clear()
             .putInt("crossfade_seconds", crossfade)
             .putString("ui_palette", palette.id)
+            .putString("ui_accent_hex", accentHex.orEmpty())
+            .putString("ui_accent2_hex", accent2Hex.orEmpty())
             .putString("ui_player_layout", layout.id)
             .putBoolean("ui_cover_gradient", gradient)
             .putBoolean("eq_enabled", eqEnabled)
@@ -107,6 +112,26 @@ class SessionStore(context: Context) {
 
     fun setPalette(value: ColorPalette) {
         prefs.edit().putString("ui_palette", value.id).apply()
+    }
+
+    /** Cor de destaque personalizada ("#RRGGBB"); null quando usa o preset. */
+    fun accentHex(): String? = prefs.getString("ui_accent_hex", null)
+        ?.takeIf { it.isNotBlank() }
+
+    fun setAccentHex(value: String?) {
+        prefs.edit().apply {
+            if (value.isNullOrBlank()) remove("ui_accent_hex") else putString("ui_accent_hex", value)
+        }.apply()
+    }
+
+    /** Segundo tom do gradiente; null = mesmo tom do destaque. */
+    fun accent2Hex(): String? = prefs.getString("ui_accent2_hex", null)
+        ?.takeIf { it.isNotBlank() }
+
+    fun setAccent2Hex(value: String?) {
+        prefs.edit().apply {
+            if (value.isNullOrBlank()) remove("ui_accent2_hex") else putString("ui_accent2_hex", value)
+        }.apply()
     }
 
     fun playerLayout(): PlayerLayout =
@@ -128,11 +153,13 @@ class SessionStore(context: Context) {
         prefs.edit().putBoolean("eq_enabled", enabled).apply()
     }
 
-    fun eqGains(): List<Int> = prefs.getString("eq_gains", null)
-        ?.split(',')
-        ?.mapNotNull { it.toIntOrNull() }
-        ?.takeIf { it.size == 5 }
-        ?: listOf(0, 0, 0, 0, 0)
+    fun eqGains(): List<Int> {
+        val stored = prefs.getString("eq_gains", null)
+            ?.split(',')
+            ?.mapNotNull { it.toIntOrNull() }
+            ?: return EqualizerController.DEFAULT_GAINS
+        return EqualizerController.resampleGains(stored)
+    }
 
     fun setEqGains(gains: List<Int>) {
         prefs.edit().putString("eq_gains", gains.joinToString(",")).apply()

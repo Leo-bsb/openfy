@@ -13,11 +13,13 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URI
+import java.security.MessageDigest
 
 /**
- * Atualização dentro do app: consulta as releases do GitHub, baixa o APK mais
- * novo e abre o instalador do Android. Só funciona com o mesmo certificado de
- * assinatura do app instalado (é o caso dos APKs gerados no projeto).
+ * Atualização dentro do app: consulta o manifesto do site e as releases do
+ * GitHub, baixa o APK mais novo e abre o instalador do Android. Só funciona com
+ * o mesmo certificado de assinatura do app instalado (é o caso dos APKs gerados
+ * no projeto).
  */
 object AppUpdater {
 
@@ -42,6 +44,7 @@ object AppUpdater {
         val notes: String,
         val apkUrl: String,
         val sizeBytes: Long,
+        val sha256: String = "",
     )
 
     private const val RELEASES_URL = "https://api.github.com/repos/Leo-bsb/openfy/releases?per_page=20"
@@ -55,17 +58,42 @@ object AppUpdater {
         val url: String = "",
         val notes: String = "",
         val size: Long = 0,
+        val sha256: String = "",
     )
+
+    private class HttpStatusException(val code: Int, message: String) : Exception(message)
 
     val currentVersion: String get() = BuildConfig.VERSION_NAME
 
     /**
-     * Retorna a atualização mais nova que a versão instalada, ou null.
+     * Retorna a atualização mais nova que a versão instalada, ou null quando
+     * já está atualizado. Lança exceção quando a consulta falha (rede, CDN ou
+     * resposta inválida), para a UI distinguir falha de "versão mais recente".
      * Primeiro consulta o manifesto publicado no site (sem limite de API) e,
      * se ele não existir, cai para as releases do GitHub.
      */
     suspend fun check(): UpdateInfo? = withContext(Dispatchers.IO) {
-        val info = fromManifest() ?: fromReleases()
+        var manifestAvailable = false
+        var failure: Exception? = null
+        val manifestInfo = try {
+            fromManifest().also { manifestAvailable = it.first }.second
+        } catch (error: Exception) {
+            failure = error
+            null
+        }
+        val info = manifestInfo ?: try {
+            fromReleases()
+        } catch (error: Exception) {
+            if (failure == null) failure = error
+            null
+        }
+        if (info == null && failure != null && !manifestAvailable) {
+            com.openfy.core.Log.write(
+                "updates: falha ao verificar: " +
+                    (failure.message ?: failure.javaClass.simpleName),
+            )
+            throw failure
+        }
         com.openfy.core.Log.write(
             "updates: " + (
                 info?.let { "versao ${it.version} disponivel" }
@@ -75,16 +103,29 @@ object AppUpdater {
         info
     }
 
-    private fun fromManifest(): UpdateInfo? {
-        val body = runCatching { fetch(manifestUrl) }.getOrNull() ?: return null
-        val manifest = runCatching { json.decodeFromString<Manifest>(body) }.getOrNull() ?: return null
-        if (manifest.version.isBlank() || manifest.url.isBlank()) return null
-        if (compareVersions(manifest.version, currentVersion) <= 0) return null
-        return UpdateInfo(manifest.version, manifest.notes.trim(), manifest.url, manifest.size)
+    /** Primeiro valor: o manifesto existe; segundo: atualização encontrada. */
+    private fun fromManifest(): Pair<Boolean, UpdateInfo?> {
+        val body = try {
+            fetch(cacheBuster(manifestUrl), "application/json")
+        } catch (error: HttpStatusException) {
+            // Sem manifesto publicado: tenta as releases normalmente.
+            if (error.code == 404) return false to null else throw error
+        }
+        val manifest = runCatching { json.decodeFromString<Manifest>(body) }.getOrNull()
+            ?: return false to null
+        if (manifest.version.isBlank() || manifest.url.isBlank()) return false to null
+        if (compareVersions(manifest.version, currentVersion) <= 0) return true to null
+        return true to UpdateInfo(
+            version = manifest.version,
+            notes = manifest.notes.trim(),
+            apkUrl = manifest.url.trim(),
+            sizeBytes = manifest.size,
+            sha256 = manifest.sha256.trim().lowercase(),
+        )
     }
 
     private fun fromReleases(): UpdateInfo? {
-        val body = runCatching { fetch(RELEASES_URL) }.getOrNull() ?: return null
+        val body = fetch(cacheBuster(RELEASES_URL), "application/vnd.github+json")
         val releases = runCatching { json.decodeFromString<List<Release>>(body) }.getOrNull()
             ?: return null
         return releases.asSequence()
@@ -112,7 +153,11 @@ object AppUpdater {
         if (target.isFile && target.length() > 0 &&
             (info.sizeBytes <= 0 || target.length() == info.sizeBytes)
         ) {
-            return@withContext target
+            val cachedHash = if (info.sha256.isNotBlank()) sha256(target) else ""
+            if (info.sha256.isBlank() || cachedHash.equals(info.sha256, ignoreCase = true)) {
+                return@withContext target
+            }
+            runCatching { target.delete() }
         }
         val temp = File(dir, "${target.name}.part")
         runCatching { temp.delete() }
@@ -122,6 +167,7 @@ object AppUpdater {
             instanceFollowRedirects = true
             setRequestProperty("User-Agent", "Openfy-Android")
             setRequestProperty("Accept", "application/octet-stream")
+            setRequestProperty("Cache-Control", "no-cache")
         }
         try {
             val code = connection.responseCode
@@ -145,6 +191,19 @@ object AppUpdater {
             if (total > 0 && written != total) {
                 temp.delete()
                 error("Download incompleto ($written de $total bytes).")
+            }
+            if (info.sizeBytes > 0 && temp.length() != info.sizeBytes) {
+                val actual = temp.length()
+                temp.delete()
+                error(
+                    "O APK baixado tem $actual bytes; o manifesto informa ${info.sizeBytes}.",
+                )
+            }
+            if (info.sha256.isNotBlank() &&
+                !sha256(temp).equals(info.sha256, ignoreCase = true)
+            ) {
+                temp.delete()
+                error("O APK baixado não confere com o hash do manifesto.")
             }
             if (!temp.renameTo(target)) {
                 temp.copyTo(target, overwrite = true)
@@ -199,16 +258,38 @@ object AppUpdater {
         return 0
     }
 
-    private fun fetch(url: String): String {
+    /** Evita manifesto/API velhos em cache do GitHub Pages/CDN. */
+    private fun cacheBuster(url: String): String =
+        url + (if ('?' in url) "&" else "?") + "t=" + System.currentTimeMillis()
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun fetch(url: String, accept: String): String {
         val connection = (URI(url).toURL().openConnection() as HttpURLConnection).apply {
-            connectTimeout = 15_000
-            readTimeout = 20_000
+            connectTimeout = 9_000
+            readTimeout = 9_000
+            instanceFollowRedirects = true
             setRequestProperty("User-Agent", "Openfy-Android")
-            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("Accept", accept)
+            setRequestProperty("Cache-Control", "no-cache")
+            setRequestProperty("Pragma", "no-cache")
         }
         return try {
             val code = connection.responseCode
-            if (code !in 200..299) error("GitHub respondeu $code")
+            if (code !in 200..299) {
+                throw HttpStatusException(code, "Servidor respondeu $code ao verificar a atualização.")
+            }
             connection.inputStream.bufferedReader().use { it.readText() }
         } finally {
             runCatching { connection.disconnect() }

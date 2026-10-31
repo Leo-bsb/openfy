@@ -610,6 +610,90 @@ class AccountManager(
         }
     }
 
+    /**
+     * "Esqueci minha senha": dispara o e-mail do Supabase com link para a página
+     * estática do site e o código de recuperação.
+     */
+    fun requestPasswordReset(email: String) {
+        val clean = email.trim()
+        if (!EMAIL_PATTERN.matches(clean)) {
+            _state.update { it.copy(error = "Informe um e-mail válido para recuperar a senha.") }
+            return
+        }
+        if (_state.value.busy) return
+        scope.launch {
+            _state.update {
+                it.copy(busy = true, error = null, status = "Enviando e-mail de recuperação…")
+            }
+            runCatching { api.recover(clean, PASSWORD_RESET_REDIRECT) }
+                .onSuccess {
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            status = "Enviamos um e-mail para $clean. Use o link ou o código recebido.",
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            status = null,
+                            error = error.message ?: "Não foi possível enviar o e-mail.",
+                        )
+                    }
+                }
+        }
+    }
+
+    /** Valida o código do e-mail, troca a senha e entra com a senha nova. */
+    fun confirmPasswordReset(email: String, code: String, newPassword: String) {
+        val clean = email.trim()
+        val token = code.trim()
+        when {
+            !EMAIL_PATTERN.matches(clean) ->
+                _state.update { it.copy(error = "Informe o e-mail da conta.") }
+            token.isBlank() ->
+                _state.update { it.copy(error = "Cole o código que chegou no e-mail.") }
+            newPassword.length < 6 ->
+                _state.update { it.copy(error = "A nova senha precisa de pelo menos 6 caracteres.") }
+            _state.value.busy -> Unit
+            else -> scope.launch {
+                _state.update {
+                    it.copy(busy = true, error = null, status = "Validando o código…")
+                }
+                runCatching {
+                    val auth = api.verifyRecovery(clean, token)
+                    if (auth.accessToken.isBlank()) {
+                        throw SupabaseException(0, "Código inválido ou expirado.")
+                    }
+                    api.updatePassword(auth.accessToken, newPassword)
+                    val signed = runCatching { api.signIn(clean, newPassword) }.getOrNull() ?: auth
+                    saveSession(signed, previous = _state.value.session, emailFallback = clean)
+                }.onSuccess { stored ->
+                    _state.update {
+                        it.copy(
+                            session = stored,
+                            busy = false,
+                            error = null,
+                            status = "Senha alterada e conta conectada.",
+                        )
+                    }
+                    loadProfile(stored)
+                    syncNow()
+                }.onFailure { error ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            status = null,
+                            error = error.message ?: "Não foi possível trocar a senha.",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     fun syncNow() {
         if (_state.value.session == null) return
         if (_state.value.busy) {
@@ -839,3 +923,8 @@ class AccountManager(
         api.close()
     }
 }
+
+/** Página estática publicada pelo site que recebe o link do e-mail. */
+private const val PASSWORD_RESET_REDIRECT = "https://leo-bsb.github.io/openfy/recover.html"
+
+private val EMAIL_PATTERN = Regex("""^[^@\s]+@[^@\s]+\.[^@\s]+$""")

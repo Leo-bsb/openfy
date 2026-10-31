@@ -1,6 +1,7 @@
 {
-  "version": "0.7.1",
-  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.7.1.apk",
-  "size": 18393592,
-  "notes": "Corrige download duplicado quando a fila automatica e a playlist pedem a mesma faixa. Mantem artista clicavel na aba Downloads, downloads em paralelo e atualizacao dentro do app."
+  "version": "0.8.0",
+  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.8.0.apk",
+  "size": 18481580,
+  "sha256": "36f39ddf7af44d2a30e84876559a2b110821292890266312d851228c4a71e3a5",
+  "notes": "Cores RGB livres no tema e no perfil, recuperacao de senha por e-mail, arrastar e soltar com indicador de destino, radio nos tres pontinhos, verificador de atualizacao pelo manifesto do site e equalizador de 10 bandas."
 }
