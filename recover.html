@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Nova senha — Openfy</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .field { text-align: left; margin: 0 0 14px; }
+    .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    .field input {
+      width: 100%;
+      min-height: 42px;
+      padding: 0 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      color: var(--text);
+      font-size: 15px;
+      font-family: inherit;
+    }
+    .field input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    #status { min-height: 20px; margin: 12px 0 0; }
+    #status.err { color: #ff8b7a; }
+    #status.ok { color: var(--accent); }
+    form { margin-top: 18px; }
+  </style>
+</head>
+<body>
+  <main class="card left" style="max-width: 460px; margin-top: 48px;">
+    <h1 style="font-size: 28px;">Nova senha</h1>
+    <p class="muted">Defina a nova senha da sua conta Openfy.</p>
+
+    <form id="form" hidden>
+      <div class="field">
+        <label for="pass">Nova senha</label>
+        <input id="pass" type="password" autocomplete="new-password" minlength="6" required>
+      </div>
+      <div class="field">
+        <label for="pass2">Repita a nova senha</label>
+        <input id="pass2" type="password" autocomplete="new-password" minlength="6" required>
+      </div>
+      <div class="actions left">
+        <button id="save" class="button" type="submit">Salvar senha</button>
+      </div>
+    </form>
+
+    <p id="status" class="small"></p>
+
+    <div class="actions left">
+      <a id="open" class="button ghost" href="openfy://">Abrir o Openfy</a>
+    </div>
+  </main>
+
+  <script>
+    const SUPABASE_URL = 'https://arxoiibjocazfxtliysc.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_p9DT11Nnv2TTYPOo4_oW7A_6DOIeMni';
+
+    const form = document.getElementById('form');
+    const passEl = document.getElementById('pass');
+    const pass2El = document.getElementById('pass2');
+    const saveEl = document.getElementById('save');
+    const statusEl = document.getElementById('status');
+
+    const hash = new URLSearchParams(location.hash.replace(/^#/, ''));
+    const query = new URLSearchParams(location.search);
+
+    const accessToken = hash.get('access_token') || '';
+    const tokenHash = query.get('token_hash') || '';
+    const otp = query.get('token') || hash.get('token') || '';
+    const type = query.get('type') || hash.get('type') || '';
+    const errorCode = query.get('error_code') || hash.get('error_code') || query.get('error') || '';
+    const errorText = query.get('error_description') || hash.get('error_description') || '';
+
+    function say(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = 'small' + (kind ? ' ' + kind : '');
+    }
+
+    function busy(on) {
+      saveEl.disabled = on;
+      saveEl.textContent = on ? 'Salvando…' : 'Salvar senha';
+    }
+
+    function canChange() {
+      return Boolean(accessToken || tokenHash || (otp && type === 'recovery'));
+    }
+
+    if (errorCode) {
+      say('Este link expirou ou já foi usado. Peça um novo e-mail em Ajustes → Conta → Esqueci minha senha.', 'err');
+    } else if (canChange()) {
+      form.hidden = false;
+      say('Escolha uma senha com pelo menos 6 caracteres.');
+      // Remove o token da barra de endereços para não vazar em histórico/compartilhamento.
+      if (accessToken || otp) {
+        history.replaceState(null, '', location.pathname);
+      }
+      passEl.focus();
+    } else if (errorText) {
+      let text = errorText;
+      try { text = decodeURIComponent(errorText.replace(/\+/g, ' ')); } catch { /* texto já decodificado */ }
+      say(text, 'err');
+    } else {
+      say('Link inválido ou incompleto. Peça um novo e-mail em Ajustes → Conta → Esqueci minha senha.', 'err');
+    }
+
+    async function obtainSession() {
+      if (accessToken) return accessToken;
+      const body = type === 'recovery' && tokenHash
+        ? { type: 'recovery', token_hash: tokenHash }
+        : { type: 'recovery', token: otp };
+      const res = await fetch(SUPABASE_URL + '/auth/v1/verify', {
+        method: 'POST',
+        headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.msg || data.error_description || data.error || 'Código inválido ou expirado.');
+      if (!data.access_token) throw new Error('Não foi possível validar o link. Peça um novo e-mail.');
+      return data.access_token;
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const password = passEl.value;
+      if (password.length < 6) return say('A senha precisa ter pelo menos 6 caracteres.', 'err');
+      if (password !== pass2El.value) return say('As senhas não coincidem.', 'err');
+
+      busy(true);
+      say('Salvando…');
+      try {
+        const token = await obtainSession();
+        const res = await fetch(SUPABASE_URL + '/auth/v1/user', {
+          method: 'PUT',
+          headers: {
+            apikey: SUPABASE_KEY,
+            Authorization: 'Bearer ' + token,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ password }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.msg || data.error_description || data.error || 'Não foi possível salvar a senha.');
+        form.hidden = true;
+        say('Senha alterada. Abra o Openfy e entre com a nova senha.', 'ok');
+      } catch (err) {
+        say(err.message || 'Falha de conexão. Tente de novo.', 'err');
+      } finally {
+        busy(false);
+      }
+    });
+  </script>
+</body>
+</html>
