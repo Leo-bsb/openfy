@@ -1,7 +1,7 @@
 {
-  "version": "0.11.1",
-  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.1.apk",
-  "size": 18579956,
-  "sha256": "abeed43e88a2ebef076de8c4bc60360879e9e6b0cbcbe476745beda3988e3fb7",
-  "notes": "Modo DJ com inicio do fade no compasso exato: o Android agenda a transicao em vez de esperar o proximo tick da interface, entao a faixa que entra nao fica atrasada no pulso. Inclui o beatmatch de ate +-8%, entrada no downbeat, troca de graves e ganho por faixa."
+  "version": "0.11.2",
+  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.2.apk",
+  "size": 18563572,
+  "sha256": "bd8f0b5007a6ac97c9d05ed816ee748fd892e4e53c19f5f766e09afa683e21ed",
+  "notes": "Botao 'Esqueci minha senha' oculto por enquanto (a recuperacao volta depois). Mantem o Modo DJ com beatmatch de ate +-8%, entrada no compasso, troca de graves e ganho por faixa."
 }
