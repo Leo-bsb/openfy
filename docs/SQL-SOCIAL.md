@@ -74,8 +74,9 @@ sociais são limpos automaticamente por um job do `pg_cron`:
 
 A limpeza remove `social_state` com mais de 7 dias, snapshots privados
 aposentados (`profile_prefs`/`settings_prefs` com `deleted = true`) com mais de
-1 dia e roda `vacuum (full, analyze) public.activities`. O job foi executado
-manualmente em 02/11/2026 e está ativo. Para conferir:
+1 dia e roda `vacuum (full, analyze) public.activities`. A limpeza foi
+executada manualmente em 02/11/2026; o job está ativo e a primeira execução
+agendada ocorre às 04:17 UTC. Para conferir:
 
 ```sql
 select jobid, schedule, command, active
