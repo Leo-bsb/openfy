@@ -392,6 +392,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var crossfadeReady = false
     private var crossfading = false
     private var crossfadeJob: Job? = null
+    private var crossfadeStartJob: Job? = null
     private var crossfadeOld: ExoPlayer? = null
     private var crossfadeDurationMs: Long = 0
     private var crossfadeSeconds = store.crossfadeSeconds()
@@ -559,8 +560,41 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                         if (remaining <= fadeMs + 4_000L && preloadedTrack == null) {
                             maybePreloadNext()
                         }
-                        if (remaining <= fadeMs && crossfadeReady) {
-                            startCrossfade()
+                        if (crossfadeReady && preloadedTrack != null) {
+                            when {
+                                // Ja passou do ponto: comeca agora.
+                                remaining <= fadeMs -> {
+                                    crossfadeStartJob?.cancel()
+                                    crossfadeStartJob = null
+                                    startCrossfade()
+                                }
+                                // Agenda o inicio exato no compasso, em vez de
+                                // esperar o proximo tick de 250 ms (que atrasaria
+                                // a fase da faixa que entra).
+                                remaining <= fadeMs + 1_000L -> {
+                                    if (crossfadeStartJob?.isActive != true) {
+                                        val waitMs = remaining - fadeMs
+                                        crossfadeStartJob = viewModelScope.launch {
+                                            delay(waitMs)
+                                            // Se o usuario buscou outra posicao
+                                            // durante a espera, nao comeca fora do
+                                            // compasso previsto.
+                                            val durNow = player.duration
+                                            val remainingNow = if (durNow > 0) {
+                                                durNow - player.currentPosition
+                                            } else {
+                                                0L
+                                            }
+                                            if (!crossfading && crossfadeReady &&
+                                                preloadedTrack != null && player.isPlaying &&
+                                                remainingNow <= fadeMs + 120L
+                                            ) {
+                                                startCrossfade()
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -4303,10 +4337,15 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
      * Plano da transicao atual. No Android so existe grade de arquivos locais
      * ou baixados; quando a proxima e remota, o plano cai no N1.
      */
-    private fun planFor(nextTrack: Track, s: AuthUiState): MixPlan {
-        val totalMs = if (s.durationMs > 0L) s.durationMs else (s.track?.durationSec ?: 0) * 1000L
+    private fun planFor(
+        nextTrack: Track,
+        s: AuthUiState,
+        durationMs: Long = s.durationMs,
+        positionMs: Long = s.positionMs,
+    ): MixPlan {
+        val totalMs = if (durationMs > 0L) durationMs else (s.track?.durationSec ?: 0) * 1000L
         val remainingSec = if (totalMs > 0L) {
-            (totalMs - s.positionMs).coerceAtLeast(0L) / 1000.0
+            (totalMs - positionMs).coerceAtLeast(0L) / 1000.0
         } else {
             0.0
         }
@@ -4415,10 +4454,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val old = activePlayer
         val new = standbyPlayer
         val state = _state.value
-        val remainingSec = ((state.durationMs - state.positionMs).coerceAtLeast(0L)) / 1000.0
+        val oldPosition = old.currentPosition.coerceAtLeast(0L)
+        val oldDuration = old.duration.takeIf { it > 0L } ?: state.durationMs
+        val remainingSec = ((oldDuration - oldPosition).coerceAtLeast(0L)) / 1000.0
         // Recalcula com o que houver em cache: se a grade da proxima terminou
         // de ser analisada depois do preparo, o N2 entra valendo agora.
-        val plan = planFor(nextTrack, state)
+        val plan = planFor(nextTrack, state, oldDuration, oldPosition)
         val previous = djPlan
         if (previous == null ||
             abs(previous.entrySeconds - plan.entrySeconds) > 0.01 ||
@@ -4431,7 +4472,6 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val fadeSeconds = minOf(plan.fadeSeconds, remainingSec.coerceAtLeast(1.0))
             .coerceAtLeast(1.0)
         val oldGain = plan.oldGain
-        val oldPosition = old.currentPosition.coerceAtLeast(0L)
         finishEvent(
             completed = false,
             skipped = false,
@@ -4525,6 +4565,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         crossfadeReady = false
         crossfadeDurationMs = 0
         djPlan = null
+        crossfadeStartJob?.cancel()
+        crossfadeStartJob = null
         crossfadeJob?.cancel()
         crossfadeJob = null
         if (crossfading) {

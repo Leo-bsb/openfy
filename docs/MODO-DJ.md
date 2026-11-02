@@ -65,6 +65,10 @@ fase de 30 ms e downbeat de 50 ms.
 
 - O standby é preparado no `entrySeconds` com `playWhenReady = false` e
   `PlaybackParameters(speed)`; o fade começa com `playWhenReady = true`.
+- O início do fade é agendado para o instante exato do compasso (com base na
+  posição real do player), em vez de esperar o próximo tick de 250 ms da
+  interface — sem isso a faixa que entra ficava alguns milissegundos atrasada
+  no pulso.
 - `EqualizerController.setBassCut()` corta os graves por player (corte total até
   125 Hz, metade até 300 Hz) sem mexer no EQ global.
 - No fim do mix o `speed` volta a 1.0 suavemente (~6 s).
