@@ -355,6 +355,10 @@ importador (link do YouTube Music/Spotify + casamento de faixas), o backup JSON,
 só uma ferramenta de diagnóstico: grava JSONs brutos para inspecionar tokens e
 formatos novos.
 
+O Modo DJ (N1/N2) está descrito em `docs/MODO-DJ.md`: como a grade é analisada,
+quais limites disparam o beatmatch, como o bass swap/ganho entram e como
+calibrar com `bpmProbe`.
+
 > O SLF4J escreve no stderr e o PowerShell pode marcar o comando como erro
 > mesmo com `BUILD SUCCESSFUL`; considere aprovado quando aparecer `TUDO OK`.
 

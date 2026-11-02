@@ -1,23 +1,25 @@
-# Social — SQL que falta no Supabase
+# Social — SQL aplicado no Supabase
 
-Data: 2026-10-31. O cliente já faz seguir, listar seguidores e ver playlists
-públicas de quem você segue. Duas coisas dependem do servidor:
+Data: 2026-10-31, atualizado em 2026-11-02. O cliente já faz seguir, listar
+seguidores e ver playlists públicas de quem você segue. As policies de `follows`
+**já estão aplicadas** no projeto (veja abaixo), então desfazer o follow funciona
+pelo `DELETE` do app.
 
-1. **Deixar de seguir** — a policy atual de `follows` recusa `deleted = true`
-   (`new row violates row-level security policy`) e não existe policy de
-   `DELETE`, então o app não consegue desfazer o follow.
-2. (opcional) **Perfil público** — hoje `profiles.is_public` é sempre `true` e a
-   bio/cores ficam num snapshot privado (`activities`, `is_public = false`).
-   Nada quebra sem isso.
+> **Atualização de 02/11/2026:** as policies `follows_update` e `follows_delete`
+> foram criadas e o schema foi recarregado. O `UPDATE` (tombstone) ainda pode
+> responder `42501` em alguns casos mesmo com a policy permissiva; por isso o app
+> usa `DELETE`, que funciona e é o caminho testado.
 
 > **Convite/colaboração não depende mais deste SQL.** A migration 0002 (RPC
 > `playlist_share_code`) não está aplicada no projeto; o app agora lê
 > `playlists.share_code` direto quando a RPC responde 404, então convite e
 > compartilhamento voltam a funcionar. Aplicar a 0002 é recomendado por
 > segurança (hoje qualquer pessoa autenticada que veja uma playlist pública
-> consegue ler o `share_code` dela).
+> consegue ler o `share_code` dela), mas fica adiada enquanto existirem clientes
+> antigos (0.5.1) que quebrariam no `SELECT` de `playlists`.
 
-Rode no **SQL Editor** do projeto (role `postgres`), depois recarregue o schema:
+O SQL abaixo é o que está no **SQL Editor** do projeto (role `postgres`); fica
+como referência para recriar em outro ambiente:
 
 ```sql
 -- 1. Desfazer o follow: tombstone (deleted = true) ou delete de verdade.
@@ -40,9 +42,9 @@ notify pgrst, 'reload schema';
 
 1. Login com a conta A, Comunidade → Descobrir → busque a conta B → **Seguir**.
 2. Confira em `follows` (Table Editor) a linha `follower_id = A`, `followed_id = B`.
-3. **Deixar de seguir** → a linha passa a `deleted = true` (ou some, se o app
-   usou DELETE). Sem o SQL, o app mostra
-   `"Não foi possível deixar de seguir agora; veja docs/SQL-SOCIAL.md."`.
+3. **Deixar de seguir** → a linha some (`DELETE`). Se aparecer
+   `"Não foi possível deixar de seguir agora; veja docs/SQL-SOCIAL.md."`, confira
+   se as policies abaixo ainda existem no projeto.
 4. Playlists: na playlist própria, ⋮ → **Playlist pública**. Na conta B,
    Comunidade → Seguindo deve listar a playlist e permitir **Ouvir** e
    **Copiar para minha conta**.
@@ -63,9 +65,31 @@ Nenhuma tabela, coluna ou policy nova é necessária: já cabe nas policies
 
 O plano gratuito do Supabase tem 500 MB. Tudo que é histórico grande fica no
 aparelho (SQLite local, com `VACUUM` e retenção de 400 dias no desktop); no
-servidor ficam só conta, playlists, `follows` e os snapshots. Ainda assim os
-snapshots se acumulam, então rode esta limpeza de vez em quando no **SQL
-Editor** (role `postgres`):
+servidor ficam só conta, playlists, `follows` e os snapshots. Os snapshots
+sociais são limpos automaticamente por um job do `pg_cron`:
+
+- função: `public.cleanup_activities()`;
+- job: `openfy-cleanup-activities`, `17 4 * * *` (04:17 UTC, todo dia);
+- comando: `select public.cleanup_activities()`.
+
+A limpeza remove `social_state` com mais de 7 dias, snapshots privados
+aposentados (`profile_prefs`/`settings_prefs` com `deleted = true`) com mais de
+1 dia e roda `vacuum (full, analyze) public.activities`. O job foi executado
+manualmente em 02/11/2026 e está ativo. Para conferir:
+
+```sql
+select jobid, schedule, command, active
+from cron.job
+where jobname = 'openfy-cleanup-activities';
+
+select status, start_time, end_time
+from cron.job_run_details
+order by start_time desc
+limit 10;
+```
+
+Se o `pg_cron` não estiver disponível, a mesma limpeza pode ser rodada à mão no
+**SQL Editor**:
 
 ```sql
 -- Snapshots sociais antigos: o estado atual tem menos de 1 dia.
