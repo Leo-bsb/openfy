@@ -1,7 +1,7 @@
 {
-  "version": "0.10.0",
-  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.10.0.apk",
-  "size": 18563572,
-  "sha256": "a4c14e577e2d0cfd6e4fb272d5be8d99f0397366818079b6047a48d7909cc2a1",
-  "notes": "Musicas locais do aparelho, 'ouvindo agora' e curtidas dos amigos na Comunidade, player com capa desfocada e cores mais vivas, correcao do carregamento infinito, compartilhar playlist na tela da playlist, gradiente real entre as duas cores e recap renovado."
+  "version": "0.11.0",
+  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.0.apk",
+  "size": 18579956,
+  "sha256": "c90963da89cdbed55cab1241d777ee7ad15c779e5dbb7837e3ec1c3b92925fea",
+  "notes": "Modo DJ no Android: as transicoes casam o tempo (ate +-8%), entram no compasso e trocam os graves no meio do fade, com musicas do aparelho e baixadas. Deteccao de BPM, fase e downbeat mais precisa e volume equalizado entre as faixas."
 }
