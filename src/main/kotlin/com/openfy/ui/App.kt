@@ -143,6 +143,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -160,14 +161,20 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.zIndex
 import com.openfy.core.AppController
 import com.openfy.core.Artist
@@ -177,6 +184,7 @@ import com.openfy.core.CollectionKind
 import com.openfy.core.ColorPalette
 import com.openfy.core.MediaCard
 import com.openfy.core.MediaKind
+import com.openfy.core.FriendStatus
 import com.openfy.core.PlayerLayout
 import com.openfy.core.Playlist
 import com.openfy.core.PlaylistPrompt
@@ -293,33 +301,81 @@ private fun openfySliderColors() = SliderDefaults.colors(
     inactiveTickColor = Color.Transparent,
 )
 
-/** Rotulo ao passar o mouse; usado para explicar icones e atalhos. */
-@OptIn(ExperimentalFoundationApi::class)
+/**
+ * Rotulo ao passar o mouse; usado para explicar icones e atalhos.
+ *
+ * Usa Popup proprio em vez de TooltipArea: o TooltipArea padrao posiciona o
+ * balao pelo cursor e, em botoes pequenos (os tres pontinhos das faixas), ele
+ * acabava cobrindo o proprio botao. Aqui o balao e medido e colocado sempre
+ * ACIMA do componente, virando para baixo so quando nao ha espaco na janela.
+ */
 @Composable
 private fun Tip(text: String, content: @Composable () -> Unit) {
-    TooltipArea(
-        tooltip = {
-            Surface(
-                color = Tokens.panelHigh,
-                shape = RoundedCornerShape(8.dp),
-                shadowElevation = 6.dp,
+    val interaction = remember { MutableInteractionSource() }
+    val hovered by interaction.collectIsHoveredAsState()
+    val density = LocalDensity.current
+    var visible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(hovered) {
+        if (hovered) {
+            delay(420)
+            visible = true
+        } else {
+            visible = false
+        }
+    }
+
+    Box(Modifier.hoverable(interaction)) {
+        content()
+        if (visible) {
+            Popup(
+                popupPositionProvider = remember(density) { AboveAnchorPositionProvider(density, 7) },
+                onDismissRequest = { visible = false },
             ) {
-                Text(
-                    text,
-                    color = Tokens.textHigh,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                )
+                Surface(
+                    color = Tokens.panelHigh,
+                    shape = RoundedCornerShape(8.dp),
+                    shadowElevation = 6.dp,
+                ) {
+                    Text(
+                        text,
+                        color = Tokens.textHigh,
+                        fontSize = 11.sp,
+                        maxLines = 2,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    )
+                }
             }
-        },
-        delayMillis = 400,
-        tooltipPlacement = TooltipPlacement.ComponentRect(
-            anchor = Alignment.TopCenter,
-            alignment = Alignment.BottomCenter,
-            offset = DpOffset(0.dp, (-8).dp),
-        ),
-        content = content,
-    )
+        }
+    }
+}
+
+/**
+ * Coloca o balao acima do componente (centro horizontal), com margem de
+ * seguranca para nunca encostar no botao. Se nao couber acima, vai para baixo.
+ */
+private class AboveAnchorPositionProvider(
+    private val density: Density,
+    private val gapDp: Int,
+) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val gap = with(density) { gapDp.dp.roundToPx() }
+        val above = anchorBounds.top - popupContentSize.height - gap
+        val below = anchorBounds.bottom + gap
+        val y = if (above >= 0) {
+            above
+        } else {
+            below.coerceAtMost((windowSize.height - popupContentSize.height).coerceAtLeast(0))
+        }
+        val centered = anchorBounds.center.x - popupContentSize.width / 2
+        val x = centered.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+        return IntOffset(x, y)
+    }
 }
 
 /**
@@ -853,6 +909,7 @@ private fun Sidebar(c: AppController, screen: Screen, playlists: List<Playlist>)
         }
         NavItem("Curtidas", Icons.Filled.Favorite, screen is Screen.Liked) { c.go(Screen.Liked) }
         NavItem("Downloads", Icons.Filled.Download, screen is Screen.Downloads) { c.go(Screen.Downloads) }
+        NavItem("Músicas locais", Icons.Filled.LibraryMusic, screen is Screen.Local) { c.openLocal() }
         NavItem("Histórico", Icons.Filled.History, screen is Screen.History) { c.go(Screen.History) }
         NavItem("Mais ouvidas", Icons.Filled.Leaderboard, screen is Screen.TopPlayed) { c.go(Screen.TopPlayed) }
         NavItem("Recap", Icons.Filled.Insights, screen is Screen.Recap) { c.openRecap() }
@@ -1150,6 +1207,7 @@ private fun Content(c: AppController, target: Screen) {
             TrackCollection(c, "Curtidas", tracks, emptyList())
         }
         Screen.Downloads -> DownloadsScreen(c)
+        Screen.Local -> LocalScreen(c)
         Screen.Profile -> ProfileScreen(c)
         Screen.Settings -> SettingsScreen(c)
         Screen.History -> {
@@ -3392,10 +3450,88 @@ private fun DownloadsScreen(c: AppController) {
     }
 }
 
+// ------------------------------------------------------------------ musicas locais
+@Composable
+private fun LocalScreen(c: AppController) {
+    val tracks by c.localTracks.collectAsState()
+    val folder by c.localFolder.collectAsState()
+    val scanning by c.localScanning.collectAsState()
+    val likedIds by c.player.likedIds.collectAsState()
+    val playlists by c.playlists.collectAsState()
+
+    LaunchedEffect(Unit) { c.refreshLocal() }
+
+    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Músicas locais",
+                    fontSize = 28.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Tokens.textHigh,
+                )
+                Text(
+                    "${tracks.size} faixas · ${File(folder).name.ifBlank { folder }}",
+                    color = Tokens.textLow,
+                    fontSize = 12.sp,
+                )
+            }
+            if (scanning) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Tokens.accent)
+                Spacer(Modifier.width(10.dp))
+            }
+            Button(onClick = { c.chooseLocalFolder() }) {
+                Text("Escolher pasta")
+            }
+            Spacer(Modifier.width(8.dp))
+            TextButton(onClick = { c.refreshLocal() }, enabled = !scanning) {
+                Text("Atualizar", color = Tokens.accent)
+            }
+        }
+        Text(
+            "Toque arquivos do computador (MP3, M4A, FLAC, OGG, WAV…). " +
+                "Nada é enviado para a nuvem: a pasta fica só neste PC.",
+            color = Tokens.textLow,
+            fontSize = 11.sp,
+            modifier = Modifier.padding(bottom = 10.dp),
+        )
+        HorizontalDivider(color = Tokens.line)
+        Spacer(Modifier.height(6.dp))
+        if (tracks.isEmpty() && !scanning) {
+            EmptyLibraryCard(
+                title = "Nenhum áudio nesta pasta",
+                description = "Escolha a pasta onde estão suas músicas ou copie os arquivos para " +
+                    "a pasta de downloads do Openfy.",
+                action = "Escolher pasta",
+            ) { c.chooseLocalFolder() }
+            return@Column
+        }
+        LazyColumn(Modifier.weight(1f)) {
+            itemsIndexed(tracks, key = { _, t -> t.id }) { index, track ->
+                TrackRow(
+                    c = c,
+                    track = track,
+                    index = index,
+                    liked = track.id in likedIds,
+                    onPlay = { c.playLocal(track) },
+                    onLike = { c.toggleLike(track) },
+                    onPlayNext = { c.playNext(track) },
+                    onQueue = { c.queueLocal(track) },
+                    playlists = playlists,
+                    onAddTo = { playlistId -> c.addToPlaylist(playlistId, track) },
+                )
+            }
+            item { Spacer(Modifier.height(24.dp)) }
+        }
+    }
+}
+
 // ------------------------------------------------------------------ radio
 @Composable
-private fun RadioScreen(c: AppController) {
-    val tracks by c.player.radioTracks.collectAsState()
+private fun RadioScreen(c: AppController) {    val tracks by c.player.radioTracks.collectAsState()
     val title by c.player.radioTitle.collectAsState()
     val preparing by c.player.radioPreparing.collectAsState()
     val likedIds by c.player.likedIds.collectAsState()
@@ -3621,6 +3757,30 @@ private fun CommunityScreen(c: AppController) {
                 if (tab == 0) {
                     item {
                         Text(
+                            "Ouvindo agora",
+                            color = Tokens.textHigh,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(top = 16.dp, bottom = 6.dp),
+                        )
+                    }
+                    val listening = account.friendStatuses.filter { it.track != null }
+                    if (listening.isEmpty()) {
+                        item {
+                            Text(
+                                "Ninguém que você segue compartilhou o que está ouvindo.",
+                                color = Tokens.textLow,
+                                fontSize = 12.sp,
+                            )
+                        }
+                    }
+                    items(listening, key = { "fs-${it.profile.id}" }) { status ->
+                        FriendNowRow(status) { track ->
+                            c.playTracks(listOf(track))
+                        }
+                    }
+                    item {
+                        Text(
                             "Playlists públicas de quem você segue",
                             color = Tokens.textHigh,
                             fontSize = 15.sp,
@@ -3705,6 +3865,56 @@ private fun PersonRow(
                 color = if (following) Tokens.textLow else Tokens.accent,
                 fontSize = 12.sp,
             )
+        }
+    }
+}
+
+@Composable
+private fun FriendNowRow(status: FriendStatus, onPlay: (Track) -> Unit) {
+    val track = status.track ?: return
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Cover(track.thumbnail.ifBlank { status.profile.avatarUrl }, 44.dp, 8.dp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                status.profile.displayName.ifBlank { status.profile.handle },
+                color = Tokens.textLow,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                track.title,
+                color = Tokens.textHigh,
+                fontSize = 14.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                buildString {
+                    append(track.artist)
+                    if (status.playing) append(" · tocando agora") else append(" · pausado")
+                },
+                color = Tokens.textLow,
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (status.likes.isNotEmpty()) {
+                Text(
+                    "Curtiu: " + status.likes.take(3).joinToString(", ") { it.title },
+                    color = Tokens.textLow,
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        TextButton(onClick = { onPlay(track) }) {
+            Text("Ouvir", color = Tokens.accent, fontSize = 12.sp)
         }
     }
 }
@@ -4818,6 +5028,7 @@ private fun SettingsScreen(c: AppController) {
     val auto by c.autoDownload.collectAsState()
     val closeToTray by c.closeToTray.collectAsState()
     val downloadedSize by c.downloadsSize.collectAsState()
+    val dbSize by c.dbSize.collectAsState()
     val palette by c.palette.collectAsState()
     val accentHex by c.accentHex.collectAsState()
     val accent2Hex by c.accent2Hex.collectAsState()
@@ -5095,6 +5306,26 @@ private fun SettingsScreen(c: AppController) {
                             Text("Abrir perfil", color = Tokens.accent2)
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "Compartilhar o que estou ouvindo",
+                                color = Tokens.textHigh,
+                                fontSize = 13.sp,
+                            )
+                            Text(
+                                "Quem você segue vê a faixa atual e suas últimas curtidas.",
+                                color = Tokens.textLow,
+                                fontSize = 11.sp,
+                            )
+                        }
+                        Switch(
+                            checked = account.shareNowPlaying,
+                            onCheckedChange = { c.account.setShareNowPlaying(it) },
+                            colors = openfySwitchColors(),
+                        )
+                    }
                 }
                 account.status?.let {
                     Text(it, color = Tokens.accent, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
@@ -5288,6 +5519,14 @@ private fun SettingsScreen(c: AppController) {
                     c.consumeMessage()
                 }) {
                     Text("Limpar", color = Tokens.accent)
+                }
+            }
+            SettingsRow(
+                "Banco local",
+                "${formatBytes(dbSize)} · compacta e apaga histórico com mais de 400 dias",
+            ) {
+                TextButton(onClick = { c.compactDb() }) {
+                    Text("Otimizar", color = Tokens.accent)
                 }
             }
             SettingsRow("Pasta de dados", "Banco, downloads, capas e logs") {
@@ -6190,19 +6429,56 @@ private fun PlayerBackdrop(url: String, enabled: Boolean) {
     ) {
         value = if (enabled && url.isNotBlank()) ArtworkCache.palette(url) else null
     }
+    val artwork by produceState(
+        initialValue = if (enabled && url.isNotBlank()) ArtworkCache.peek(url) else null,
+        url,
+        enabled,
+    ) {
+        value = if (enabled && url.isNotBlank()) ArtworkCache.get(url) else null
+    }
     val brush = if (!enabled || palette == null) {
         fallback
     } else {
         remember(palette, ink) {
             val p = palette!!
             Brush.verticalGradient(
-                0f to lerp(p.primary, ink, 0.38f),
-                0.55f to lerp(p.secondary, ink, 0.68f),
-                1f to ink,
+                0f to lerp(p.primary, ink, 0.30f).copy(alpha = 0.78f),
+                0.48f to lerp(p.secondary, ink, 0.55f).copy(alpha = 0.88f),
+                1f to ink.copy(alpha = 0.97f),
             )
         }
     }
-    Box(Modifier.fillMaxSize().background(brush))
+    Box(
+        Modifier.fillMaxSize().background(
+            if (enabled && palette != null) {
+                Brush.verticalGradient(listOf(ink, ink))
+            } else {
+                fallback
+            },
+        ),
+    ) {
+        val image = artwork
+        if (enabled && image != null) {
+            Image(
+                image,
+                null,
+                Modifier.fillMaxSize().blur(70.dp).alpha(0.55f),
+                contentScale = ContentScale.Crop,
+            )
+        }
+        if (enabled && palette != null) {
+            Box(Modifier.fillMaxSize().background(brush))
+        }
+        // Vinheta inferior: garante contraste do texto sobre capas claras.
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(
+                    0.55f to Color.Transparent,
+                    1f to ink.copy(alpha = 0.55f),
+                ),
+            ),
+        )
+    }
 }
 
 @Composable

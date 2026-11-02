@@ -95,6 +95,7 @@ fun main() {
     val youtube = YouTubeEngine()
     val downloader = Downloader(youtube, home.resolve("downloads"))
     val stream = StreamServer { id ->
+        com.openfy.core.LocalMusic.existing(id)?.let { return@StreamServer Media.Local(it) }
         db.downloadPath(id)?.let { path ->
             val local = Path.of(path)
             if (Files.isRegularFile(local)) Media.Local(local) else null

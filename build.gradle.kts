@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.openfy"
-version = "0.5.1"
+version = "0.6.0"
 
 kotlin {
     jvmToolchain(21)
@@ -100,6 +100,14 @@ tasks.register<JavaExec>("extract") {
     )
 }
 
+tasks.register<JavaExec>("bpmProbe") {
+    group = "verification"
+    description = "Laboratorio de BPM: mede arquivos locais e gera build/bpm-report/index.html"
+    classpath = sourceSets["main"].runtimeClasspath
+    mainClass.set("com.openfy.dev.BpmProbeKt")
+    args(providers.gradleProperty("dir").getOrElse(""))
+}
+
 compose.desktop {
     application {
         mainClass = "com.openfy.MainKt"
@@ -108,7 +116,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Openfy"
-            packageVersion = "0.5.1"
+            packageVersion = "0.6.0"
             description = "Tocador pessoal de musica"
             vendor = "openfy"
             modules("java.sql", "java.naming", "jdk.unsupported", "java.net.http", "java.management", "jdk.httpserver")

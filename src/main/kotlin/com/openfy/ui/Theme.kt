@@ -38,10 +38,13 @@ class OpenfyTokens(
     val heroTop: Color = lerp(Accent, Ink, 0.82f),
     val heroMid: Color = lerp(Accent, Ink, 0.94f),
 ) {
-    val brandGradient: Brush = Brush.linearGradient(listOf(accent, accent2))
+    val brandGradient: Brush = Brush.linearGradient(
+        listOf(accent, lerp(accent, accent2, 0.5f), accent2),
+    )
     val heroGradient: Brush = Brush.verticalGradient(
         0f to heroTop,
-        0.55f to heroMid,
+        0.32f to lerp(accent2, ink, 0.78f),
+        0.62f to heroMid,
         1f to ink,
     )
     val panelGradient: Brush = Brush.verticalGradient(

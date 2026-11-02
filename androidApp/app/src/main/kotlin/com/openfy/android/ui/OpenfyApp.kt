@@ -9,6 +9,8 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.Manifest
+import android.os.Build
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.BorderStroke
@@ -118,6 +120,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -884,6 +887,7 @@ private fun LibraryShortcut(page: LibraryPage, onClick: () -> Unit) {
         LibraryPage.TOP_PLAYED -> Icons.Filled.Insights
         LibraryPage.EXPLORE -> Icons.Filled.Explore
         LibraryPage.DOWNLOADS -> Icons.Filled.Download
+        LibraryPage.LOCAL -> Icons.Filled.LibraryMusic
         LibraryPage.MIX -> Icons.Filled.PlaylistPlay
     }
     Column(
@@ -936,6 +940,7 @@ private fun LibraryPageScreen(
                         LibraryPage.TOP_PLAYED -> "${state.topPlayed.size} faixas mais ouvidas"
                         LibraryPage.EXPLORE -> "Novidades, charts e artistas"
                         LibraryPage.DOWNLOADS -> "${state.downloads.size} faixas · ${formatBytes(state.downloadUsedBytes)}"
+                        LibraryPage.LOCAL -> "${state.localTracks.size} arquivos deste aparelho"
                         LibraryPage.MIX -> "Mistura automática do seu gosto"
                     },
                     color = OpenfyTextLow,
@@ -962,6 +967,12 @@ private fun LibraryPageScreen(
                 }
                 LibraryPage.MIX -> TextButton(onClick = { viewModel.startPersonalMix() }) {
                     Text("Tocar", color = OpenfyAccent, fontSize = 12.sp)
+                }
+                LibraryPage.LOCAL -> TextButton(
+                    onClick = { viewModel.loadLocalMusic() },
+                    enabled = !state.localLoading,
+                ) {
+                    Text("Atualizar", color = OpenfyAccent, fontSize = 12.sp)
                 }
                 else -> Unit
             }
@@ -1151,6 +1162,66 @@ private fun LibraryPageScreen(
                                 color = OpenfyTextLow,
                                 fontSize = 10.sp,
                                 modifier = Modifier.padding(vertical = 8.dp),
+                            )
+                        }
+                        item { Spacer(Modifier.height(20.dp)) }
+                    }
+                }
+            }
+
+            LibraryPage.LOCAL -> {
+                val context = LocalContext.current
+                val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    Manifest.permission.READ_MEDIA_AUDIO
+                } else {
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                }
+                var granted by remember { mutableStateOf(viewModel.hasAudioPermission()) }
+                val askPermission = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) { ok ->
+                    granted = ok
+                    if (ok) viewModel.loadLocalMusic()
+                }
+                when {
+                    !granted -> Column(Modifier.fillMaxWidth().padding(top = 12.dp)) {
+                        EmptyLibraryHint(
+                            "Permita ler as músicas do aparelho.",
+                            "Nada é enviado para a nuvem: o Openfy só lê os arquivos de áudio " +
+                                "que já estão neste celular.",
+                        )
+                        Button(
+                            onClick = { askPermission.launch(permission) },
+                            modifier = Modifier.padding(top = 8.dp),
+                        ) {
+                            Text("Permitir acesso")
+                        }
+                    }
+                    state.localLoading -> Box(
+                        Modifier.fillMaxWidth().padding(28.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(color = OpenfyAccent, modifier = Modifier.size(26.dp))
+                    }
+                    state.localTracks.isEmpty() -> EmptyLibraryHint(
+                        "Nenhum áudio encontrado.",
+                        "Copie músicas para o celular (pastas Música/Download) e toque em Atualizar.",
+                    )
+                    else -> LazyColumn(
+                        Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(state.localTracks, key = { "local-${it.id}" }) { track ->
+                            TrackRow(
+                                track = track,
+                                isCurrent = state.track?.id == track.id,
+                                liked = track.id in state.likedIds,
+                                onPlay = { viewModel.playLocalMusic(track) },
+                                onLike = { viewModel.toggleLike(track) },
+                                onPlayNext = { viewModel.playNext(track) },
+                                onAddQueue = { viewModel.addToQueue(track) },
+                                onAddPlaylist = { onAddToPlaylist(track) },
+                                onArtist = viewModel::openArtistFromName,
                             )
                         }
                         item { Spacer(Modifier.height(20.dp)) }
@@ -2349,6 +2420,17 @@ private fun PlaylistDetailScreen(
                 TextButton(onClick = { deleteOpen = false }) {
                     Text("Cancelar", color = OpenfyTextLow)
                 }
+            },
+        )
+    }
+    if (shareOpen) {
+        SharePlaylistDialog(
+            playlistName = playlist.name,
+            code = state.shareCode,
+            loading = state.busy && state.shareCode == null,
+            onDismiss = {
+                shareOpen = false
+                viewModel.clearShareCode()
             },
         )
     }
@@ -4178,6 +4260,25 @@ private fun SettingsScreen(
                         Text("Sair", color = OpenfyTextLow)
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Compartilhar o que estou ouvindo",
+                            color = OpenfyTextHigh,
+                            fontSize = 13.sp,
+                        )
+                        Text(
+                            "Quem você segue vê a faixa atual e suas últimas curtidas.",
+                            color = OpenfyTextLow,
+                            fontSize = 10.sp,
+                        )
+                    }
+                    Switch(
+                        checked = state.shareNowPlaying,
+                        onCheckedChange = { viewModel.setShareNowPlaying(it) },
+                    )
+                }
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -4761,8 +4862,8 @@ private fun PlayerOverlay(
         remember(coverPalette, ink) {
             val p = coverPalette!!
             Brush.verticalGradient(
-                0f to lerp(p.primary, ink, 0.38f),
-                0.55f to lerp(p.secondary, ink, 0.68f),
+                0f to lerp(p.primary, ink, 0.34f).copy(alpha = 0.80f),
+                0.45f to lerp(p.secondary, ink, 0.55f).copy(alpha = 0.90f),
                 1f to ink,
             )
         }
@@ -4772,12 +4873,24 @@ private fun PlayerOverlay(
     }
 
     Surface(Modifier.fillMaxSize(), color = OpenfyInk) {
-        Column(
-            Modifier.fillMaxSize()
-                .background(backdrop)
-                .padding(horizontal = 26.dp, vertical = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
+        Box(Modifier.fillMaxSize()) {
+            val thumb = track?.thumbnail.orEmpty()
+            if (state.coverGradient && thumb.isNotBlank()) {
+                // Capa desfocada atras do gradiente: o fundo fica "da musica"
+                // sem perder contraste para os textos.
+                AsyncImage(
+                    model = thumb,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().blur(64.dp).alpha(0.45f),
+                )
+            }
+            Column(
+                Modifier.fillMaxSize()
+                    .background(backdrop)
+                    .padding(horizontal = 26.dp, vertical = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onClose) {
                     Icon(
@@ -5072,6 +5185,7 @@ private fun PlayerOverlay(
                 color = OpenfyTextLow.copy(alpha = 0.7f),
                 fontSize = 10.sp,
             )
+            }
         }
     }
     if (queueOpen) {
@@ -5720,6 +5834,79 @@ private fun CommunityScreen(
                 }
             }
             if (tab == 0) {
+                item {
+                    Text(
+                        "Ouvindo agora",
+                        color = OpenfyTextHigh,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
+                    )
+                }
+                val listening = state.friendStatuses.filter { it.track != null }
+                if (listening.isEmpty()) {
+                    item {
+                        Text(
+                            "Ninguém que você segue compartilhou o que está ouvindo.",
+                            color = OpenfyTextLow,
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+                items(listening, key = { "fs-${it.profile.id}" }) { status ->
+                    val track = status.track ?: return@items
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { viewModel.playTracks(listOf(track), 0, "community") }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CoverImage(
+                            track.thumbnail.ifBlank { status.profile.avatarUrl },
+                            42.dp,
+                            8.dp,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                status.profile.displayName.ifBlank { status.profile.handle },
+                                color = OpenfyTextLow,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                track.title,
+                                color = OpenfyTextHigh,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                buildString {
+                                    append(track.artist)
+                                    append(if (status.playing) " · tocando agora" else " · pausado")
+                                    if (status.likes.isNotEmpty()) {
+                                        append(" · curtiu ")
+                                        append(status.likes.take(2).joinToString(", ") { it.title })
+                                    }
+                                },
+                                color = OpenfyTextLow,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        Icon(
+                            Icons.Filled.PlayArrow,
+                            "Ouvir",
+                            tint = OpenfyAccent,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                }
                 item {
                     Text(
                         "Playlists públicas de quem você segue",

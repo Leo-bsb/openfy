@@ -1,10 +1,13 @@
 package com.openfy.android.ui
 
 import android.app.Application
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.common.AudioAttributes
@@ -30,6 +33,7 @@ import com.openfy.android.data.HomeCache
 import com.openfy.android.data.HomeSnapshot
 import com.openfy.android.data.LyricLine
 import com.openfy.android.data.LyricsClient
+import com.openfy.android.data.LocalMusic
 import com.openfy.android.data.PendingEvent
 import com.openfy.android.data.PendingItem
 import com.openfy.android.data.PendingPlaylist
@@ -102,6 +106,7 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.flow.combine
 import java.io.File
 import java.time.Instant
 import java.time.YearMonth
@@ -121,6 +126,7 @@ enum class LibraryPage(val title: String) {
     TOP_PLAYED("Mais ouvidas"),
     EXPLORE("Explorar"),
     DOWNLOADS("Downloads"),
+    LOCAL("Músicas locais"),
     MIX("Seu mix"),
 }
 
@@ -231,6 +237,10 @@ data class AuthUiState(
     val downloads: List<DownloadEntry> = emptyList(),
     val downloadProgress: Map<String, Float> = emptyMap(),
     val downloadLimitMb: Int = SessionStore.DEFAULT_DOWNLOAD_LIMIT_MB,
+    val localTracks: List<Track> = emptyList(),
+    val localLoading: Boolean = false,
+    val friendStatuses: List<com.openfy.core.FriendStatus> = emptyList(),
+    val shareNowPlaying: Boolean = true,
 ) {
     val hasPrevious: Boolean get() = queueIndex > 0
     val hasNext: Boolean
@@ -322,6 +332,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     return
                 }
                 if (playbackState == Player.STATE_READY) {
+                    playWatchdog?.cancel()
                     _state.update { it.copy(durationMs = p.duration.coerceAtLeast(0)) }
                 }
                 if (playbackState == Player.STATE_ENDED) {
@@ -343,6 +354,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
             override fun onPlayerError(error: PlaybackException) {
                 if (p === activePlayer) {
+                    playWatchdog?.cancel()
                     _state.update {
                         it.copy(
                             busy = false,
@@ -364,6 +376,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var eventTrack: Track? = null
     private var eventSource: String = "unknown"
     private var preloadJob: Job? = null
+    private var playWatchdog: Job? = null
     private var preloading = false
     private var preloadedTrack: Track? = null
     private var preloadedIndex: Int = -1
@@ -408,6 +421,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var playlistSyncJob: Job? = null
     private var profileStatsJob: Job? = null
     private var prefsActivityId: String? = null
+    private var socialJob: Job? = null
+    private var socialStateId: String? = null
+    private var lastSocialTrackKey: String? = null
+    private var lastSocialLikesKey: String? = null
+    private var lastSocialLikesList: List<Track>? = null
+    private var lastSocialPlaying: Boolean? = null
     private var playlistDownloadJob: Job? = null
 
     init {
@@ -492,6 +511,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        viewModelScope.launch {
+            state.collect { current ->
+                publishSocial(current.track, current.playing, current.likedTracks)
+            }
+        }
         restore()
         viewModelScope.launch(Dispatchers.IO) {
             // Carrega o índice de downloads fora da main thread e limpa temporários órfãos.
@@ -550,6 +574,38 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(session = session, loading = true) }
             loadHome(session)
             restorePlaybackSession()
+        }
+        // Watchdog da tela de carregamento: rede lenta/instavel nao pode deixar
+        // o app preso no logo para sempre.
+        viewModelScope.launch {
+            delay(14_000)
+            if (_state.value.loading) {
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        error = it.error ?: "A conexão está lenta. Você pode tentar de novo.",
+                    )
+                }
+            }
+        }
+    }
+
+    /** Se o ExoPlayer nao chegar em READY, libera a UI e tenta a proxima faixa. */
+    private fun armPlayWatchdog(trackId: String) {
+        playWatchdog?.cancel()
+        playWatchdog = viewModelScope.launch {
+            delay(15_000)
+            if (_state.value.track?.id != trackId) return@launch
+            if (activePlayer.playbackState == Player.STATE_READY) return@launch
+            if (activePlayer.playbackState == Player.STATE_ENDED) return@launch
+            _state.update {
+                it.copy(
+                    busy = false,
+                    playing = false,
+                    error = "A faixa demorou para carregar. Pulando para a próxima.",
+                )
+            }
+            if (_state.value.queue.size > 1) next()
         }
     }
 
@@ -1436,7 +1492,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 withSession { active ->
                     if (removeAvatar && avatarUri == null) avatarUrl = ""
                     avatarUri?.let { uri ->
-                        val (bytes, mime, ext) = readImage(uri)
+                        val (bytes, mime, ext) = readImage(uri, maxDim = 720)
                         avatarUrl = api.uploadProfileImage(
                             active.accessToken,
                             active.userId,
@@ -1496,7 +1552,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun readImage(uri: Uri): Triple<ByteArray, String, String> =
+    private suspend fun readImage(uri: Uri, maxDim: Int = 1280): Triple<ByteArray, String, String> =
         withContext(Dispatchers.IO) {
             val resolver = getApplication<Application>().contentResolver
             val mime = resolver.getType(uri)?.lowercase() ?: "image/jpeg"
@@ -1510,8 +1566,46 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 ?: throw IllegalArgumentException("Não foi possível ler a imagem escolhida.")
             require(bytes.isNotEmpty()) { "A imagem escolhida está vazia." }
             require(bytes.size <= 8 * 1024 * 1024) { "A imagem deve ter no máximo 8 MB." }
-            Triple(bytes, mime, extension)
+            if (mime == "image/gif") return@withContext Triple(bytes, mime, extension)
+            // Reduz antes de subir: o Supabase gratuito tem pouco Storage e a
+            // foto do perfil nao precisa de resolucao de camera.
+            val compressed = runCatching { shrinkJpeg(bytes, maxDim) }.getOrNull()
+            if (compressed != null && compressed.size < bytes.size) {
+                Triple(compressed, "image/jpeg", "jpg")
+            } else {
+                Triple(bytes, mime, extension)
+            }
         }
+
+    /** Redimensiona para no maximo [maxDim] no maior lado e recodifica em JPEG. */
+    private fun shrinkJpeg(bytes: ByteArray, maxDim: Int): ByteArray? {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / sample > maxDim * 2 || bounds.outHeight / sample > maxDim * 2) {
+            sample *= 2
+        }
+        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            ?: return null
+        val scale = maxDim.toFloat() / maxOf(bitmap.width, bitmap.height).coerceAtLeast(1)
+        val target = if (scale < 1f) {
+            android.graphics.Bitmap.createScaledBitmap(
+                bitmap,
+                (bitmap.width * scale).toInt().coerceAtLeast(1),
+                (bitmap.height * scale).toInt().coerceAtLeast(1),
+                true,
+            )
+        } else {
+            bitmap
+        }
+        val out = java.io.ByteArrayOutputStream()
+        target.compress(android.graphics.Bitmap.CompressFormat.JPEG, 86, out)
+        if (target !== bitmap) target.recycle()
+        bitmap.recycle()
+        return out.toByteArray()
+    }
 
     // ------------------------------------------------------------------ social
 
@@ -1537,19 +1631,22 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                         (following + followers).distinct(),
                     )
                     val byId = people.associateBy { it.id }
+                    val statuses = loadFriendStatuses(active.accessToken, following, byId)
                     Triple(
                         following.mapNotNull { byId[it] },
                         followers.mapNotNull { byId[it] },
                         api.publicPlaylists(active.accessToken, following),
-                    )
+                    ) to statuses
                 }
             }
-            result.onSuccess { (following, followers, feed) ->
+            result.onSuccess { (base, statuses) ->
+                val (following, followers, feed) = base
                 _state.update {
                     it.copy(
                         following = following,
                         followers = followers,
                         publicPlaylists = feed,
+                        friendStatuses = statuses,
                         communityBusy = false,
                         communityStatus = if (following.isEmpty()) {
                             "Você ainda não segue ninguém. Busque por nome ou @handle."
@@ -1568,6 +1665,101 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    private suspend fun loadFriendStatuses(
+        accessToken: String,
+        following: List<String>,
+        byId: Map<String, Profile>,
+    ): List<com.openfy.core.FriendStatus> {
+        if (following.isEmpty()) return emptyList()
+        val rows = runCatching { api.socialActivities(accessToken, following) }
+            .getOrDefault(emptyList())
+        val latest = LinkedHashMap<String, com.openfy.core.FriendStatus>()
+        rows.forEach { row ->
+            if (latest.containsKey(row.actorId)) return@forEach
+            val profile = byId[row.actorId] ?: return@forEach
+            val payload = runCatching {
+                json.decodeFromJsonElement<com.openfy.core.SocialPayload>(row.payload)
+            }.getOrNull() ?: return@forEach
+            latest[row.actorId] = com.openfy.core.FriendStatus(
+                profile = profile,
+                track = payload.track,
+                playing = payload.playing,
+                at = payload.at,
+                likes = payload.likes,
+            )
+        }
+        return latest.values.toList()
+    }
+
+    /** Publica no maximo uma vez por mudanca de faixa/curtidas, com debounce. */
+    private fun publishSocial(track: Track?, playing: Boolean, likes: List<Track>) {
+        if (_state.value.session == null) return
+        // Compartilhar desligado: publica so as curtidas, sem "tocando agora".
+        val shareTrack = if (_state.value.shareNowPlaying) track else null
+        val sharePlaying = shareTrack != null && playing
+        val trackKey = shareTrack?.id.orEmpty()
+        // A tela atualiza a posicao varias vezes por segundo; so recalcula a
+        // chave das curtidas quando a lista realmente muda.
+        if (likes !== lastSocialLikesList) {
+            lastSocialLikesList = likes
+            lastSocialLikesKey = likes.take(20).joinToString(",") { it.id }
+        }
+        val likesKey = lastSocialLikesKey.orEmpty()
+        if (trackKey == lastSocialTrackKey &&
+            likesKey == lastSocialLikesKey &&
+            sharePlaying == lastSocialPlaying
+        ) {
+            return
+        }
+        if (shareTrack == null && likes.isEmpty()) return
+        socialJob?.cancel()
+        socialJob = viewModelScope.launch {
+            delay(6_000)
+            runCatching {
+                withSession { active ->
+                    val payload = com.openfy.core.SocialPayload(
+                        track = shareTrack,
+                        playing = sharePlaying,
+                        at = System.currentTimeMillis(),
+                        likes = likes.take(20),
+                    )
+                    val id = api.saveSocialState(
+                        active.accessToken,
+                        active.userId,
+                        json.encodeToJsonElement(payload),
+                    )
+                    val old = socialStateId
+                    socialStateId = id
+                    lastSocialTrackKey = trackKey
+                    lastSocialLikesKey = likesKey
+                    lastSocialPlaying = sharePlaying
+                    if (old != null && old != id) api.retireSocialState(active.accessToken, old)
+                }
+            }
+        }
+    }
+
+    fun setShareNowPlaying(enabled: Boolean) {
+        _state.update { it.copy(shareNowPlaying = enabled) }
+        lastSocialTrackKey = null
+        lastSocialPlaying = null
+        if (!enabled) {
+            // Desligou: apaga o "tocando agora" que os seguidores veriam.
+            socialJob?.cancel()
+            val old = socialStateId
+            socialStateId = null
+            if (old != null) {
+                viewModelScope.launch {
+                    runCatching {
+                        withSession { active -> api.retireSocialState(active.accessToken, old) }
+                    }
+                }
+            }
+        }
+        val current = _state.value
+        publishSocial(current.track, current.playing, current.likedTracks)
     }
 
     fun searchPeople(query: String) {
@@ -2153,10 +2345,40 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(libraryPage = page, exploreError = null) }
         if (page == LibraryPage.EXPLORE && _state.value.exploreFeed == null) loadExplore()
         if (page == LibraryPage.DOWNLOADS) viewModelScope.launch { refreshDownloads() }
+        if (page == LibraryPage.LOCAL) loadLocalMusic()
     }
 
     fun closeLibraryPage() {
         _state.update { it.copy(libraryPage = null) }
+    }
+
+    /**
+     * Le as musicas do aparelho via MediaStore. Precisa da permissao de audio,
+     * pedida pela UI; sem ela a lista fica vazia (nunca trava).
+     */
+    fun loadLocalMusic() {
+        if (_state.value.localLoading) return
+        viewModelScope.launch {
+            _state.update { it.copy(localLoading = true) }
+            val tracks = withContext(Dispatchers.IO) {
+                LocalMusic.scan(getApplication())
+            }
+            _state.update { it.copy(localTracks = tracks, localLoading = false) }
+        }
+    }
+
+    fun playLocalMusic(track: Track) {
+        play(track, listOf(track), "local")
+    }
+
+    fun hasAudioPermission(): Boolean {
+        val app = getApplication<Application>()
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.READ_MEDIA_AUDIO
+        } else {
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        }
+        return app.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
     }
 
     /** Explorar + Em alta, com cache no estado para não buscar duas vezes. */
@@ -3934,7 +4156,23 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         requestPlaybackPush()
+        armPlayWatchdog(track.id)
         playJob = viewModelScope.launch {
+            if (LocalMusic.isLocal(track.id)) {
+                // Arquivo do aparelho: toca direto do content:// do MediaStore.
+                standbyPlayer.stop()
+                standbyPlayer.clearMediaItems()
+                standbyPlayer.setAudioAttributes(audioAttributes, false)
+                activePlayer.setAudioAttributes(audioAttributes, true)
+                activePlayer.volume = 1f
+                activePlayer.setMediaSource(mediaSourceUri(track, LocalMusic.uriFor(track.id)))
+                activePlayer.prepare()
+                if (startAtMs > 0) activePlayer.seekTo(startAtMs)
+                activePlayer.playWhenReady = playRequested
+                _state.update { it.copy(busy = false) }
+                rememberRecent(track)
+                return@launch
+            }
             val local = withContext(Dispatchers.IO) { downloadStore.fileFor(track.id) }
             if (local != null) {
                 // Faixa baixada: toca direto do aparelho, sem rede.
@@ -4022,12 +4260,20 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             .createMediaSource(mediaItem(track, Uri.fromFile(file)))
     }
 
+    /** Fonte para URI do sistema (MediaStore), usada pelas musicas locais. */
+    private fun mediaSourceUri(track: Track, uri: Uri): MediaSource {
+        val dataSource = DefaultDataSource.Factory(getApplication())
+        return DefaultMediaSourceFactory(dataSource)
+            .createMediaSource(mediaItem(track, uri))
+    }
+
     private fun maybePreloadNext() {
         if (crossfadeSeconds <= 0 || preloading || preloadedTrack != null || crossfading) return
         val s = _state.value
         if (s.repeatMode == RepeatMode.ONE || s.queue.size < 2) return
         val nextIndex = QueueLogic.autoNextIndex(s.queueIndex, s.queue.size, s.repeatMode) ?: return
         val track = s.queue[nextIndex]
+        if (LocalMusic.isLocal(track.id)) return
         val currentId = s.track?.id
         com.openfy.core.Log.write("player: preparando crossfade ${track.id}")
         preloading = true

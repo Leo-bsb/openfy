@@ -191,6 +191,12 @@ laços com cabeça de cobra, usada na sidebar, na bandeja e como ícone da janel
 - **Apar?ncia**: cinco paletas prontas, layout do player Central/Lateral e fundo com gradiente extra?do da capa. Tudo fica salvo para as pr?ximas aberturas.
 - **Recentes**: clicar numa faixa de "Ouvir de novo" toca s? ela e emenda a r?dio, em vez de enfileirar o hist?rico.
 - **Playlists**: o menu de adicionar ? playlist sempre oferece "Criar nova playlist", mesmo quando ainda n?o existe nenhuma.
+- **Músicas locais**: no PC, "Músicas locais" na sidebar aponta para uma pasta
+  (padrão: `%LOCALAPPDATA%\OpenfyData\downloads`) e toca os arquivos direto do
+  disco. No Android, a página "Músicas locais" lê o MediaStore do aparelho.
+  Nada é copiado nem enviado para a nuvem.
+- **Player**: capa desfocada atrás do gradiente, cores da capa com mais saturação
+  e brilho mínimo para não sumir no fundo, e barra de progresso mais legível.
 
 
 ## Importar, letras e estatísticas
@@ -249,6 +255,10 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
   e no celular. O celular também importa playlist/álbum público do YouTube
   Music por link.
 - Eventos de escuta do PC e do Android alimentam o recap mensal da conta.
+- **Ouvindo agora**: quem você segue vê a faixa atual e as últimas curtidas na
+  Comunidade, no PC e no celular. Dá para desligar em Ajustes > Conta. É uma
+  única linha em `activities` (`type = social_state`), sem tabela nova; retenção
+  e limpeza estão em `docs/SQL-SOCIAL.md`.
 - Perfil próprio no PC e no celular: foto, capa, bio, cor/efeitos, estatísticas
   configuráveis e faixas fixadas. O snapshot sincroniza com LWW e abre offline.
 - Discord Rich Presence opcional no PC: Ajustes > Integrações, com Application
@@ -276,13 +286,13 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.5.1.exe
-dist\Openfy-0.5.1.msi
-dist\Openfy-Android-0.9.1.apk
+dist\Openfy-0.6.0.exe
+dist\Openfy-0.6.0.msi
+dist\Openfy-Android-0.10.0.apk
 ```
 
 Páginas (GitHub Pages): https://leo-bsb.github.io/openfy/
-APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.1.apk
+APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.10.0.apk
 Manifesto de atualização do Android: https://leo-bsb.github.io/openfy/update-android.json
 Manifesto de atualização do desktop: https://leo-bsb.github.io/openfy/update-desktop.json
 Recuperação de senha: https://leo-bsb.github.io/openfy/recover.html
@@ -292,8 +302,8 @@ https://leo-bsb.github.io/openfy/oauth/google.html ·
 Privacidade/termos: seções `#privacidade` e `#termos` da página inicial
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.5.1 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.5.1
-Android 0.9.1 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.1.apk
+Desktop 0.6.0 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.6.0
+Android 0.10.0 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.10.0.apk
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -313,8 +323,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.5.1.exe`
-- `build\compose\binaries\main\msi\Openfy-0.5.1.msi`
+- `build\compose\binaries\main\exe\Openfy-0.6.0.exe`
+- `build\compose\binaries\main\msi\Openfy-0.6.0.msi`
 
 Rodar em desenvolvimento:
 
@@ -332,6 +342,7 @@ Rodar em desenvolvimento:
 .\.tools\gradle-dist\bin\gradle.bat syncSmoke    # pull/push real de playlists no Supabase
 .\.tools\gradle-dist\bin\gradle.bat extract -Pid=<videoId>  # mede uma extração
 .\.tools\gradle-dist\bin\gradle.bat probe        # salva respostas cruas em %TEMP%\openfy-probe
+.\.tools\gradle-dist\bin\gradle.bat bpmProbe     # laboratório de BPM -> build\bpm-report\index.html
 ```
 
 O `playerSmoke` prova o caminho real: carrega, pausa, retoma, faz seek, troca de
@@ -356,6 +367,10 @@ formatos novos.
 - Log do mpv: `%LOCALAPPDATA%\OpenfyData\mpv.log` (recriado a cada start).
 - Capas em cache: `%LOCALAPPDATA%\OpenfyData\artwork\` (uma imagem por URL, com hash).
 - Downloads: `%LOCALAPPDATA%\OpenfyData\downloads\` (uma faixa por arquivo).
+- Banco enxuto: o app roda `VACUUM`/`PRAGMA optimize` ao encerrar (no máximo uma
+  vez por semana), mantém eventos de escuta por 400 dias e oferece "Otimizar" em
+  Ajustes > Dados. No Supabase ficam só conta, playlists, `follows` e snapshots;
+  a limpeza periódica está em `docs/SQL-SOCIAL.md`.
 
 Os dados ficam **fora da pasta de instalação** (`%LOCALAPPDATA%\Openfy`). Assim,
 atualizar, reparar ou desinstalar o app não apaga curtidas, playlists, histórico,

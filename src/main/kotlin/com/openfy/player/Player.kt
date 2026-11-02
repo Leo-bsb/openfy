@@ -103,6 +103,9 @@ class Player(
     private var crossfadePreparedTrack: Track? = null
     private var crossfadeDuration = 0.0
 
+    /** Evita a tela presa em "carregando": recarrega uma vez e desiste com aviso. */
+    private var loadWatchdog: Job? = null
+
     init {
         scope.launch { observeMpv() }
         restoreEq()
@@ -141,7 +144,10 @@ class Player(
             is Mpv.Event.Time -> {
                 position.value = event.position
                 if (event.duration > 0) duration.value = event.duration
-                if (event.position > 0) busy.value = false
+                if (event.position > 0) {
+                    busy.value = false
+                    cancelLoadWatchdog()
+                }
                 checkCrossfade(event.position)
                 val now = System.currentTimeMillis()
                 if (now - lastPositionSave > 5000) {
@@ -162,6 +168,7 @@ class Player(
                     playing.value = true
                 }
                 busy.value = false
+                cancelLoadWatchdog()
             }
             is Mpv.Event.Paused -> {
                 playing.value = !event.paused
@@ -177,6 +184,7 @@ class Player(
             }
             is Mpv.Event.Failed -> {
                 cancelCrossfade()
+                cancelLoadWatchdog()
                 finishActive(completed = false, skipped = true)
                 busy.value = false
                 playing.value = false
@@ -654,9 +662,52 @@ class Player(
         active.start()
         active.volume(volume.value)
         active.load(stream.urlFor(track.id))
+        armLoadWatchdog(track, retry = true)
         startActiveEvent(track)
         maybeLoadMoreRadio()
         save()
+    }
+
+    /**
+     * Se o mpv nao comecar a tocar em [LOAD_TIMEOUT_MS], tenta uma vez de novo
+     * (a URL/extraco pode ter falhado) e, se ainda assim nada vier, para o
+     * "carregando" e avisa. Era isso que deixava o app parado para sempre
+     * quando a rede/os extras travavam sem mandar evento de falha.
+     */
+    private fun armLoadWatchdog(track: Track, retry: Boolean) {
+        loadWatchdog?.cancel()
+        loadWatchdog = scope.launch {
+            delay(LOAD_TIMEOUT_MS)
+            if (current.value?.id != track.id) return@launch
+            if (!busy.value || position.value > 1.0) return@launch
+            if (retry) {
+                com.openfy.core.Log.write("player: watchdog recarregando ${track.id}")
+                error.value = "A faixa está demorando. Tentando de novo…"
+                runCatching { active.stop() }
+                delay(500)
+                if (current.value?.id != track.id) return@launch
+                active.start()
+                active.volume(volume.value)
+                active.load(stream.urlFor(track.id))
+                armLoadWatchdog(track, retry = false)
+            } else {
+                com.openfy.core.Log.write("player: watchdog desistiu de ${track.id}")
+                busy.value = false
+                playing.value = false
+                error.value = "Não foi possível carregar \"${track.title}\". Verifique a conexão e tente outra faixa."
+                finishActive(completed = false, skipped = true)
+                runCatching { active.stop() }
+                val idx = index.value
+                if (idx >= 0 && (radioActive.value || queue.value.size > idx + 1)) {
+                    runCatching { next(auto = true) }
+                }
+            }
+        }
+    }
+
+    private fun cancelLoadWatchdog() {
+        loadWatchdog?.cancel()
+        loadWatchdog = null
     }
 
     private fun appendRadio(
@@ -1268,5 +1319,6 @@ class Player(
         private const val RADIO_INITIAL = 20
         private const val RADIO_PAGE = 20
         private const val RADIO_MAX_QUEUE = 400
+        private const val LOAD_TIMEOUT_MS = 14_000L
     }
 }

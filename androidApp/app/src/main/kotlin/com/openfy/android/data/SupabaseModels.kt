@@ -68,6 +68,14 @@ data class RemoteActivity(
 )
 
 @Serializable
+data class RemoteSocialActivity(
+    val id: String = "",
+    @SerialName("actor_id") val actorId: String = "",
+    val payload: JsonElement = JsonNull,
+    @SerialName("created_at") val createdAt: String = "",
+)
+
+@Serializable
 data class PushActivity(
     @SerialName("actor_id") val actorId: String,
     val type: String,

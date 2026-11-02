@@ -46,6 +46,7 @@ sealed interface Screen {
     data object Settings : Screen
     data object Radio : Screen
     data object Community : Screen
+    data object Local : Screen
     data class PlaylistView(val id: String) : Screen
     data class ArtistView(val id: String) : Screen
     data class RemoteCollection(val id: String) : Screen
@@ -113,6 +114,13 @@ class AppController(
     val downloadedIds = MutableStateFlow<Set<String>>(emptySet())
     val downloadingIds = MutableStateFlow<Set<String>>(emptySet())
     val downloadsSize = MutableStateFlow(0L)
+    /** Tamanho do banco local; mostrado nos ajustes para o usuario ver o peso. */
+    val dbSize = MutableStateFlow(0L)
+
+    /** Pasta local escolhida pelo usuario; por padrao, a pasta de downloads do app. */
+    val localFolder = MutableStateFlow(AppPaths.home.resolve("downloads").toString())
+    val localTracks = MutableStateFlow<List<Track>>(emptyList())
+    val localScanning = MutableStateFlow(false)
     val autoDownload = MutableStateFlow(false)
     val audioQuality = MutableStateFlow("HIGH")
     val closeToTray = MutableStateFlow(true)
@@ -237,6 +245,13 @@ class AppController(
             )
         }
         account.settingsApplier = { settings -> applySyncedSettings(settings) }
+        account.socialProvider = {
+            LocalSocialState(
+                track = player.current.value,
+                playing = player.playing.value,
+                likes = liked.value,
+            )
+        }
         player.onSessionChanged = { account.requestPlaybackSync() }
         autoDownload.value = runCatching { db.get("download.auto")?.toBooleanStrict() }.getOrNull() ?: true
         audioQuality.value = db.get("audio.quality") ?: "HIGH"
@@ -249,6 +264,10 @@ class AppController(
         coverGradient.value = runCatching {
             db.get("ui.player.coverGradient")?.toBooleanStrict()
         }.getOrNull() ?: true
+        localFolder.value = db.get("local.folder")
+            ?.takeIf { it.isNotBlank() }
+            ?: AppPaths.home.resolve("downloads").toString()
+        dbSize.value = runCatching { db.sizeBytes() }.getOrDefault(0L)
         discordEnabled.value = runCatching {
             db.get("discord.enabled")?.toBooleanStrict()
         }.getOrNull() ?: false
@@ -271,6 +290,15 @@ class AppController(
         scope.launch { yt.prewarm() }
         scope.launch { refreshRecentSearches() }
         scope.launch { refreshDownloads() }
+        scope.launch(Dispatchers.IO) {
+            // Uma compactacao por semana mantem o banco pequeno sem pesar na abertura.
+            val last = db.get("db.compactedAt")?.toLongOrNull() ?: 0L
+            if (System.currentTimeMillis() - last > 7L * 24L * 60L * 60L * 1000L) {
+                db.compact()
+                db.put("db.compactedAt", System.currentTimeMillis().toString())
+                dbSize.value = db.sizeBytes()
+            }
+        }
         scope.launch { loadStats() }
         scope.launch { loadTopPlayed() }
         scope.launch {
@@ -288,6 +316,15 @@ class AppController(
                 .collect { (track, playing) ->
                     discord.update(track, playing, player.position.value)
                 }
+        }
+        // Feed social: publica o que esta tocando + curtidas recentes (com
+        // debounce dentro do AccountManager). Nada e publicado sem sessao.
+        scope.launch {
+            combine(player.current, player.playing, liked) { track, playing, likes ->
+                Triple(track, playing, likes)
+            }.collect { (track, playing, likes) ->
+                account.publishSocial(track, playing, likes)
+            }
         }
     }
 
@@ -352,6 +389,7 @@ class AppController(
             Screen.TopPlayed -> loadTopPlayed()
             Screen.Recap -> loadRecap()
             Screen.Community -> account.loadCommunity()
+            Screen.Local -> refreshLocal()
             else -> Unit
         }
     }
@@ -374,6 +412,7 @@ class AppController(
         Screen.Settings -> "settings"
         Screen.Radio -> "radio"
         Screen.Community -> "community"
+        Screen.Local -> "local"
         is Screen.PlaylistView -> "playlist:${s.id}"
         is Screen.ArtistView -> "artist:${s.id}"
         is Screen.RemoteCollection -> "remote:${s.id}"
@@ -393,6 +432,7 @@ class AppController(
         token == "settings" -> Screen.Settings
         token == "radio" -> Screen.Radio
         token == "community" -> Screen.Community
+        token == "local" -> Screen.Local
         token.startsWith("playlist:") -> Screen.PlaylistView(token.removePrefix("playlist:"))
         token.startsWith("artist:") -> Screen.ArtistView(token.removePrefix("artist:"))
         token.startsWith("remote:") -> Screen.RemoteCollection(token.removePrefix("remote:"))
@@ -1157,6 +1197,84 @@ class AppController(
             downloadedTracks.value = tracks
             downloadedIds.value = ids
             downloadsSize.value = size
+        }
+    }
+
+    // ------------------------------------------------------------------ musicas locais
+
+    /** Abre a tela de musicas locais e varre a pasta escolhida. */
+    fun openLocal() {
+        go(Screen.Local)
+    }
+
+    /**
+     * Varre a pasta local. Arquivos que tambem estao nos downloads do app
+     * reaproveitam o metadado real (titulo/artista/capa) do banco; o resto
+     * vira faixa local com id `local:<caminho>`.
+     */
+    fun refreshLocal() {
+        if (localScanning.value) return
+        val folder = runCatching { java.nio.file.Path.of(localFolder.value) }.getOrNull()
+        if (folder == null) {
+            message.value = "Pasta local inválida."
+            return
+        }
+        localScanning.value = true
+        scope.launch {
+            val tracks = withContext(Dispatchers.IO) {
+                runCatching {
+                    val downloaded = db.downloadedTracks(2000)
+                    val known = downloaded.mapNotNull { track ->
+                        val path = db.downloadPath(track.id) ?: return@mapNotNull null
+                        java.nio.file.Path.of(path).fileName.toString()
+                            .substringBeforeLast('.')
+                            .lowercase() to track
+                    }.toMap()
+                    LocalMusic.scan(folder, known = known)
+                }.onFailure {
+                    com.openfy.core.Log.write("local: varredura falhou: ${it.message}")
+                }.getOrDefault(emptyList())
+            }
+            localTracks.value = tracks
+            localScanning.value = false
+            if (tracks.isEmpty()) {
+                message.value = "Nenhum áudio encontrado em ${folder.fileName ?: folder}."
+            }
+        }
+    }
+
+    /** Deixa o usuario escolher qualquer pasta do computador. */
+    fun chooseLocalFolder() {
+        val chooser = javax.swing.JFileChooser().apply {
+            dialogTitle = "Escolher pasta de músicas"
+            fileSelectionMode = javax.swing.JFileChooser.DIRECTORIES_ONLY
+            currentDirectory = File(localFolder.value).takeIf { it.isDirectory }
+                ?: File(System.getProperty("user.home"))
+        }
+        if (chooser.showOpenDialog(null) != javax.swing.JFileChooser.APPROVE_OPTION) return
+        val dir = chooser.selectedFile ?: return
+        localFolder.value = dir.absolutePath
+        scope.launch(Dispatchers.IO) { db.put("local.folder", dir.absolutePath) }
+        refreshLocal()
+    }
+
+    fun playLocal(track: Track) {
+        scope.launch(Dispatchers.IO) { db.remember(track) }
+        player.playNow(listOf(track))
+    }
+
+    fun queueLocal(track: Track) {
+        scope.launch(Dispatchers.IO) { db.remember(track) }
+        player.addToQueue(track)
+    }
+
+    /** Compacta o SQLite e descarta historico fora da retencao. */
+    fun compactDb() {
+        scope.launch {
+            withContext(Dispatchers.IO) { db.compact() }
+            dbSize.value = runCatching { db.sizeBytes() }.getOrDefault(0L)
+            refreshDownloads()
+            message.value = "Banco otimizado."
         }
     }
 

@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -60,6 +61,9 @@ data class AccountState(
     val communityStatus: String? = null,
     val communityQuery: String = "",
     val communityResults: List<RemoteProfile> = emptyList(),
+    /** O que cada amigo esta ouvindo / curtiu por ultimo. */
+    val friendStatuses: List<FriendStatus> = emptyList(),
+    val shareNowPlaying: Boolean = true,
 )
 
 /** Snapshot local de fila/posição; a conta completa com usuário e device. */
@@ -109,6 +113,9 @@ class AccountManager(
     /** Ajustes locais do desktop, fornecidos pelo AppController. */
     var settingsProvider: (() -> SyncedSettings?)? = null
 
+    /** Estado de reproducao atual, para republicar ao ligar/desligar o feed. */
+    var socialProvider: (() -> LocalSocialState?)? = null
+
     /** Aplica ajustes que chegaram do Android. */
     var settingsApplier: ((SyncedSettings) -> Unit)? = null
 
@@ -121,6 +128,12 @@ class AccountManager(
     private var settingsSaveJob: Job? = null
     private var profileStatsJob: Job? = null
     private var communityJob: Job? = null
+    private var socialJob: Job? = null
+    private var socialStateId: String? = null
+    private var lastSocialTrack: String? = null
+    private var lastSocialLikes: String? = null
+    private var lastSocialPlaying: Boolean? = null
+    private var lastSocialAt = 0L
 
     init {
         restore()
@@ -395,21 +408,27 @@ class AccountManager(
                     avatarUrl = ""
                 }
                 if (avatarFile != null) {
+                    val optimized = withContext(Dispatchers.IO) {
+                        ImageTools.compressForUpload(avatarFile, 720, ImageTools.MAX_PROFILE_BYTES)
+                    }
                     avatarUrl = api.uploadProfileImage(
                         active.accessToken,
                         active.userId,
                         "avatars",
                         "avatar-${System.currentTimeMillis()}",
-                        avatarFile,
+                        optimized,
                     )
                 }
                 if (coverFile != null) {
+                    val optimized = withContext(Dispatchers.IO) {
+                        ImageTools.compressForUpload(coverFile, 1280, ImageTools.MAX_COVER_BYTES)
+                    }
                     coverUrl = api.uploadProfileImage(
                         active.accessToken,
                         active.userId,
                         "covers",
                         "profile-${System.currentTimeMillis()}",
-                        coverFile,
+                        optimized,
                     )
                 }
                 api.updateProfile(active.accessToken, active.userId, cleanName, avatarUrl)
@@ -580,14 +599,17 @@ class AccountManager(
                 val people = api.profiles(active.accessToken, (following + followers).distinct())
                 val byId = people.associateBy { it.id }
                 val feed = api.publicPlaylists(active.accessToken, following)
-                Triple(following.mapNotNull { byId[it] }, followers.mapNotNull { byId[it] }, feed)
+                val social = loadFriendStatuses(active.accessToken, following, byId)
+                Triple(following.mapNotNull { byId[it] }, followers.mapNotNull { byId[it] }, feed) to social
             }
-            result.onSuccess { (following, followers, feed) ->
+            result.onSuccess { (base, social) ->
+                val (following, followers, feed) = base
                 _state.update {
                     it.copy(
                         following = following,
                         followers = followers,
                         publicPlaylists = feed,
+                        friendStatuses = social,
                         communityBusy = false,
                         communityStatus = if (following.isEmpty()) {
                             "Você ainda não segue ninguém. Busque por nome ou @handle."
@@ -606,6 +628,116 @@ class AccountManager(
                 }
             }
         }
+    }
+
+    /** Le o snapshot social mais recente de cada pessoa seguida. */
+    private suspend fun loadFriendStatuses(
+        accessToken: String,
+        following: List<String>,
+        byId: Map<String, RemoteProfile>,
+    ): List<FriendStatus> {
+        if (following.isEmpty()) return emptyList()
+        val rows = runCatching { api.socialActivities(accessToken, following) }
+            .getOrDefault(emptyList())
+        val latest = LinkedHashMap<String, FriendStatus>()
+        rows.forEach { row ->
+            if (latest.containsKey(row.actorId)) return@forEach
+            val profile = byId[row.actorId] ?: return@forEach
+            val payload = runCatching {
+                json.decodeFromJsonElement<SocialPayload>(row.payload)
+            }.getOrNull() ?: return@forEach
+            latest[row.actorId] = FriendStatus(
+                profile = profile,
+                track = payload.track,
+                playing = payload.playing,
+                at = payload.at,
+                likes = payload.likes,
+            )
+        }
+        return latest.values.toList()
+    }
+
+    /**
+     * Publica (no maximo a cada [minIntervalMs]) o que esta tocando e as
+     * curtidas recentes. Uma linha nova por publicacao; a anterior vira
+     * deleted para os seguidores sempre lerem a mais recente.
+     */
+    fun publishSocial(
+        track: Track?,
+        playing: Boolean,
+        likes: List<Track>,
+        force: Boolean = false,
+    ) {
+        if (_state.value.session == null) return
+        if (!_state.value.shareNowPlaying && track != null) {
+            // Compartilhar desligado: mantem so as curtidas, sem "tocando agora".
+            return publishSocialInternal(null, false, likes, force)
+        }
+        publishSocialInternal(track, playing, likes, force)
+    }
+
+    private fun publishSocialInternal(
+        track: Track?,
+        playing: Boolean,
+        likes: List<Track>,
+        force: Boolean,
+    ) {
+        val trackKey = track?.id.orEmpty()
+        val likesKey = likes.take(20).joinToString(",") { it.id }
+        // Nada para compartilhar: evita uma linha vazia a cada abertura.
+        if (track == null && likes.isEmpty()) return
+        if (!force &&
+            trackKey == lastSocialTrack &&
+            likesKey == lastSocialLikes &&
+            playing == lastSocialPlaying
+        ) {
+            return
+        }
+        socialJob?.cancel()
+        socialJob = scope.launch {
+            delay(6_000)
+            val active = ensureSession() ?: return@launch
+            val payload = SocialPayload(
+                track = track,
+                playing = playing,
+                at = System.currentTimeMillis(),
+                likes = likes.take(20),
+            )
+            val id = runCatching {
+                api.saveSocialState(
+                    active.accessToken,
+                    active.userId,
+                    json.encodeToJsonElement(payload),
+                )
+            }.getOrNull() ?: return@launch
+            val old = socialStateId
+            socialStateId = id
+            lastSocialTrack = trackKey
+            lastSocialLikes = likesKey
+            lastSocialPlaying = playing
+            lastSocialAt = System.currentTimeMillis()
+            if (old != null && old != id) api.retireSocialState(active.accessToken, old)
+        }
+    }
+
+    fun setShareNowPlaying(enabled: Boolean) {
+        _state.update { it.copy(shareNowPlaying = enabled) }
+        lastSocialTrack = null
+        lastSocialPlaying = null
+        val snapshot = socialProvider?.invoke()
+        if (!enabled) {
+            // Desligou: apaga o "tocando agora" que os seguidores veriam.
+            socialJob?.cancel()
+            val id = socialStateId
+            socialStateId = null
+            if (id != null) {
+                scope.launch {
+                    val active = ensureSession() ?: return@launch
+                    api.retireSocialState(active.accessToken, id)
+                }
+            }
+        }
+        snapshot?.let { publishSocial(it.track, it.playing, it.likes, force = true) }
     }
 
     fun searchPeople(query: String) {
@@ -1027,7 +1159,10 @@ class AccountManager(
     suspend fun uploadCover(playlistId: String, file: java.io.File): String? {
         val session = ensureSession() ?: return null
         return runCatching {
-            api.uploadCover(session.accessToken, session.userId, playlistId, file)
+            val optimized = withContext(Dispatchers.IO) {
+                ImageTools.compressForUpload(file, 1280, ImageTools.MAX_COVER_BYTES)
+            }
+            api.uploadCover(session.accessToken, session.userId, playlistId, optimized)
         }.getOrNull()
     }
 

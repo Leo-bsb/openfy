@@ -72,6 +72,15 @@ data class RemoteActivity(
     @SerialName("created_at") val createdAt: String = "",
 )
 
+/** Linha publica de `activities` lida no feed social (tipo social_state). */
+@Serializable
+data class RemoteSocialActivity(
+    val id: String = "",
+    @SerialName("actor_id") val actorId: String = "",
+    val payload: JsonElement = JsonNull,
+    @SerialName("created_at") val createdAt: String = "",
+)
+
 @Serializable
 data class PushActivity(
     @SerialName("actor_id") val actorId: String,
@@ -538,6 +547,54 @@ class SupabaseApi {
         )
         return rows.firstOrNull()?.id
             ?: throw SupabaseException(0, "O servidor não devolveu o id dos ajustes.")
+    }
+
+    /**
+     * Publica o snapshot social (tocando agora + curtidas recentes). A tabela
+     * `activities` nao deixa atualizar o payload de uma linha (trigger), entao
+     * cada publicacao insere uma linha publica nova e marca a anterior como
+     * deleted. A leitura fica com a mais recente por usuario.
+     */
+    suspend fun saveSocialState(
+        accessToken: String,
+        userId: String,
+        payload: JsonElement,
+    ): String {
+        val rows = decode<List<IdRow>>(
+            client.post("$baseUrl/rest/v1/activities") {
+                auth(accessToken)
+                header("Prefer", "return=representation")
+                contentType(ContentType.Application.Json)
+                setBody(PushActivity(userId, "social_state", payload, isPublic = true))
+            },
+        )
+        return rows.firstOrNull()?.id
+            ?: throw SupabaseException(0, "O servidor não devolveu o id social.")
+    }
+
+    /** Snapshots sociais publicos de quem eu sigo (RLS limita aos seguidos). */
+    suspend fun socialActivities(
+        accessToken: String,
+        actorIds: List<String>,
+    ): List<RemoteSocialActivity> {
+        if (actorIds.isEmpty()) return emptyList()
+        return decode<List<RemoteSocialActivity>>(
+            client.get("$baseUrl/rest/v1/activities") {
+                auth(accessToken)
+                parameter("select", "id,actor_id,payload,created_at")
+                parameter("actor_id", "in.(${actorIds.joinToString(",")})")
+                parameter("type", "eq.social_state")
+                parameter("is_public", "eq.true")
+                parameter("deleted", "eq.false")
+                parameter("order", "created_at.desc")
+                parameter("limit", "200")
+            },
+        )
+    }
+
+    /** Marca um snapshot antigo como deleted (nao ha policy de delete). */
+    suspend fun retireSocialState(accessToken: String, id: String) {
+        runCatching { deleteActivity(accessToken, id) }
     }
 
     // ------------------------------------------------------------------ social

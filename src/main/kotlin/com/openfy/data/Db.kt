@@ -22,7 +22,7 @@ import java.util.UUID
  * Banco local unico (SQLite, WAL). Tudo que o app sabe sobre musica mora aqui:
  * metadados em cache, curtidas, playlists, historico e preferencias.
  */
-class Db(file: Path) : AutoCloseable {
+class Db(private val file: Path) : AutoCloseable {
 
     private val conn: Connection
 
@@ -1348,6 +1348,33 @@ class Db(file: Path) : AutoCloseable {
             Files.move(temp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
         }
     }
+
+    /**
+     * Mantem o banco enxuto: remove historico antigo (o recap ja foi calculado)
+     * e devolve espaco livre ao sistema de arquivos. Chamado ao fechar o app e
+     * pelo botao "Otimizar banco" nos ajustes; e barato o bastante para rodar
+     * em segundo plano.
+     */
+    @Synchronized
+    fun compact(retainDays: Int = 400) {
+        runCatching {
+            val cutoff = System.currentTimeMillis() - retainDays.toLong() * 24L * 60L * 60L * 1000L
+            conn.prepareStatement("delete from play_event where at < ?").use { ps ->
+                ps.setLong(1, cutoff)
+                ps.executeUpdate()
+            }
+            conn.createStatement().use { st ->
+                st.execute("pragma optimize")
+                st.execute("vacuum")
+            }
+            com.openfy.core.Log.write("db: compactado (retencao ${retainDays}d)")
+        }
+    }
+
+    /** Tamanho do arquivo do banco em bytes (0 quando indisponivel). */
+    fun sizeBytes(): Long = runCatching {
+        Files.size(file)
+    }.getOrDefault(0L)
 
     @Synchronized
     override fun close() {

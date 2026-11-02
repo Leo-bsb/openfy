@@ -138,10 +138,29 @@ object ArtworkCache {
         }
         if (chosen.isEmpty()) return null
         return CoverPalette(
-            primary = chosen[0],
-            secondary = chosen.getOrElse(1) { chosen[0] },
-            tertiary = chosen.getOrElse(2) { chosen.last() },
+            primary = vivid(chosen[0]),
+            secondary = vivid(chosen.getOrElse(1) { chosen[0] }),
+            tertiary = vivid(chosen.getOrElse(2) { chosen.last() }),
         )
+    }
+
+    /**
+     * Aumenta a saturacao e garante brilho minimo. Capas escuras/cinzas
+     * geravam um fundo quase igual ao preto; no player cheio isso apagava o
+     * gradiente. 30% mais saturacao mantem a identidade da capa e da contraste
+     * com os textos.
+     */
+    private fun vivid(color: Color): Color {
+        val hsb = java.awt.Color.RGBtoHSB(
+            (color.red * 255).toInt().coerceIn(0, 255),
+            (color.green * 255).toInt().coerceIn(0, 255),
+            (color.blue * 255).toInt().coerceIn(0, 255),
+            null,
+        )
+        val saturation = (hsb[1] * 1.30f).coerceIn(0f, 1f)
+        val brightness = hsb[2].coerceIn(0.30f, 0.92f)
+        val rgb = java.awt.Color.HSBtoRGB(hsb[0], saturation, brightness)
+        return Color(0xFF000000L.toInt() or (rgb and 0xFFFFFF))
     }
 
     private fun distanceSq(a: Color, b: Color): Float {

@@ -228,6 +228,46 @@ class SupabaseApi {
         if (!response.status.isSuccess()) decodeError(response)
     }
 
+    suspend fun saveSocialState(
+        accessToken: String,
+        userId: String,
+        payload: JsonElement,
+    ): String {
+        val response = client.post("$baseUrl/rest/v1/activities") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            header("Prefer", "return=representation")
+            contentType(ContentType.Application.Json)
+            setBody(PushActivity(userId, "social_state", payload, isPublic = true))
+        }
+        val rows = decoded<List<IdRow>>(response)
+        return rows.firstOrNull()?.id
+            ?: throw SupabaseException("O servidor não devolveu o id social.")
+    }
+
+    suspend fun socialActivities(
+        accessToken: String,
+        actorIds: List<String>,
+    ): List<RemoteSocialActivity> {
+        if (actorIds.isEmpty()) return emptyList()
+        val response = client.get("$baseUrl/rest/v1/activities") {
+            header("apikey", anonKey)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            parameter("select", "id,actor_id,payload,created_at")
+            parameter("actor_id", "in.(${actorIds.joinToString(",")})")
+            parameter("type", "eq.social_state")
+            parameter("is_public", "eq.true")
+            parameter("deleted", "eq.false")
+            parameter("order", "created_at.desc")
+            parameter("limit", "200")
+        }
+        return decoded<List<RemoteSocialActivity>>(response)
+    }
+
+    suspend fun retireSocialState(accessToken: String, id: String) {
+        runCatching { deleteActivity(accessToken, id) }
+    }
+
     suspend fun uploadProfileImage(
         accessToken: String,
         userId: String,

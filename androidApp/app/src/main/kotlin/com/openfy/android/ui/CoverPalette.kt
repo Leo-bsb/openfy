@@ -93,10 +93,22 @@ object CoverPalettes {
         }
         if (chosen.isEmpty()) return null
         return CoverPalette(
-            primary = chosen[0],
-            secondary = chosen.getOrElse(1) { chosen[0] },
-            tertiary = chosen.getOrElse(2) { chosen.last() },
+            primary = vivid(chosen[0]),
+            secondary = vivid(chosen.getOrElse(1) { chosen[0] }),
+            tertiary = vivid(chosen.getOrElse(2) { chosen.last() }),
         )
+    }
+
+    /** +30% de saturacao e brilho minimo: capas escuras nao somem no player. */
+    private fun vivid(color: Color): Color {
+        val r = (color.red * 255).toInt().coerceIn(0, 255)
+        val g = (color.green * 255).toInt().coerceIn(0, 255)
+        val b = (color.blue * 255).toInt().coerceIn(0, 255)
+        val hsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(android.graphics.Color.rgb(r, g, b), hsv)
+        hsv[1] = (hsv[1] * 1.30f).coerceIn(0f, 1f)
+        hsv[2] = hsv[2].coerceIn(0.30f, 0.92f)
+        return Color(android.graphics.Color.HSVToColor(hsv))
     }
 
     private fun distanceSq(a: Color, b: Color): Float {
