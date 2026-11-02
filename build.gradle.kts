@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.openfy"
-version = "0.7.0"
+version = "0.7.1"
 
 kotlin {
     jvmToolchain(21)
@@ -116,7 +116,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Openfy"
-            packageVersion = "0.7.0"
+            packageVersion = "0.7.1"
             description = "Tocador pessoal de musica"
             vendor = "openfy"
             modules("java.sql", "java.naming", "jdk.unsupported", "java.net.http", "java.management", "jdk.httpserver")

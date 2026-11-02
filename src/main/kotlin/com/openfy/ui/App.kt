@@ -5044,7 +5044,6 @@ private fun SettingsScreen(c: AppController) {
     val discordStatus by c.discord.status.collectAsState()
     var appIdDraft by remember { mutableStateOf(discordAppId) }
     var eqOpen by remember { mutableStateOf(false) }
-    var resetOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(discordAppId) { appIdDraft = discordAppId }
 
@@ -5276,14 +5275,6 @@ private fun SettingsScreen(c: AppController) {
                             )
                         }
                         Spacer(Modifier.width(4.dp))
-                        TextButton(
-                            onClick = {
-                                c.account.clearFeedback()
-                                resetOpen = true
-                            },
-                        ) {
-                            Text("Esqueci minha senha", color = Tokens.textLow)
-                        }
                     }
                 } else {
                     val session = account.session
@@ -5558,134 +5549,6 @@ private fun SettingsScreen(c: AppController) {
         )
     }
     if (eqOpen) EqualizerDialog(c) { eqOpen = false }
-    if (resetOpen) {
-        PasswordResetDialog(
-            c = c,
-            initialEmail = accountEmail.ifBlank { account.session?.email.orEmpty() },
-        ) { resetOpen = false }
-    }
-}
-
-@Composable
-private fun PasswordResetDialog(
-    c: AppController,
-    initialEmail: String,
-    onClose: () -> Unit,
-) {
-    val account by c.account.state.collectAsState()
-    var email by remember { mutableStateOf(initialEmail) }
-    var code by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    var sent by remember { mutableStateOf(false) }
-
-    fun close() {
-        c.account.clearFeedback()
-        onClose()
-    }
-
-    AlertDialog(
-        onDismissRequest = { close() },
-        modifier = Modifier.width(480.dp),
-        containerColor = Tokens.panelHigh,
-        titleContentColor = Tokens.textHigh,
-        title = { Text("Recuperar senha", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
-        text = {
-            Column {
-                Text(
-                    "Enviamos um link para o e-mail da conta; ele abre a página de recuperação do Openfy.",
-                    color = Tokens.textLow,
-                    fontSize = 12.sp,
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = { Text("E-mail") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                    modifier = Modifier.fillMaxWidth().trackInputFocus(),
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = {
-                        sent = true
-                        c.account.requestPasswordReset(email)
-                    },
-                    enabled = !account.busy,
-                ) {
-                    if (account.busy) {
-                        CircularProgressIndicator(
-                            Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = Tokens.ink,
-                        )
-                        Spacer(Modifier.width(6.dp))
-                    }
-                    Text("Enviar e-mail de recuperação")
-                }
-                if (sent) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Abra o link do e-mail para escolher a senha no navegador ou cole abaixo o " +
-                            "código que veio na mensagem.",
-                        color = Tokens.textLow,
-                        fontSize = 11.sp,
-                    )
-                }
-                HorizontalDivider(color = Tokens.line, modifier = Modifier.padding(vertical = 12.dp))
-                Text(
-                    "Já tenho o código",
-                    color = Tokens.textHigh,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { code = it.take(64) },
-                    label = { Text("Código do e-mail") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().trackInputFocus(),
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Nova senha (mínimo 6)") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    modifier = Modifier.fillMaxWidth().trackInputFocus(),
-                )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { c.account.confirmPasswordReset(email, code, password) },
-                    enabled = !account.busy && code.isNotBlank() && password.length >= 6,
-                ) {
-                    if (account.busy) {
-                        CircularProgressIndicator(
-                            Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = Tokens.ink,
-                        )
-                        Spacer(Modifier.width(6.dp))
-                    }
-                    Text("Definir nova senha")
-                }
-                account.status?.let {
-                    Text(it, color = Tokens.accent, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
-                }
-                account.error?.let {
-                    Text(it, color = Color(0xFFFF8A80), fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { close() }) {
-                Text("Fechar", color = Tokens.accent, fontSize = 13.sp)
-            }
-        },
-    )
 }
 
 @Composable

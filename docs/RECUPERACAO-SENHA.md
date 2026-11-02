@@ -1,5 +1,11 @@
 # Recuperação de senha
 
+> **02/11/2026:** o botão **Esqueci minha senha** foi temporariamente removido
+> das telas de login do desktop e do Android. O endpoint, o diálogo (no código)
+> e a página `recover.html` continuam aqui para quando o fluxo voltar. Para
+> reativar, basta devolver o botão nas telas de login; a configuração do Supabase
+> descrita abaixo continua necessária.
+
 O Openfy troca a senha por dois caminhos, ambos com a chave anônima/publishable
 — não é preciso `service_role` nem CLI:
 

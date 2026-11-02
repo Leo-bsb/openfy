@@ -6369,7 +6369,6 @@ private fun LoginScreen(state: AuthUiState, viewModel: AuthViewModel) {
     var password by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
     var creating by remember { mutableStateOf(false) }
-    var resetOpen by remember { mutableStateOf(false) }
 
     Box(
         Modifier.fillMaxSize()
@@ -6444,15 +6443,6 @@ private fun LoginScreen(state: AuthUiState, viewModel: AuthViewModel) {
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    if (!creating) {
-                        TextButton(
-                            onClick = { resetOpen = true },
-                            enabled = !state.busy,
-                            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
-                        ) {
-                            Text("Esqueci minha senha", color = OpenfyAccent2, fontSize = 12.sp)
-                        }
-                    }
                     state.error?.let {
                         Spacer(Modifier.height(10.dp))
                         Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -6505,123 +6495,4 @@ private fun LoginScreen(state: AuthUiState, viewModel: AuthViewModel) {
             )
         }
     }
-    if (resetOpen) {
-        PasswordResetDialog(
-            initialEmail = email,
-            busy = state.busy,
-            feedback = state.error ?: state.message,
-            onDismiss = { resetOpen = false },
-            onSend = { viewModel.requestPasswordReset(it) },
-            onConfirm = { resetEmail, code, newPassword ->
-                viewModel.confirmPasswordReset(resetEmail, code, newPassword)
-            },
-        )
-    }
-}
-
-@Composable
-private fun PasswordResetDialog(
-    initialEmail: String,
-    busy: Boolean,
-    feedback: String?,
-    onDismiss: () -> Unit,
-    onSend: (String) -> Unit,
-    onConfirm: (String, String, String) -> Unit,
-) {
-    var resetEmail by remember(initialEmail) { mutableStateOf(initialEmail) }
-    var code by remember { mutableStateOf("") }
-    var newPassword by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = { if (!busy) onDismiss() },
-        containerColor = OpenfyPanelHigh,
-        title = { Text("Recuperar senha", color = OpenfyTextHigh) },
-        text = {
-            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
-                Text(
-                    "Enviamos um link para o e-mail cadastrado. Ele abre a página do site " +
-                        "onde você define a nova senha. Se preferir, use o código do e-mail.",
-                    color = OpenfyTextLow,
-                    fontSize = 11.sp,
-                )
-                feedback?.let { text ->
-                    Text(
-                        text,
-                        color = if (text.startsWith("Falha")) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            OpenfyAccent2
-                        },
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = resetEmail,
-                    onValueChange = { resetEmail = it },
-                    label = { Text("E-mail") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(6.dp))
-                TextButton(
-                    onClick = { onSend(resetEmail) },
-                    enabled = !busy && resetEmail.isNotBlank(),
-                    contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
-                ) {
-                    if (busy) {
-                        CircularProgressIndicator(
-                            Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = OpenfyTextLow,
-                        )
-                        Spacer(Modifier.width(6.dp))
-                    }
-                    Text("Enviar e-mail de recuperação", color = OpenfyAccent, fontSize = 12.sp)
-                }
-                Spacer(Modifier.height(10.dp))
-                Text("Já tenho o código", color = OpenfyTextHigh, fontSize = 13.sp)
-                Text(
-                    "Use o código de 6 dígitos do e-mail. Ele vale por pouco tempo.",
-                    color = OpenfyTextLow,
-                    fontSize = 10.sp,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { code = it },
-                    label = { Text("Código do e-mail") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = newPassword,
-                    onValueChange = { newPassword = it },
-                    label = { Text("Nova senha") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(6.dp))
-                Button(
-                    onClick = { onConfirm(resetEmail, code, newPassword) },
-                    enabled = !busy && resetEmail.isNotBlank() && code.isNotBlank() &&
-                        newPassword.length >= 6,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("Definir nova senha")
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss, enabled = !busy) {
-                Text("Fechar", color = OpenfyAccent)
-            }
-        },
-    )
 }

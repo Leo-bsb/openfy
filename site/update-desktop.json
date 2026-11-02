@@ -1,6 +1,6 @@
 {
-  "version": "0.7.0",
-  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.7.0/Openfy-0.7.0.exe",
+  "version": "0.7.1",
+  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.7.1/Openfy-0.7.1.exe",
   "size": 175758336,
   "sha256": "42d3324ecd775a5883c1b867a04bc40870da45a45062732765e13e17650c4446",
   "notes": "Modo DJ: as transicoes casam o tempo (ate +-8%), entram no compasso e trocam os graves no meio do fade, com musicas locais e baixadas. Deteccao de BPM, fase e downbeat mais precisa e volume equalizado entre as faixas."
