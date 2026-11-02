@@ -60,8 +60,8 @@ Get-FileHash build\compose\binaries\main\msi\Openfy-*.msi -Algorithm SHA256
   {
     "version": "0.7.1",
     "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.7.1/Openfy-0.7.1.exe",
-    "size": 175758336,
-    "sha256": "42d3324…50c4446",
+    "size": 175754240,
+    "sha256": "072e152…d6d1ed",
     "notes": "resumo curto em uma linha"
   }
   ```
