@@ -23,16 +23,20 @@ class EqualizerController {
 
     private val effects = mutableMapOf<Any, Equalizer>()
     private val enhancers = mutableMapOf<Any, LoudnessEnhancer>()
+    private val bassCuts = mutableMapOf<Any, Int>()
     private var enabled = false
     private var gains = DEFAULT_GAINS
 
     fun attach(key: Any, sessionId: Int) {
+        val cut = bassCuts[key] ?: 0
         release(key)
         if (sessionId <= 0) return
         val effect = runCatching { Equalizer(0, sessionId) }.getOrNull() ?: return
         effects[key] = effect
-        runCatching { effect.enabled = enabled && !isFlat() }
-        if (enabled && !isFlat()) apply(effect)
+        if (cut != 0) bassCuts[key] = cut
+        val active = (enabled && !isFlat()) || cut != 0
+        runCatching { effect.enabled = active }
+        if (active) apply(effect, cut)
         val enhancer = runCatching { LoudnessEnhancer(sessionId) }.getOrNull()
         if (enhancer != null) {
             enhancers[key] = enhancer
@@ -40,12 +44,29 @@ class EqualizerController {
         }
     }
 
+    /**
+     * Corta os graves deste player (dB negativo). Usado pelo Modo DJ no bass
+     * swap: a faixa que entra fica sem graves ate a metade do fade.
+     */
+    fun setBassCut(key: Any, db: Int) {
+        val cut = db.coerceIn(-12, 0)
+        if (cut == 0) bassCuts.remove(key) else bassCuts[key] = cut
+        val effect = effects[key] ?: return
+        runCatching {
+            val active = (enabled && !isFlat()) || cut != 0
+            effect.enabled = active
+            if (active) apply(effect, cut)
+        }
+    }
+
     fun setEnabled(value: Boolean) {
         enabled = value
-        effects.values.forEach { effect ->
+        effects.forEach { (key, effect) ->
             runCatching {
-                effect.enabled = value && !isFlat()
-                if (value) apply(effect)
+                val cut = bassCuts[key] ?: 0
+                val active = (value && !isFlat()) || cut != 0
+                effect.enabled = active
+                if (active) apply(effect, cut)
             }
         }
         enhanceAll()
@@ -57,10 +78,12 @@ class EqualizerController {
         next[index] = db.coerceIn(-12, 12)
         gains = next
         enabled = true
-        effects.values.forEach { effect ->
+        effects.forEach { (key, effect) ->
             runCatching {
-                effect.enabled = !isFlat()
-                apply(effect)
+                val cut = bassCuts[key] ?: 0
+                val active = !isFlat() || cut != 0
+                effect.enabled = active
+                if (active) apply(effect, cut)
             }
         }
         enhanceAll()
@@ -70,10 +93,12 @@ class EqualizerController {
         val preset = PRESETS[name] ?: return
         gains = preset
         enabled = true
-        effects.values.forEach { effect ->
+        effects.forEach { (key, effect) ->
             runCatching {
-                effect.enabled = !isFlat()
-                apply(effect)
+                val cut = bassCuts[key] ?: 0
+                val active = !isFlat() || cut != 0
+                effect.enabled = active
+                if (active) apply(effect, cut)
             }
         }
         enhanceAll()
@@ -83,10 +108,12 @@ class EqualizerController {
     fun applySaved(enabled: Boolean, gains: List<Int>) {
         this.enabled = enabled
         this.gains = resampleGains(gains)
-        effects.values.forEach { effect ->
+        effects.forEach { (key, effect) ->
             runCatching {
-                effect.enabled = enabled && !isFlat()
-                if (enabled) apply(effect)
+                val cut = bassCuts[key] ?: 0
+                val active = (enabled && !isFlat()) || cut != 0
+                effect.enabled = active
+                if (active) apply(effect, cut)
             }
         }
         enhanceAll()
@@ -95,6 +122,7 @@ class EqualizerController {
     fun release(key: Any) {
         effects.remove(key)?.let { runCatching { it.release() } }
         enhancers.remove(key)?.let { runCatching { it.release() } }
+        bassCuts.remove(key)
     }
 
     fun releaseAll() {
@@ -102,6 +130,7 @@ class EqualizerController {
         effects.clear()
         enhancers.values.forEach { runCatching { it.release() } }
         enhancers.clear()
+        bassCuts.clear()
     }
 
     /** Curva toda em zero: não vale a pena ligar o processamento. */
@@ -127,7 +156,7 @@ class EqualizerController {
      * Para cada banda física do aparelho, interpola a curva lógica pela
      * distância entre as duas bandas vizinhas mais próximas.
      */
-    private fun apply(effect: Equalizer) {
+    private fun apply(effect: Equalizer, bassCut: Int = 0) {
         val number = effect.numberOfBands.toInt().coerceAtLeast(1)
         val range = effect.bandLevelRange
         val min = range.getOrElse(0) { -1500 }.toInt()
@@ -135,7 +164,14 @@ class EqualizerController {
         for (band in 0 until number) {
             val freq = runCatching { effect.getCenterFreq(band.toShort()) / 1000.0 }
                 .getOrDefault(0.0)
-            val level = (gainAt(freq) * 100).coerceIn(min, max)
+            // O bass swap corta so o extremo grave, com meia forca em 250 Hz.
+            val cut = when {
+                bassCut == 0 -> 0
+                freq <= 125.0 -> bassCut
+                freq <= 300.0 -> bassCut / 2
+                else -> 0
+            }
+            val level = ((gainAt(freq) + cut) * 100).coerceIn(min, max)
             runCatching { effect.setBandLevel(band.toShort(), level.toShort()) }
         }
     }

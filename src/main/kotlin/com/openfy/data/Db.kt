@@ -1,5 +1,6 @@
 package com.openfy.data
 
+import com.openfy.core.BeatGrid
 import com.openfy.core.PendingPlayEvent
 import com.openfy.core.PlayEventRow
 import com.openfy.core.Playlist
@@ -255,6 +256,18 @@ class Db(private val file: Path) : AutoCloseable {
                 )
                 st.execute("pragma user_version=9")
             }
+            if (version < 10) {
+                // v10: grade ritmica do Modo DJ (pulso, fase, compasso e loudness).
+                // Fica local: e um dado de analise do aparelho, nao vai para a nuvem.
+                st.execute(
+                    "create table if not exists beat_grid(" +
+                        "id text primary key, bpm real not null, confidence real not null, " +
+                        "first_beat real not null, first_downbeat real not null, " +
+                        "beats_per_bar integer not null default 4, duration real not null default 0, " +
+                        "rms_db real not null default -14, updated_at integer not null)"
+                )
+                st.execute("pragma user_version=10")
+            }
         }
     }
 
@@ -287,6 +300,47 @@ class Db(private val file: Path) : AutoCloseable {
             ps.setInt(5, track.durationSec)
             ps.setString(6, track.thumbnail)
             ps.setLong(7, System.currentTimeMillis())
+            ps.executeUpdate()
+        }
+    }
+
+    // ------------------------------------------------------------------ beat grid (Modo DJ)
+    @Synchronized
+    fun beatGrid(id: String): BeatGrid? =
+        conn.prepareStatement(
+            "select bpm, confidence, first_beat, first_downbeat, beats_per_bar, duration, rms_db " +
+                "from beat_grid where id=?"
+        ).use { ps ->
+            ps.setString(1, id)
+            ps.executeQuery().use { rs ->
+                if (!rs.next()) return null
+                BeatGrid(
+                    bpm = rs.getDouble(1),
+                    confidence = rs.getDouble(2),
+                    firstBeatSec = rs.getDouble(3),
+                    firstDownbeatSec = rs.getDouble(4),
+                    beatsPerBar = rs.getInt(5),
+                    durationSec = rs.getDouble(6),
+                    rmsDb = rs.getDouble(7),
+                )
+            }
+        }
+
+    @Synchronized
+    fun putBeatGrid(id: String, grid: BeatGrid) {
+        conn.prepareStatement(
+            "insert or replace into beat_grid(id, bpm, confidence, first_beat, first_downbeat, " +
+                "beats_per_bar, duration, rms_db, updated_at) values(?,?,?,?,?,?,?,?,?)"
+        ).use { ps ->
+            ps.setString(1, id)
+            ps.setDouble(2, grid.bpm)
+            ps.setDouble(3, grid.confidence)
+            ps.setDouble(4, grid.firstBeatSec)
+            ps.setDouble(5, grid.firstDownbeatSec)
+            ps.setInt(6, grid.beatsPerBar)
+            ps.setDouble(7, grid.durationSec)
+            ps.setDouble(8, grid.rmsDb)
+            ps.setLong(9, System.currentTimeMillis())
             ps.executeUpdate()
         }
     }

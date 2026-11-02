@@ -15,6 +15,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
@@ -57,10 +58,13 @@ import com.openfy.android.data.SupabaseApi
 import com.openfy.android.data.SupabaseException
 import com.openfy.android.data.SyncStore
 import com.openfy.android.data.SyncedSettings
+import com.openfy.android.playback.BeatGridStore
 import com.openfy.android.playback.EqualizerController
 import com.openfy.android.playback.PlaybackBridge
 import com.openfy.android.playback.PlaybackService
 import com.openfy.core.ColorPalette
+import com.openfy.core.DjMixer
+import com.openfy.core.MixPlan
 import com.openfy.core.Artist
 import com.openfy.core.ArtistPage
 import com.openfy.core.ExploreFeed
@@ -111,6 +115,7 @@ import java.io.File
 import java.time.Instant
 import java.time.YearMonth
 import kotlin.coroutines.coroutineContext
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -169,6 +174,7 @@ data class AuthUiState(
     val playlistItems: List<RemotePlaylistItem> = emptyList(),
     val playlistLoading: Boolean = false,
     val crossfadeSeconds: Int = 6,
+    val djMode: Boolean = false,
     val shuffle: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val palette: ColorPalette = ColorPalette.OPENFY,
@@ -260,11 +266,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val syncStore = SyncStore(File(application.filesDir, "offline"))
     private val historyStore = HistoryStore(File(application.filesDir, "offline"))
     private val downloadStore = DownloadEngine.storeFor(application)
+    private val beatGrids = BeatGridStore(application)
 
     private val _state = MutableStateFlow(
         AuthUiState(
             deviceName = store.deviceName(),
             crossfadeSeconds = store.crossfadeSeconds(),
+            djMode = store.djMode(),
             shuffle = store.shuffle(),
             repeatMode = store.repeatMode(),
             palette = store.palette(),
@@ -387,6 +395,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var crossfadeOld: ExoPlayer? = null
     private var crossfadeDurationMs: Long = 0
     private var crossfadeSeconds = store.crossfadeSeconds()
+    private var djMode = store.djMode()
+    private var djPlan: MixPlan? = null
+    private val warmingGrids = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var shuffleSnapshotQueue: List<Track>? =
         store.shuffleSnapshotQueue().takeIf { it.isNotEmpty() }
     private var shuffleSnapshotIndex = store.shuffleSnapshotIndex()
@@ -543,10 +554,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     maybeAppendRadio()
                     if (dur > 0 && crossfadeSeconds > 0 && !crossfading) {
                         val remaining = dur - pos
-                        if (remaining <= crossfadeSeconds * 1000L + 4_000L && preloadedTrack == null) {
+                        val fadeMs = djPlan?.let { (it.fadeSeconds * 1000).toLong() }
+                            ?: (crossfadeSeconds * 1000L)
+                        if (remaining <= fadeMs + 4_000L && preloadedTrack == null) {
                             maybePreloadNext()
                         }
-                        if (remaining <= crossfadeSeconds * 1000L && crossfadeReady) {
+                        if (remaining <= fadeMs && crossfadeReady) {
                             startCrossfade()
                         }
                     }
@@ -3444,6 +3457,24 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         markSettingsChanged()
     }
 
+    /**
+     * Modo DJ: preferencia local do aparelho. N1/N2 usam as grades ritmicas
+     * analisadas dos arquivos baixados/locais; stream remoto cai no N1.
+     */
+    fun setDjMode(enabled: Boolean) {
+        djMode = enabled
+        store.setDjMode(enabled)
+        _state.update { it.copy(djMode = enabled) }
+        if (enabled) {
+            // Beatmatch precisa de sobreposicao; liga um crossfade padrao.
+            if (crossfadeSeconds == 0) setCrossfadeSeconds(6)
+            warmGrids()
+        } else {
+            cancelCrossfade()
+        }
+        com.openfy.core.Log.write("player: modo DJ ${if (enabled) "ligado" else "desligado"}")
+    }
+
     fun setPalette(value: ColorPalette) {
         store.setPalette(value)
         store.setAccentHex(null)
@@ -4157,6 +4188,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
         requestPlaybackPush()
         armPlayWatchdog(track.id)
+        warmGrids()
         playJob = viewModelScope.launch {
             if (LocalMusic.isLocal(track.id)) {
                 // Arquivo do aparelho: toca direto do content:// do MediaStore.
@@ -4267,14 +4299,67 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             .createMediaSource(mediaItem(track, uri))
     }
 
+    /**
+     * Plano da transicao atual. No Android so existe grade de arquivos locais
+     * ou baixados; quando a proxima e remota, o plano cai no N1.
+     */
+    private fun planFor(nextTrack: Track, s: AuthUiState): MixPlan {
+        val totalMs = if (s.durationMs > 0L) s.durationMs else (s.track?.durationSec ?: 0) * 1000L
+        val remainingSec = if (totalMs > 0L) {
+            (totalMs - s.positionMs).coerceAtLeast(0L) / 1000.0
+        } else {
+            0.0
+        }
+        return DjMixer.plan(
+            outgoing = if (djMode) beatGrids.cached(s.track?.id.orEmpty()) else null,
+            incoming = if (djMode) beatGrids.cached(nextTrack.id) else null,
+            durationSec = totalMs / 1000.0,
+            remainingSec = remainingSec,
+            fadeSeconds = crossfadeSeconds,
+        )
+    }
+
+    /** Analisa a faixa atual e a proxima em segundo plano, uma vez por faixa. */
+    private fun warmGrids() {
+        if (!djMode) return
+        val s = _state.value
+        s.track?.let { warmGrid(it) }
+        val nextIndex = QueueLogic.autoNextIndex(s.queueIndex, s.queue.size, s.repeatMode) ?: return
+        s.queue.getOrNull(nextIndex)?.let { warmGrid(it) }
+    }
+
+    private fun warmGrid(track: Track) {
+        if (!djMode || track.id.isBlank()) return
+        if (beatGrids.cached(track.id) != null) return
+        if (!warmingGrids.add(track.id)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val uri = if (LocalMusic.isLocal(track.id)) {
+                    LocalMusic.uriFor(track.id)
+                } else {
+                    downloadStore.fileFor(track.id)?.let { Uri.fromFile(it) }
+                } ?: return@launch
+                beatGrids.analyze(track.id, uri, track.durationSec)
+            } finally {
+                warmingGrids.remove(track.id)
+            }
+        }
+    }
+
     private fun maybePreloadNext() {
         if (crossfadeSeconds <= 0 || preloading || preloadedTrack != null || crossfading) return
         val s = _state.value
         if (s.repeatMode == RepeatMode.ONE || s.queue.size < 2) return
         val nextIndex = QueueLogic.autoNextIndex(s.queueIndex, s.queue.size, s.repeatMode) ?: return
         val track = s.queue[nextIndex]
-        if (LocalMusic.isLocal(track.id)) return
         val currentId = s.track?.id
+        val plan = planFor(track, s)
+        djPlan = plan
+        if (djMode) {
+            // Garante a grade da proxima; se ela ainda nao estiver pronta,
+            // esta transicao cai no N1 com o que houver em cache.
+            warmGrid(track)
+        }
         com.openfy.core.Log.write("player: preparando crossfade ${track.id}")
         preloading = true
         preloadJob?.cancel()
@@ -4282,6 +4367,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 // Baixada? Usa o arquivo local; senão extrai o stream remoto.
                 val source = withContext(Dispatchers.IO) {
+                    if (LocalMusic.isLocal(track.id)) {
+                        return@withContext mediaSourceUri(track, LocalMusic.uriFor(track.id))
+                    }
                     val local = downloadStore.fileFor(track.id)
                     if (local != null) {
                         return@withContext mediaSourceLocal(track, local)
@@ -4303,8 +4391,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 standby.stop()
                 standby.setAudioAttributes(audioAttributes, false)
                 standby.volume = 0f
+                equalizer.setBassCut(standby, if (djMode) -12 else 0)
                 standby.setMediaSource(source)
                 standby.prepare()
+                standby.seekTo((plan.entrySeconds * 1000).toLong().coerceAtLeast(0L))
+                standby.playbackParameters = PlaybackParameters(plan.speed.toFloat())
                 standby.playWhenReady = false
                 preloadedTrack = track
                 preloadedIndex = nextIndex
@@ -4323,6 +4414,23 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         if (nextIndex !in _state.value.queue.indices) return
         val old = activePlayer
         val new = standbyPlayer
+        val state = _state.value
+        val remainingSec = ((state.durationMs - state.positionMs).coerceAtLeast(0L)) / 1000.0
+        // Recalcula com o que houver em cache: se a grade da proxima terminou
+        // de ser analisada depois do preparo, o N2 entra valendo agora.
+        val plan = planFor(nextTrack, state)
+        val previous = djPlan
+        if (previous == null ||
+            abs(previous.entrySeconds - plan.entrySeconds) > 0.01 ||
+            abs(previous.speed - plan.speed) > 0.001
+        ) {
+            new.seekTo((plan.entrySeconds * 1000).toLong().coerceAtLeast(0L))
+            new.playbackParameters = PlaybackParameters(plan.speed.toFloat())
+        }
+        djPlan = plan
+        val fadeSeconds = minOf(plan.fadeSeconds, remainingSec.coerceAtLeast(1.0))
+            .coerceAtLeast(1.0)
+        val oldGain = plan.oldGain
         val oldPosition = old.currentPosition.coerceAtLeast(0L)
         finishEvent(
             completed = false,
@@ -4333,7 +4441,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         crossfadeOld = old
         activePlayer = new
         old.setAudioAttributes(audioAttributes, false)
-        com.openfy.core.Log.write("player: crossfade ${nextTrack.id} (${crossfadeSeconds}s)")
+        // Bass swap: a que sai perde os graves enquanto a que entra ainda esta
+        // cortada; na metade do fade os graves da nova assumem.
+        equalizer.setBassCut(old, if (djMode) -8 else 0)
+        com.openfy.core.Log.write(
+            "player: crossfade ${nextTrack.id} (${fadeSeconds.toInt()}s, " +
+                "${plan.reason}, ganho=${String.format("%.2f", oldGain)})"
+        )
         eventStartedAt = System.currentTimeMillis()
         eventTrack = nextTrack
         new.setAudioAttributes(audioAttributes, true)
@@ -4350,19 +4464,26 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         rememberRecent(nextTrack)
+        warmGrids()
         preloadedTrack = null
         preloadedIndex = -1
         crossfadePrepared = false
         crossfadeReady = false
         crossfadeDurationMs = 0
+        djPlan = null
         crossfadeJob?.cancel()
         crossfadeJob = viewModelScope.launch {
-            val steps = (crossfadeSeconds * 10).coerceAtLeast(5)
+            val steps = (fadeSeconds * 10).coerceAtLeast(5.0).toInt()
+            var swapped = !djMode
             for (i in 0..steps) {
                 if (!crossfading) return@launch
                 val fraction = i.toDouble() / steps
+                if (!swapped && fraction >= 0.5) {
+                    swapped = true
+                    equalizer.setBassCut(new, 0)
+                }
                 val angle = fraction * Math.PI / 2.0
-                old.volume = cos(angle).toFloat()
+                old.volume = (oldGain * cos(angle)).toFloat()
                 new.volume = sin(angle).toFloat()
                 delay(100)
             }
@@ -4371,9 +4492,25 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             old.clearMediaItems()
             old.volume = 1f
             new.volume = 1f
+            equalizer.setBassCut(old, 0)
+            equalizer.setBassCut(new, 0)
             crossfadeOld = null
             crossfading = false
             com.openfy.core.Log.write("player: crossfade concluido")
+            // O tempo casado vale durante o mix; depois volta ao normal devagar
+            // para a faixa nao continuar acelerada ate o fim.
+            if (plan.beatmatched && abs(plan.speed - 1.0) > 0.002) {
+                val speed = plan.speed
+                crossfadeJob = viewModelScope.launch {
+                    val glideSteps = 24
+                    for (i in 1..glideSteps) {
+                        delay(250)
+                        if (activePlayer !== new || crossfading) return@launch
+                        val value = speed + (1.0 - speed) * i / glideSteps
+                        new.playbackParameters = PlaybackParameters(value.toFloat())
+                    }
+                }
+            }
             maybePreloadNext()
         }
     }
@@ -4387,6 +4524,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         crossfadePrepared = false
         crossfadeReady = false
         crossfadeDurationMs = 0
+        djPlan = null
         crossfadeJob?.cancel()
         crossfadeJob = null
         if (crossfading) {
@@ -4397,9 +4535,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         if (::activePlayer.isInitialized) {
             activePlayer.setAudioAttributes(audioAttributes, true)
             activePlayer.volume = 1f
+            activePlayer.playbackParameters = PlaybackParameters(1f)
+            equalizer.setBassCut(activePlayer, 0)
             standbyPlayer.stop()
             standbyPlayer.clearMediaItems()
             standbyPlayer.setAudioAttributes(audioAttributes, false)
+            standbyPlayer.playbackParameters = PlaybackParameters(1f)
+            equalizer.setBassCut(standbyPlayer, 0)
         }
     }
 

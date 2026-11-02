@@ -5020,6 +5020,8 @@ private fun ProfilePinRow(
 private fun SettingsScreen(c: AppController) {
     val quality by c.audioQuality.collectAsState()
     val crossfade by c.player.crossfadeSeconds.collectAsState()
+    val dj by c.player.djMode.collectAsState()
+    val djLabel by c.player.djLabel.collectAsState()
     val autoplayRadio by c.player.autoplayRadio.collectAsState()
     val account by c.account.state.collectAsState()
     var accountEmail by remember { mutableStateOf("") }
@@ -5073,6 +5075,8 @@ private fun SettingsScreen(c: AppController) {
                 "Transição entre faixas",
                 if (crossfade == 0) {
                     "Desligada — a próxima só começa quando a atual termina."
+                } else if (dj) {
+                    "${crossfade}s com Modo DJ: ${djLabel.ifBlank { "analisando as batidas…" }}"
                 } else {
                     "${crossfade}s de sobreposição real: as duas faixas tocam juntas."
                 },
@@ -5093,6 +5097,16 @@ private fun SettingsScreen(c: AppController) {
                 Switch(
                     checked = autoplayRadio,
                     onCheckedChange = { c.player.setAutoplayRadio(it) },
+                    colors = openfySwitchColors(),
+                )
+            }
+            SettingsRow(
+                "Modo DJ",
+                "Beatmatch de verdade: casa o tempo (±8%), entra no compasso e troca os graves na transição.",
+            ) {
+                Switch(
+                    checked = dj,
+                    onCheckedChange = { c.setDjMode(it) },
                     colors = openfySwitchColors(),
                 )
             }

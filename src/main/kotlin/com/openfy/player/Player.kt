@@ -1,5 +1,7 @@
 package com.openfy.player
 
+import com.openfy.core.DjMixer
+import com.openfy.core.MixPlan
 import com.openfy.core.RadioList
 import com.openfy.core.RadioPage
 import com.openfy.core.Recommender
@@ -59,6 +61,11 @@ class Player(
     val crossfadeSeconds = MutableStateFlow(0)
     val crossfading = MutableStateFlow(false)
 
+    /** Modo DJ: beatmatch (N2) + fade inteligente (N1). */
+    val djMode = MutableStateFlow(false)
+    /** Ultimo plano aplicado, para a UI mostrar o que o mix esta fazendo. */
+    val djLabel = MutableStateFlow("")
+
     /** Fornecido pelo AppController: busca mais faixas da radio a partir do token. */
     var radioSource: (suspend (String) -> RadioPage?)? = null
 
@@ -102,6 +109,15 @@ class Player(
     private var crossfadePreparedIndex = -1
     private var crossfadePreparedTrack: Track? = null
     private var crossfadeDuration = 0.0
+    private var crossfadePlan: MixPlan? = null
+
+    // Modo DJ: filtros por player (bass swap), tempo do beatmatch e cache de grades.
+    private var djFilterA: String? = null
+    private var djFilterB: String? = null
+    private var speedA = 1.0
+    private var speedB = 1.0
+    private var speedJob: Job? = null
+    private val gridService = BeatGridService(db, scope)
 
     /** Evita a tela presa em "carregando": recarrega uma vez e desiste com aviso. */
     private var loadWatchdog: Job? = null
@@ -110,6 +126,9 @@ class Player(
         scope.launch { observeMpv() }
         restoreEq()
         crossfadeSeconds.value = db.get("playback.crossfade")?.toIntOrNull()?.coerceIn(0, 15) ?: 0
+        djMode.value = runCatching {
+            db.get("playback.dj")?.toBooleanStrict()
+        }.getOrNull() ?: false
         autoplayRadio.value = runCatching {
             db.get("playback.autoplayRadio")?.toBooleanStrict()
         }.getOrNull() ?: true
@@ -664,6 +683,7 @@ class Player(
         active.load(stream.urlFor(track.id))
         armLoadWatchdog(track, retry = true)
         startActiveEvent(track)
+        warmGrids()
         maybeLoadMoreRadio()
         save()
     }
@@ -1101,6 +1121,7 @@ class Player(
                 "equalizer=f=$freq:t=q:w=1:g=$gain"
             }
         }
+        djFilter(target)?.let { filters += it }
         target.setAudioFilters(filters)
     }
 
@@ -1150,17 +1171,37 @@ class Player(
             return
         }
         val (nextIndex, nextTrack) = next
+        val plan = mixPlanFor(nextTrack, total, remaining)
         val same = crossfadePrepared &&
             crossfadePreparedIndex == nextIndex &&
             crossfadePreparedTrack?.id == nextTrack.id
-        if (!same) {
-            if (remaining <= fade + 3.0) prepareCrossfade(nextIndex, nextTrack)
+        // Se a grade da proxima ficou pronta depois do preparo, o plano muda de
+        // entrada/tempo. Recarrega o standby para o N2 valer de verdade.
+        val currentPlan = crossfadePlan
+        val upToDate = same && currentPlan != null &&
+            kotlin.math.abs(currentPlan.speed - plan.speed) < 1e-4 &&
+            kotlin.math.abs(currentPlan.entrySeconds - plan.entrySeconds) < 1e-3
+        // O Modo DJ precisa de mais folga: a faixa que entra comeca no downbeat
+        // e o mpv leva alguns segundos para carregar o trecho.
+        val lead = if (djMode.value) 5.0 else 3.0
+        if (!upToDate) {
+            if (remaining <= plan.fadeSeconds + lead) prepareCrossfade(nextIndex, nextTrack, plan)
             return
         }
-        if (remaining <= fade && crossfadeReady) {
-            startCrossfade(nextIndex, nextTrack, remaining)
+        if (remaining <= plan.fadeSeconds && crossfadeReady) {
+            startCrossfade(nextIndex, nextTrack, remaining, plan)
         }
     }
+
+    /** Plano N1/N2 com as grades que ja estiverem em cache. */
+    private fun mixPlanFor(nextTrack: Track, total: Double, remaining: Double): MixPlan =
+        DjMixer.plan(
+            outgoing = if (djMode.value) gridService.cached(current.value?.id.orEmpty()) else null,
+            incoming = if (djMode.value) gridService.cached(nextTrack.id) else null,
+            durationSec = total,
+            remainingSec = remaining,
+            fadeSeconds = crossfadeSeconds.value,
+        )
 
     private fun crossfadeNext(): Pair<Int, Track>? {
         val q = queue.value
@@ -1174,28 +1215,51 @@ class Player(
         return null
     }
 
-    private fun prepareCrossfade(nextIndex: Int, nextTrack: Track) {
+    private fun prepareCrossfade(nextIndex: Int, nextTrack: Track, plan: MixPlan) {
         if (crossfadePrepared && crossfadePreparedIndex == nextIndex &&
             crossfadePreparedTrack?.id == nextTrack.id
         ) {
-            return
+            val current = crossfadePlan
+            if (current != null &&
+                current.speed == plan.speed &&
+                current.entrySeconds == plan.entrySeconds
+            ) {
+                return
+            }
         }
         cancelPrep()
         crossfadePreparedIndex = nextIndex
         crossfadePreparedTrack = nextTrack
         crossfadePrepared = true
         crossfadeReady = false
+        crossfadePlan = plan
         crossfadeDuration = nextTrack.durationSec.toDouble()
         val s = standby()
         s.start()
         s.volume(0)
-        applyEqTo(s)
-        s.load(stream.urlFor(nextTrack.id))
-        com.openfy.core.Log.write("player: crossfade preparando ${nextTrack.id}")
+        s.setSpeed(plan.speed)
+        // A faixa que entra chega com os graves cortados; eles voltam na
+        // metade do fade (bass swap), como num mix de DJ de verdade.
+        setDjFilter(s, if (djMode.value) DJ_ENTRY_FILTER else null)
+        s.load(stream.urlFor(nextTrack.id), startAt = plan.entrySeconds)
+        // No Modo DJ a faixa entra exatamente no downbeat planejado: deixa o
+        // mpv pausado no ponto de entrada e so solta quando o fade comecar.
+        if (djMode.value) s.pause(true)
+        djLabel.value = plan.reason
+        com.openfy.core.Log.write(
+            "player: crossfade preparando ${nextTrack.id} (${plan.reason}, " +
+                "entrada=${String.format("%.2f", plan.entrySeconds)}s, " +
+                "speed=${String.format("%.3f", plan.speed)})"
+        )
     }
 
-    private fun startCrossfade(nextIndex: Int, nextTrack: Track, remaining: Double) {
-        val fade = minOf(crossfadeSeconds.value.toDouble(), remaining).coerceAtLeast(0.5)
+    private fun startCrossfade(
+        nextIndex: Int,
+        nextTrack: Track,
+        remaining: Double,
+        plan: MixPlan,
+    ) {
+        val fade = minOf(plan.fadeSeconds, remaining).coerceAtLeast(0.5)
         val old = active
         val new = standby()
         crossfadeOld = old
@@ -1206,6 +1270,7 @@ class Player(
         crossfadeReady = false
         crossfadePreparedIndex = -1
         crossfadePreparedTrack = null
+        crossfadePlan = null
         val oldDuration = duration.value
         val oldPlayedMs = ((oldDuration - remaining).coerceAtLeast(0.0) * 1000).toLong()
         finishActive(
@@ -1221,35 +1286,53 @@ class Player(
         busy.value = false
         pendingPause = false
         if (crossfadeDuration > 1) persistDuration(crossfadeDuration)
+        // Bass swap: a que sai perde os graves enquanto a que entra ainda esta
+        // com highpass. Na metade do fade os graves da nova assumem.
+        if (djMode.value) setDjFilter(old, DJ_EXIT_FILTER)
         new.pause(false)
         val target = volume.value
+        val oldGain = plan.oldGain
+        val newGain = plan.newGain
         startActiveEvent(nextTrack)
         save()
         maybeLoadMoreRadio()
         crossfadeJob?.cancel()
         crossfadeJob = scope.launch {
             val steps = (fade * 10).toInt().coerceAtLeast(5)
+            var swapped = !djMode.value
             for (i in 0..steps) {
                 if (!crossfadeActive) return@launch
                 val fraction = i.toDouble() / steps
+                if (!swapped && fraction >= 0.5) {
+                    swapped = true
+                    setDjFilter(new, null)
+                }
                 // Curva equal-power: no meio as duas faixas soam de verdade,
                 // em vez de um "buraco" de volume do fade linear.
                 val angle = fraction * Math.PI / 2.0
-                old.volume((target * cos(angle)).roundToInt())
-                new.volume((target * sin(angle)).roundToInt())
+                old.volume((target * oldGain * cos(angle)).roundToInt().coerceIn(0, 130))
+                new.volume((target * newGain * sin(angle)).roundToInt().coerceIn(0, 130))
                 delay(100)
             }
             if (!crossfadeActive) return@launch
             old.stop()
+            setDjFilter(old, null)
+            setSpeedOf(old, 1.0)
             new.volume(target)
             crossfadeOld = null
             crossfadeActive = false
             crossfading.value = false
-            com.openfy.core.Log.write("player: crossfade concluido")
+            // O tempo casado fica durante o mix; depois volta ao normal devagar
+            // para a faixa nao seguir "acelerada" ate o fim.
+            if (plan.beatmatched && kotlin.math.abs(plan.speed - 1.0) > 0.002) {
+                glideSpeed(new, plan.speed, 1.0, 6.0)
+            }
+            com.openfy.core.Log.write("player: crossfade concluido (${plan.reason})")
         }
         com.openfy.core.Log.write(
-            "player: crossfade ${nextTrack.id} (${fade.roundToInt()}s, " +
-                "equal-power, ${if (shuffle.value) "shuffle" else "sequencial"})"
+            "player: crossfade ${nextTrack.id} (${fade.roundToInt()}s, ${plan.reason}, " +
+                "ganho=${String.format("%.2f", oldGain)}, " +
+                "${if (shuffle.value) "shuffle" else "sequencial"})"
         )
     }
 
@@ -1263,7 +1346,71 @@ class Player(
             crossfadeOld = null
             active.volume(volume.value)
         }
+        speedJob?.cancel()
+        speedJob = null
+        setSpeedOf(mpvA, 1.0)
+        setSpeedOf(mpvB, 1.0)
+        setDjFilter(mpvA, null)
+        setDjFilter(mpvB, null)
+        crossfadePlan = null
+        djLabel.value = ""
         cancelPrep()
+    }
+
+    // ------------------------------------------------------------------ modo DJ
+    fun setDjMode(enabled: Boolean) {
+        djMode.value = enabled
+        scope.launch(Dispatchers.IO) { db.put("playback.dj", enabled.toString()) }
+        if (enabled) {
+            // Beatmatch precisa de sobreposicao; liga um crossfade padrao.
+            if (crossfadeSeconds.value == 0) setCrossfade(6)
+            warmGrids()
+        } else {
+            cancelCrossfade()
+        }
+        com.openfy.core.Log.write("player: modo DJ ${if (enabled) "ligado" else "desligado"}")
+    }
+
+    /** Analisa a faixa atual e a proxima em segundo plano (uma vez por faixa). */
+    private fun warmGrids() {
+        if (!djMode.value) return
+        val track = current.value ?: return
+        gridService.ensure(track, stream.urlFor(track.id)) {
+            scope.launch { checkCrossfade(position.value) }
+        }
+        crossfadeNext()?.let { (_, next) ->
+            gridService.ensure(next, stream.urlFor(next.id)) {
+                scope.launch { checkCrossfade(position.value) }
+            }
+        }
+    }
+
+    private fun djFilter(target: Mpv): String? = if (target === mpvA) djFilterA else djFilterB
+
+    private fun setDjFilter(target: Mpv, filter: String?) {
+        val current = djFilter(target)
+        if (current == filter) return
+        if (target === mpvA) djFilterA = filter else djFilterB = filter
+        applyEqTo(target)
+    }
+
+    private fun setSpeedOf(target: Mpv, value: Double) {
+        val current = if (target === mpvA) speedA else speedB
+        if (kotlin.math.abs(current - value) < 1e-4) return
+        if (target === mpvA) speedA = value else speedB = value
+        target.setSpeed(value)
+    }
+
+    private fun glideSpeed(target: Mpv, from: Double, to: Double, seconds: Double) {
+        speedJob?.cancel()
+        speedJob = scope.launch {
+            val steps = (seconds * 4).toInt().coerceAtLeast(4)
+            for (i in 1..steps) {
+                delay((seconds * 1000 / steps).toLong())
+                if (target !== active || crossfading.value) return@launch
+                setSpeedOf(target, from + (to - from) * i / steps)
+            }
+        }
     }
 
     private fun cancelPrep() {
@@ -1272,6 +1419,8 @@ class Player(
         crossfadeReady = false
         crossfadePreparedIndex = -1
         crossfadePreparedTrack = null
+        crossfadePlan = null
+        setDjFilter(standby(), null)
         standby().stop()
     }
 
@@ -1285,6 +1434,10 @@ class Player(
 
     companion object {
         val EQ_FREQS = listOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
+
+        /** Filtros do bass swap: entrada sem graves, saida com graves atenuados. */
+        const val DJ_ENTRY_FILTER = "highpass=f=190:width_type=q:w=0.7"
+        const val DJ_EXIT_FILTER = "lowshelf=f=190:g=-8"
 
         val EQ_PRESETS = linkedMapOf(
             "Flat" to List(10) { 0 },

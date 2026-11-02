@@ -4533,6 +4533,28 @@ private fun SettingsScreen(
                     steps = 14,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Modo DJ",
+                            color = OpenfyTextHigh,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            "Casa o tempo (±8%), entra no compasso e troca os graves na transição.",
+                            color = OpenfyTextLow,
+                            fontSize = 10.sp,
+                        )
+                    }
+                    Switch(
+                        checked = state.djMode,
+                        onCheckedChange = { viewModel.setDjMode(it) },
+                    )
+                }
             }
         }
         Spacer(Modifier.height(12.dp))

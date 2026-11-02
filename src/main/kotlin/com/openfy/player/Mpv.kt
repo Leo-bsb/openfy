@@ -255,8 +255,8 @@ class Mpv(
             add(JsonPrimitive("loadfile"))
             add(JsonPrimitive(url))
             add(JsonPrimitive("replace"))
-            if (startAt > 1.0) {
-                add(JsonPrimitive("start=" + String.format(Locale.ROOT, "%.1f", startAt)))
+            if (startAt > 0.05) {
+                add(JsonPrimitive("start=" + String.format(Locale.ROOT, "%.3f", startAt)))
             }
         }
         com.openfy.core.Log.write("mpv: carregando ${url.substringAfterLast('/')} (ready=${ready.value})")
@@ -269,6 +269,12 @@ class Mpv(
         send("""{"command":["seek",${String.format(Locale.ROOT, "%.3f", seconds)},"absolute"]}""")
 
     fun volume(value: Int) = send("""{"command":["set_property","volume",${value.coerceIn(0, 130)}]}""")
+
+    /** Tempo de reproducao (1.0 = normal); o mpv mantem o tom via scaletempo2. */
+    fun setSpeed(value: Double) {
+        val safe = value.coerceIn(0.5, 2.0)
+        send("""{"command":["set_property","speed",${String.format(Locale.ROOT, "%.4f", safe)}]}""")
+    }
 
     fun stop() = send("""{"command":["stop"]}""")
 

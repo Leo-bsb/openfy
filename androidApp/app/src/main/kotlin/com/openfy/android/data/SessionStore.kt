@@ -80,6 +80,13 @@ class SessionStore(context: Context) {
         prefs.edit().putInt("crossfade_seconds", seconds.coerceIn(0, 15)).apply()
     }
 
+    /** Modo DJ (local do aparelho): beatmatch + fade inteligente. */
+    fun djMode(): Boolean = prefs.getBoolean("dj_mode", false)
+
+    fun setDjMode(enabled: Boolean) {
+        prefs.edit().putBoolean("dj_mode", enabled).apply()
+    }
+
     fun clear() {
         val crossfade = crossfadeSeconds()
         val palette = palette()
@@ -92,8 +99,10 @@ class SessionStore(context: Context) {
         val downloadLimit = downloadLimitMb()
         val quality = audioQuality()
         val autoDownload = autoDownload()
+        val djMode = djMode()
         prefs.edit().clear()
             .putInt("crossfade_seconds", crossfade)
+            .putBoolean("dj_mode", djMode)
             .putString("ui_palette", palette.id)
             .putString("ui_accent_hex", accentHex.orEmpty())
             .putString("ui_accent2_hex", accent2Hex.orEmpty())

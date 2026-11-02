@@ -1947,6 +1947,12 @@ class AppController(
         markSettingsChanged()
     }
 
+    /** Modo DJ: beatmatch (N2) e fade inteligente (N1) nas transicoes. */
+    fun setDjMode(enabled: Boolean) {
+        player.setDjMode(enabled)
+        markSettingsChanged()
+    }
+
     fun setEqEnabled(enabled: Boolean) {
         player.setEqEnabled(enabled)
         markSettingsChanged()
