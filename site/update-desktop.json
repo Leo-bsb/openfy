@@ -1,7 +1,7 @@
 {
-  "version": "0.6.0",
-  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.6.0/Openfy-0.6.0.exe",
-  "size": 175721472,
-  "sha256": "b1197973b9b04215b552db88dc8f79c537fc8addf70b87bb6caa00c472c8a9a7",
-  "notes": "Musicas locais no PC e no Android, 'ouvindo agora' e curtidas dos amigos na Comunidade, player com capa desfocada e cores mais vivas, correcao do carregamento infinito, compartilhar playlist no celular, rotulos que nao cobrem o botao, gradiente real entre as duas cores e recap renovado."
+  "version": "0.7.0",
+  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.7.0/Openfy-0.7.0.exe",
+  "size": 175758336,
+  "sha256": "42d3324ecd775a5883c1b867a04bc40870da45a45062732765e13e17650c4446",
+  "notes": "Modo DJ: as transicoes casam o tempo (ate +-8%), entram no compasso e trocam os graves no meio do fade, com musicas locais e baixadas. Deteccao de BPM, fase e downbeat mais precisa e volume equalizado entre as faixas."
 }

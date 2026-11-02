@@ -63,7 +63,8 @@ parava de ler e a UI travava depois de alguns minutos de uso.
 - [x] Instância única, log rotativo (`openfy.log.1`) e crash handler
 - [x] Tela de Ajustes (qualidade, crossfade, downloads, janela e dados)
 - [x] Capa personalizada nas playlists (ou a capa da primeira faixa)
-- [x] Transição entre faixas configurável (crossfade equal-power, 0–12 s)
+- [x] Transição entre faixas configurável (crossfade equal-power, 0–15 s)
+- [x] Modo DJ: beatmatch (±8%), entrada no compasso, frase, bass swap e ganho por faixa (desktop e Android)
 - [x] Qualidade de áudio Alta/Econômica
 - [x] Schema pronto para sync (`updated_at` + tombstones)
 - [x] "Seu mix" multi-semente (até 4 sementes de curtidas/recentes, faixas intercaladas)
@@ -286,13 +287,13 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.6.0.exe
-dist\Openfy-0.6.0.msi
-dist\Openfy-Android-0.10.0.apk
+dist\Openfy-0.7.0.exe
+dist\Openfy-0.7.0.msi
+dist\Openfy-Android-0.11.0.apk
 ```
 
 Páginas (GitHub Pages): https://leo-bsb.github.io/openfy/
-APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.10.0.apk
+APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.0.apk
 Manifesto de atualização do Android: https://leo-bsb.github.io/openfy/update-android.json
 Manifesto de atualização do desktop: https://leo-bsb.github.io/openfy/update-desktop.json
 Recuperação de senha: https://leo-bsb.github.io/openfy/recover.html
@@ -302,8 +303,8 @@ https://leo-bsb.github.io/openfy/oauth/google.html ·
 Privacidade/termos: seções `#privacidade` e `#termos` da página inicial
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.6.0 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.6.0
-Android 0.10.0 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.10.0.apk
+Desktop 0.7.0 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.7.0
+Android 0.11.0 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.0.apk
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -323,8 +324,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.6.0.exe`
-- `build\compose\binaries\main\msi\Openfy-0.6.0.msi`
+- `build\compose\binaries\main\exe\Openfy-0.7.0.exe`
+- `build\compose\binaries\main\msi\Openfy-0.7.0.msi`
 
 Rodar em desenvolvimento:
 
