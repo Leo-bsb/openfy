@@ -1,7 +1,7 @@
 {
-  "version": "0.5.1",
-  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.5.1/Openfy-0.5.1.exe",
-  "size": 175586304,
-  "sha256": "0a0555ad51ca43a1ddf8d53ee451ecfca647ee6c06f8fd02cc692f3bf047c941",
-  "notes": "Corrige convite e compartilhamento de playlist, evita o erro de permissao ao sincronizar playlists de outra conta e adiciona as novidades dos artistas mais ouvidos."
+  "version": "0.6.0",
+  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.6.0/Openfy-0.6.0.exe",
+  "size": 175721472,
+  "sha256": "b1197973b9b04215b552db88dc8f79c537fc8addf70b87bb6caa00c472c8a9a7",
+  "notes": "Musicas locais no PC e no Android, 'ouvindo agora' e curtidas dos amigos na Comunidade, player com capa desfocada e cores mais vivas, correcao do carregamento infinito, compartilhar playlist no celular, rotulos que nao cobrem o botao, gradiente real entre as duas cores e recap renovado."
 }

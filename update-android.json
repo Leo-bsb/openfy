@@ -1,7 +1,7 @@
 {
-  "version": "0.9.1",
-  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.9.1.apk",
-  "size": 18530732,
-  "sha256": "ff6e0f328b7afa1b856528b1191506bf69d2290830f8d670f1bb3c00e299a813",
-  "notes": "Corrige convite e compartilhamento de playlist, evita o erro de permissao ao sincronizar playlists de outra conta e adiciona as novidades dos artistas mais ouvidos."
+  "version": "0.10.0",
+  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.10.0.apk",
+  "size": 18563572,
+  "sha256": "a4c14e577e2d0cfd6e4fb272d5be8d99f0397366818079b6047a48d7909cc2a1",
+  "notes": "Musicas locais do aparelho, 'ouvindo agora' e curtidas dos amigos na Comunidade, player com capa desfocada e cores mais vivas, correcao do carregamento infinito, compartilhar playlist na tela da playlist, gradiente real entre as duas cores e recap renovado."
 }
