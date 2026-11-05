@@ -122,6 +122,10 @@ class Player(
     /** Evita a tela presa em "carregando": recarrega uma vez e desiste com aviso. */
     private var loadWatchdog: Job? = null
 
+    /** Uma segunda chance quando a URL do stream falha logo apos comecar. */
+    private var failedTrackId: String? = null
+    private var failureRetryJob: Job? = null
+
     init {
         scope.launch { observeMpv() }
         restoreEq()
@@ -163,6 +167,7 @@ class Player(
             is Mpv.Event.Time -> {
                 position.value = event.position
                 if (event.duration > 0) duration.value = event.duration
+                if (event.position > 10.0 && failedTrackId != null) failedTrackId = null
                 if (event.position > 0) {
                     busy.value = false
                     cancelLoadWatchdog()
@@ -207,9 +212,27 @@ class Player(
                 finishActive(completed = false, skipped = true)
                 busy.value = false
                 playing.value = false
-                val title = current.value?.title ?: "faixa"
+                val track = current.value
+                val title = track?.title ?: "faixa"
+                com.openfy.core.Log.write("player: falha ao tocar ${track?.id}: ${event.reason}")
+                // O stream local costuma falhar quando a URL extraida venceu ou
+                // veio truncada. O StreamServer ja descarta o cache; damos uma
+                // segunda chance antes de mostrar erro ao usuario.
+                if (track != null && track.id != failedTrackId) {
+                    failedTrackId = track.id
+                    error.value = "Conexão instável. Tentando de novo…"
+                    failureRetryJob?.cancel()
+                    failureRetryJob = scope.launch {
+                        delay(700)
+                        if (current.value?.id == track.id) {
+                            com.openfy.core.Log.write("player: repetindo ${track.id} apos falha")
+                            load(track, resetPlay = false)
+                        }
+                    }
+                    return
+                }
+                failedTrackId = null
                 error.value = "Não foi possível tocar \"$title\"."
-                com.openfy.core.Log.write("player: falha ao tocar ${current.value?.id}: ${event.reason}")
             }
             Mpv.Event.Closed -> {
                 cancelCrossfade()
@@ -408,7 +431,8 @@ class Player(
                 limit = RadioList.MAX_TRACKS / 2,
                 policy = Recommender.DiversityPolicy(recentArtistWindow = 3, maxPerArtist = 2),
             )
-            radioTracks.value = RadioList.merge(emptyList(), ranked.ifEmpty { page.tracks })
+            // A propria semente abre a radio (o rankevita repeticoes recentes).
+            radioTracks.value = RadioList.merge(listOf(seed), ranked.ifEmpty { page.tracks })
             radioTracksContinuation = page.continuation
             com.openfy.core.Log.write("player: radio pronta com ${radioTracks.value.size} faixas")
         }
@@ -664,6 +688,8 @@ class Player(
     }
 
     private fun load(track: Track, resetPlay: Boolean = true) {
+        failureRetryJob?.cancel()
+        if (track.id != failedTrackId) failedTrackId = null
         com.openfy.core.Log.write(
             "player: tocando ${track.id} \"${track.title}\" (mpvReady=${active.ready.value})"
         )
@@ -1286,9 +1312,7 @@ class Player(
         busy.value = false
         pendingPause = false
         if (crossfadeDuration > 1) persistDuration(crossfadeDuration)
-        // Bass swap: a que sai perde os graves enquanto a que entra ainda esta
-        // com highpass. Na metade do fade os graves da nova assumem.
-        if (djMode.value) setDjFilter(old, DJ_EXIT_FILTER)
+        // Bass swap: a partir daqui os graves trocam em rampa suave (ver loop).
         new.pause(false)
         val target = volume.value
         val oldGain = plan.oldGain
@@ -1298,25 +1322,31 @@ class Player(
         maybeLoadMoreRadio()
         crossfadeJob?.cancel()
         crossfadeJob = scope.launch {
-            val steps = (fade * 10).toInt().coerceAtLeast(5)
-            var swapped = !djMode.value
+            val steps = (fade * 10).toInt().coerceAtLeast(8)
             for (i in 0..steps) {
                 if (!crossfadeActive) return@launch
                 val fraction = i.toDouble() / steps
-                if (!swapped && fraction >= 0.5) {
-                    swapped = true
-                    setDjFilter(new, null)
+                if (djMode.value && (i % 2 == 0 || i == steps)) {
+                    // Rampa smoothstep: a saida perde e a entrada recupera os
+                    // graves aos poucos ate a metade do fade, sem saltos. A
+                    // atualizacao e mais lenta que o volume para nao reconstruir
+                    // a cadeia de filtros 10x por segundo.
+                    setDjFilter(old, DjMixer.exitFilter(fraction))
+                    setDjFilter(new, DjMixer.entryFilter(fraction))
                 }
-                // Curva equal-power: no meio as duas faixas soam de verdade,
-                // em vez de um "buraco" de volume do fade linear.
-                val angle = fraction * Math.PI / 2.0
-                old.volume((target * oldGain * cos(angle)).roundToInt().coerceIn(0, 130))
+                // Curva equal-power suavizada. O ganho da saida tambem entra
+                // em rampa (comeca no volume atual e chega ao alvo em ~12%).
+                val eased = DjMixer.smoothstep(fraction)
+                val angle = eased * Math.PI / 2.0
+                val loudness = 1.0 + (oldGain - 1.0) * DjMixer.smoothstep(fraction / 0.12)
+                old.volume((target * loudness * cos(angle)).roundToInt().coerceIn(0, 130))
                 new.volume((target * newGain * sin(angle)).roundToInt().coerceIn(0, 130))
                 delay(100)
             }
             if (!crossfadeActive) return@launch
             old.stop()
             setDjFilter(old, null)
+            setDjFilter(new, null)
             setSpeedOf(old, 1.0)
             new.volume(target)
             crossfadeOld = null
@@ -1435,9 +1465,8 @@ class Player(
     companion object {
         val EQ_FREQS = listOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
 
-        /** Filtros do bass swap: entrada sem graves, saida com graves atenuados. */
-        const val DJ_ENTRY_FILTER = "highpass=f=190:width_type=q:w=0.7"
-        const val DJ_EXIT_FILTER = "lowshelf=f=190:g=-8"
+        /** Filtro inicial do bass swap: entrada sem graves. */
+        val DJ_ENTRY_FILTER: String = DjMixer.entryFilter(0.0)!!
 
         val EQ_PRESETS = linkedMapOf(
             "Flat" to List(10) { 0 },

@@ -862,11 +862,16 @@ private fun HomeScreen(
     }
     if (joinOpen) {
         JoinPlaylistDialog(
-            onDismiss = { joinOpen = false },
-            onJoin = {
+            state = state,
+            onDismiss = {
                 joinOpen = false
-                viewModel.joinPlaylist(it)
+                viewModel.clearSharedPreview()
             },
+            onPreview = { viewModel.previewSharedPlaylist(it) },
+            onClearPreview = { viewModel.clearSharedPreview() },
+            onListen = { viewModel.listenSharedPlaylist() },
+            onCopy = { viewModel.copySharedPlaylist() },
+            onJoin = { viewModel.joinPlaylist(it) },
         )
     }
     if (importOpen) {
@@ -1717,7 +1722,7 @@ private fun SearchScreen(
             value = query,
             onValueChange = {
                 query = it
-                if (it.length >= 2) viewModel.search(it)
+                viewModel.search(it)
             },
             label = { Text("Música, artista…") },
             singleLine = true,
@@ -6216,8 +6221,17 @@ private fun ImportPlaylistDialog(onDismiss: () -> Unit, onImport: (String) -> Un
 }
 
 @Composable
-private fun JoinPlaylistDialog(onDismiss: () -> Unit, onJoin: (String) -> Unit) {
+private fun JoinPlaylistDialog(
+    state: AuthUiState,
+    onDismiss: () -> Unit,
+    onPreview: (String) -> Unit,
+    onClearPreview: () -> Unit,
+    onListen: () -> Unit,
+    onCopy: () -> Unit,
+    onJoin: (String) -> Unit,
+) {
     var code by remember { mutableStateOf("") }
+    val preview = state.sharedPreview
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = OpenfyPanelHigh,
@@ -6225,28 +6239,115 @@ private fun JoinPlaylistDialog(onDismiss: () -> Unit, onJoin: (String) -> Unit) 
         text = {
             Column {
                 Text(
-                    "Use o código de convite de uma playlist compartilhada. No PC, abra a playlist e toque em Compartilhar para gerar o código. Você entra como editor e as faixas passam a sincronizar entre os aparelhos.",
+                    "Cole o código ou link de uma playlist compartilhada. Você escolhe apenas ouvir, " +
+                        "salvar uma cópia ou colaborar editando junto.",
                     color = OpenfyTextLow,
                     fontSize = 12.sp,
                 )
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { code = it },
-                    singleLine = true,
-                    label = { Text("Código ou link") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = {
+                            code = it
+                            onClearPreview()
+                        },
+                        singleLine = true,
+                        label = { Text("Código ou link") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    TextButton(
+                        onClick = { onPreview(code) },
+                        enabled = code.isNotBlank() && !state.sharedPreviewLoading,
+                    ) {
+                        Text(if (state.sharedPreviewLoading) "Abrindo…" else "Ver", color = OpenfyAccent)
+                    }
+                }
+                if (state.sharedPreviewLoading) {
+                    Spacer(Modifier.height(10.dp))
+                    CircularProgressIndicator(
+                        Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = OpenfyAccent,
+                    )
+                }
+                state.sharedPreviewError?.let { text ->
+                    Spacer(Modifier.height(6.dp))
+                    Text(text, color = OpenfyTextLow, fontSize = 11.sp)
+                }
+                preview?.let { p ->
+                    Spacer(Modifier.height(10.dp))
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(OpenfyPanel)
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            p.name.ifBlank { "Playlist compartilhada" },
+                            color = OpenfyTextHigh,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        val owner = p.owner.displayName.ifBlank { p.owner.handle }
+                        Text(
+                            buildString {
+                                if (owner.isNotBlank()) append("de $owner · ")
+                                append("${p.tracks.size} faixas")
+                            },
+                            color = OpenfyTextLow,
+                            fontSize = 11.sp,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                            TextButton(
+                                onClick = {
+                                    onListen()
+                                    onDismiss()
+                                },
+                                enabled = p.tracks.isNotEmpty() && state.session != null,
+                            ) {
+                                Text("Ouvir", color = OpenfyAccent, fontSize = 12.sp)
+                            }
+                            TextButton(
+                                onClick = {
+                                    onCopy()
+                                    onDismiss()
+                                },
+                                enabled = p.tracks.isNotEmpty() && state.session != null,
+                            ) {
+                                Text("Salvar cópia", color = OpenfyAccent, fontSize = 12.sp)
+                            }
+                            TextButton(
+                                onClick = {
+                                    onJoin(code)
+                                    onDismiss()
+                                },
+                                enabled = state.session != null,
+                            ) {
+                                Text("Colaborar", color = OpenfyAccent, fontSize = 12.sp)
+                            }
+                        }
+                        if (state.session == null) {
+                            Text(
+                                "Entre na conta para ouvir, salvar cópia ou colaborar.",
+                                color = OpenfyTextLow,
+                                fontSize = 10.sp,
+                            )
+                        } else {
+                            Text(
+                                "Ouvir não altera a playlist original.",
+                                color = OpenfyTextLow,
+                                fontSize = 10.sp,
+                            )
+                        }
+                    }
+                }
             }
         },
-        confirmButton = {
-            TextButton(
-                onClick = { onJoin(code) },
-                enabled = code.isNotBlank(),
-            ) {
-                Text("Entrar na playlist", color = OpenfyAccent)
-            }
-        },
+        confirmButton = {},
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text("Cancelar", color = OpenfyTextLow)
@@ -6295,6 +6396,13 @@ private fun SharePlaylistDialog(
                             color = OpenfyTextLow,
                             fontSize = 11.sp,
                             modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Quem receber escolhe: ouvir, salvar uma cópia ou colaborar. " +
+                                "Ouvir não altera a playlist original.",
+                            color = OpenfyTextLow,
+                            fontSize = 11.sp,
                         )
                         Spacer(Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -6369,6 +6477,7 @@ private fun LoginScreen(state: AuthUiState, viewModel: AuthViewModel) {
     var password by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
     var creating by remember { mutableStateOf(false) }
+    var resetOpen by remember { mutableStateOf(false) }
 
     Box(
         Modifier.fillMaxSize()
@@ -6443,6 +6552,15 @@ private fun LoginScreen(state: AuthUiState, viewModel: AuthViewModel) {
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    if (!creating) {
+                        TextButton(
+                            onClick = { resetOpen = true },
+                            enabled = !state.busy,
+                            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+                        ) {
+                            Text("Esqueci minha senha", color = OpenfyAccent2, fontSize = 12.sp)
+                        }
+                    }
                     state.error?.let {
                         Spacer(Modifier.height(10.dp))
                         Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -6495,4 +6613,87 @@ private fun LoginScreen(state: AuthUiState, viewModel: AuthViewModel) {
             )
         }
     }
+    if (resetOpen) {
+        PasswordResetDialog(
+            initialEmail = email,
+            busy = state.busy,
+            feedback = state.error ?: state.message,
+            onDismiss = { resetOpen = false },
+            onSend = { viewModel.requestPasswordReset(it) },
+        )
+    }
+}
+
+@Composable
+private fun PasswordResetDialog(
+    initialEmail: String,
+    busy: Boolean,
+    feedback: String?,
+    onDismiss: () -> Unit,
+    onSend: (String) -> Unit,
+) {
+    var resetEmail by remember(initialEmail) { mutableStateOf(initialEmail) }
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        containerColor = OpenfyPanelHigh,
+        title = { Text("Recuperar senha", color = OpenfyTextHigh) },
+        text = {
+            Column {
+                Text(
+                    "Informe o e-mail da conta. O Openfy envia um link que abre a página " +
+                        "de recuperação no navegador; lá você define a nova senha.",
+                    color = OpenfyTextLow,
+                    fontSize = 12.sp,
+                )
+                feedback?.let { text ->
+                    Text(
+                        text,
+                        color = if (text.startsWith("Falha")) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            OpenfyAccent2
+                        },
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = resetEmail,
+                    onValueChange = { resetEmail = it },
+                    label = { Text("E-mail") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = { onSend(resetEmail) },
+                    enabled = !busy && resetEmail.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    if (busy) {
+                        CircularProgressIndicator(
+                            Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = OpenfyInk,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text("Enviar link de recuperação")
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "O e-mail pode levar alguns minutos. Confira também a pasta de spam.",
+                    color = OpenfyTextLow,
+                    fontSize = 10.sp,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) {
+                Text("Fechar", color = OpenfyAccent)
+            }
+        },
+    )
 }

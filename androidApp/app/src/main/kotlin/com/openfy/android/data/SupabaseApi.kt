@@ -639,6 +639,25 @@ class SupabaseApi {
         return decoded<String>(response)
     }
 
+    /**
+     * Prévia de uma playlist pelo código de convite, sem entrar como membro.
+     * A RPC da migration 0003 é aditiva e aceita chamadas anônimas, então ouvir
+     * e salvar cópia funcionam sem login.
+     */
+    suspend fun sharedPlaylistPreview(code: String): SharedPlaylistPreview? {
+        val clean = code.trim()
+        if (clean.isBlank()) return null
+        val response = client.post("$baseUrl/rest/v1/rpc/shared_playlist_preview") {
+            header("apikey", anonKey)
+            contentType(ContentType.Application.Json)
+            setBody(PreviewBody(clean))
+        }
+        if (!response.status.isSuccess()) return null
+        val text = response.bodyAsText().trim()
+        if (text.isEmpty() || text == "null") return null
+        return runCatching { json.decodeFromString<SharedPlaylistPreview?>(text) }.getOrNull()
+    }
+
     suspend fun playlistItems(accessToken: String, playlistId: String): List<RemotePlaylistItem> {
         val response = client.get("$baseUrl/rest/v1/playlist_items") {
             header("apikey", anonKey)

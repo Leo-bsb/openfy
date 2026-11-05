@@ -7,6 +7,7 @@ import com.openfy.data.RemotePlaybackState
 import com.openfy.data.RemoteProfile
 import com.openfy.data.RemotePublicPlaylist
 import com.openfy.data.RemoteTrack
+import com.openfy.data.SharedPlaylistPreview
 import com.openfy.data.SupabaseApi
 import com.openfy.data.SupabaseException
 import kotlinx.coroutines.CoroutineScope
@@ -823,6 +824,14 @@ class AccountManager(
         }
     }
 
+    /** Prévia de uma playlist compartilhada, sem criar membership. */
+    suspend fun sharedPlaylistPreview(code: String): SharedPlaylistPreview? =
+        api.sharedPlaylistPreview(code)
+
+    /** Converte as faixas da prévia para o modelo local do player. */
+    fun tracksForPreview(preview: SharedPlaylistPreview): List<Track> =
+        preview.tracks.map(::remoteTrack)
+
     /** Faixas de uma playlist pública, na ordem do servidor. */
     suspend fun publicPlaylistTracks(playlistId: String): List<Track> {
         val active = ensureSession() ?: return emptyList()
@@ -919,7 +928,7 @@ class AccountManager(
                     _state.update {
                         it.copy(
                             busy = false,
-                            status = "Enviamos um e-mail para $clean. Use o link ou o código recebido.",
+                            status = "Enviamos um e-mail para $clean. Abra o link para definir a nova senha.",
                         )
                     }
                 }

@@ -41,8 +41,8 @@ android {
         applicationId = "com.openfy.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 25
-        versionName = "0.11.2"
+        versionCode = 26
+        versionName = "0.11.3"
 
         buildConfigField("String", "SUPABASE_URL", "\"${localValue("openfy.supabase.url")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${localValue("openfy.supabase.anonKey")}\"")

@@ -1,7 +1,7 @@
 {
-  "version": "0.11.2",
-  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.2.apk",
-  "size": 18563572,
-  "sha256": "bd8f0b5007a6ac97c9d05ed816ee748fd892e4e53c19f5f766e09afa683e21ed",
-  "notes": "Botao 'Esqueci minha senha' oculto por enquanto (a recuperacao volta depois). Mantem o Modo DJ com beatmatch de ate +-8%, entrada no compasso, troca de graves e ganho por faixa."
+  "version": "0.11.3",
+  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.3.apk",
+  "size": 18579956,
+  "sha256": "cad3811e3164d0db40e2945bdfda3f9a59ab2172743c4ffb6771556cc2943b58",
+  "notes": "Radio inclui a propria musica; compartilhar com ouvir/copiar/colaborar; Modo DJ com rampas suaves; busca sem travar; atualizacao direta em Ajustes sem popup; recuperacao de senha de volta."
 }

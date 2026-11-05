@@ -9,8 +9,8 @@ nuvem.
 
 - **N1 (smart fade)** — funciona com qualquer faixa: encaixa o fade em um número
   inteiro de compassos quando existe grade, ajusta o ganho para a loudness da
-  faixa que entra e faz o bass swap (corta os graves de quem sai e tira o corte
-  de quem entra na metade do fade).
+  faixa que entra e faz o bass swap em rampa (os graves de quem sai caem e os de
+  quem entra voltam aos poucos até a metade do fade).
 - **N2 (beatmatch)** — exige as duas grades confiáveis e diferença de tempo de
   até 8% (com ajuste de meio/dobro tempo: 60 BPM casa com 120 BPM). A faixa que
   entra começa no primeiro downbeat, tem o tempo casado e o fade dura um número
@@ -56,9 +56,14 @@ fase de 30 ms e downbeat de 50 ms.
 - O standby é carregado com `start=<entrySeconds>` e fica **pausado** no downbeat
   até o fade começar; o speed é aplicado com `set_property speed` (mpv mantém o
   tom via `scaletempo2`).
-- Bass swap por player com `highpass=f=190:width_type=q:w=0.7` na entrada e
-  `lowshelf=f=190:g=-8` na saída; os filtros são anexados à cadeia do EQ.
-- O ganho da faixa que sai é `10^((inRms - outRms)/20)` limitado a 0,5–1,25.
+- Bass swap por player com rampas `smoothstep` (`DjMixer.entryFilter()` /
+  `exitFilter()`): o `highpass` da entrada vai de 190 Hz a 20 Hz e o `lowshelf`
+  da saída vai de 0 dB a -8 dB ao longo da primeira metade do fade. Nada muda de
+  uma vez, então o swap não tem degrau audível. Os filtros são anexados à cadeia
+  do EQ.
+- O ganho da faixa que sai é `10^((inRms - outRms)/20)` limitado a 0,5–1,25;
+  ele entra em rampa nos primeiros 12% do fade para não haver salto no início.
+- O volume usa curva equal-power suavizada (`smoothstep`), em vez de linear.
 - Ao terminar o mix, o `speed` volta a 1.0 em ~6 s.
 
 **Android (`AuthViewModel.kt` + `EqualizerController.kt`)**
@@ -70,7 +75,10 @@ fase de 30 ms e downbeat de 50 ms.
   interface — sem isso a faixa que entra ficava alguns milissegundos atrasada
   no pulso.
 - `EqualizerController.setBassCut()` corta os graves por player (corte total até
-  125 Hz, metade até 300 Hz) sem mexer no EQ global.
+  125 Hz, metade até 300 Hz) sem mexer no EQ global. O Modo DJ atualiza o corte a
+  cada 100 ms com `DjMixer.entryBassDb()` / `exitBassDb()`: a entrada sai de
+  -12 dB e a saída chega a -8 dB por `smoothstep`, sem salto na metade.
+- O ganho da saída também entra em rampa nos primeiros 12% do fade.
 - No fim do mix o `speed` volta a 1.0 suavemente (~6 s).
 
 ## Calibrar e diagnosticar

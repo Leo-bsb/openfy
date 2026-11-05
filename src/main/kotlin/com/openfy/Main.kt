@@ -94,7 +94,7 @@ fun main() {
     Log.write("banco aberto")
     val youtube = YouTubeEngine()
     val downloader = Downloader(youtube, home.resolve("downloads"))
-    val stream = StreamServer { id ->
+    val stream = StreamServer(onInvalidate = youtube::forgetStream) { id ->
         com.openfy.core.LocalMusic.existing(id)?.let { return@StreamServer Media.Local(it) }
         db.downloadPath(id)?.let { path ->
             val local = Path.of(path)

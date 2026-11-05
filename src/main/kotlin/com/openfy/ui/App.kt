@@ -641,6 +641,9 @@ private fun PlaylistPromptDialog(c: AppController, prompt: PlaylistPrompt) {
 private fun ImportDialog(c: AppController) {
     val busy by c.importBusy.collectAsState()
     val status by c.importStatus.collectAsState()
+    val preview by c.sharedPreview.collectAsState()
+    val previewBusy by c.sharedPreviewBusy.collectAsState()
+    val previewError by c.sharedPreviewError.collectAsState()
     val account by c.account.state.collectAsState()
     var url by remember { mutableStateOf("") }
     var joinCode by remember { mutableStateOf("") }
@@ -731,13 +734,14 @@ private fun ImportDialog(c: AppController) {
                 }
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    "Playlist colaborativa",
+                    "Compartilhar ou entrar por código",
                     color = Tokens.textHigh,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    "Cole o código ou o link de convite (…/join.html?code=…) para entrar como editor.",
+                    "Cole o código ou o link (…/join.html?code=…). Você escolhe apenas ouvir, " +
+                        "salvar uma cópia ou colaborar editando junto.",
                     color = Tokens.textLow,
                     fontSize = 11.sp,
                 )
@@ -745,7 +749,10 @@ private fun ImportDialog(c: AppController) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
                         value = joinCode,
-                        onValueChange = { joinCode = it },
+                        onValueChange = {
+                            joinCode = it
+                            c.clearSharedPreview()
+                        },
                         singleLine = true,
                         placeholder = {
                             Text("Código ou link do convite", color = Tokens.textLow, fontSize = 12.sp)
@@ -755,20 +762,77 @@ private fun ImportDialog(c: AppController) {
                     )
                     Spacer(Modifier.width(8.dp))
                     Button(
-                        onClick = { c.joinSharedPlaylist(joinCode) },
-                        enabled = !busy && joinCode.isNotBlank() && account.session != null,
+                        onClick = { c.previewSharedPlaylist(joinCode) },
+                        enabled = !busy && !previewBusy && joinCode.isNotBlank(),
                         shape = RoundedCornerShape(8.dp),
                     ) {
-                        Text("Entrar", fontSize = 12.sp)
+                        Text(if (previewBusy) "Abrindo…" else "Ver playlist", fontSize = 12.sp)
                     }
                 }
-                if (account.session == null) {
+                previewError?.let { text ->
                     Text(
-                        "Entre na conta em Ajustes → Conta e sincronização para colaborar.",
-                        color = Tokens.textLow,
+                        text,
+                        color = if (preview == null) Tokens.textLow else Tokens.accent,
                         fontSize = 11.sp,
                         modifier = Modifier.padding(top = 4.dp),
                     )
+                }
+                preview?.let { p ->
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        color = Tokens.panel,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                            Text(
+                                p.name,
+                                color = Tokens.textHigh,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                buildString {
+                                    if (p.owner.isNotBlank()) append("de ${p.owner} · ")
+                                    append("${p.tracks.size} faixas")
+                                },
+                                color = Tokens.textLow,
+                                fontSize = 11.sp,
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Button(
+                                    onClick = { c.listenSharedPlaylist() },
+                                    enabled = p.tracks.isNotEmpty(),
+                                    shape = RoundedCornerShape(8.dp),
+                                ) {
+                                    Text("Ouvir", fontSize = 12.sp)
+                                }
+                                TextButton(
+                                    onClick = { c.copySharedPlaylist() },
+                                    enabled = p.tracks.isNotEmpty(),
+                                ) {
+                                    Text("Salvar cópia", fontSize = 12.sp)
+                                }
+                                TextButton(
+                                    onClick = { c.joinSharedPlaylist(p.code) },
+                                    enabled = account.session != null,
+                                ) {
+                                    Text("Colaborar", fontSize = 12.sp)
+                                }
+                            }
+                            if (account.session == null) {
+                                Text(
+                                    "Colaborar exige conta. Ouvir e salvar cópia funcionam sem login.",
+                                    color = Tokens.textLow,
+                                    fontSize = 10.sp,
+                                )
+                            }
+                        }
+                    }
                 }
 
                 Spacer(Modifier.height(16.dp))
@@ -1073,9 +1137,12 @@ private fun TopBar(c: AppController, queueOpen: Boolean, onExit: () -> Unit, onQ
             return@LaunchedEffect
         }
         if (q == committed) return@LaunchedEffect
-        delay(130)
+        // Sugestoes rapidas, mas a busca completa so depois de uma pausa real
+        // na digitacao (evita disparar uma busca por letra).
+        delay(180)
+        if (c.searchQuery.value.trim() != q) return@LaunchedEffect
         c.fetchSuggestions(q)
-        delay(220)
+        delay(340)
         if (c.searchQuery.value.trim() != q) return@LaunchedEffect
         c.go(Screen.Search)
         c.search(q, record = false)
@@ -2803,7 +2870,7 @@ private fun PlaylistScreen(c: AppController, id: String) {
                             onDismissRequest = { shareMenu.value = false },
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Copiar convite colaborativo") },
+                                text = { Text("Copiar link de compartilhamento") },
                                 onClick = {
                                     shareMenu.value = false
                                     c.copyPlaylistInvite(id)
@@ -5044,6 +5111,7 @@ private fun SettingsScreen(c: AppController) {
     val discordStatus by c.discord.status.collectAsState()
     var appIdDraft by remember { mutableStateOf(discordAppId) }
     var eqOpen by remember { mutableStateOf(false) }
+    var resetOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(discordAppId) { appIdDraft = discordAppId }
 
@@ -5275,6 +5343,14 @@ private fun SettingsScreen(c: AppController) {
                             )
                         }
                         Spacer(Modifier.width(4.dp))
+                        TextButton(
+                            onClick = {
+                                c.account.clearFeedback()
+                                resetOpen = true
+                            },
+                        ) {
+                            Text("Esqueci minha senha", color = Tokens.textLow)
+                        }
                     }
                 } else {
                     val session = account.session
@@ -5549,6 +5625,92 @@ private fun SettingsScreen(c: AppController) {
         )
     }
     if (eqOpen) EqualizerDialog(c) { eqOpen = false }
+    if (resetOpen) {
+        PasswordResetDialog(
+            c = c,
+            initialEmail = accountEmail.ifBlank { account.session?.email.orEmpty() },
+        ) { resetOpen = false }
+    }
+}
+
+@Composable
+private fun PasswordResetDialog(
+    c: AppController,
+    initialEmail: String,
+    onClose: () -> Unit,
+) {
+    val account by c.account.state.collectAsState()
+    var email by remember { mutableStateOf(initialEmail) }
+    var sent by remember { mutableStateOf(false) }
+
+    fun close() {
+        c.account.clearFeedback()
+        onClose()
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!account.busy) close() },
+        modifier = Modifier.width(480.dp),
+        containerColor = Tokens.panelHigh,
+        titleContentColor = Tokens.textHigh,
+        title = { Text("Recuperar senha", fontSize = 16.sp, fontWeight = FontWeight.SemiBold) },
+        text = {
+            Column {
+                Text(
+                    "Informe o e-mail da conta. O Openfy envia um link que abre a página " +
+                        "de recuperação no navegador; lá você define a nova senha.",
+                    color = Tokens.textLow,
+                    fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = { Text("E-mail") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth().trackInputFocus(),
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        sent = true
+                        c.account.requestPasswordReset(email)
+                    },
+                    enabled = !account.busy && email.isNotBlank(),
+                ) {
+                    if (account.busy) {
+                        CircularProgressIndicator(
+                            Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = Tokens.ink,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Text("Enviar link de recuperação")
+                }
+                if (sent) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "O e-mail pode levar alguns minutos. Confira também a pasta de spam.",
+                        color = Tokens.textLow,
+                        fontSize = 11.sp,
+                    )
+                }
+                account.status?.let {
+                    Text(it, color = Tokens.accent, fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+                }
+                account.error?.let {
+                    Text(it, color = Color(0xFFFF8A80), fontSize = 11.sp, modifier = Modifier.padding(top = 8.dp))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { close() }) {
+                Text("Fechar", color = Tokens.accent, fontSize = 13.sp)
+            }
+        },
+    )
 }
 
 @Composable

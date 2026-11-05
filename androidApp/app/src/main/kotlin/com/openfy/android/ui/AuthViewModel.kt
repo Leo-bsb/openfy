@@ -44,6 +44,7 @@ import com.openfy.android.data.MonthlyListeningRow
 import com.openfy.android.data.PlaylistDto
 import com.openfy.android.data.Profile
 import com.openfy.android.data.PublicPlaylist
+import com.openfy.android.data.SharedPlaylistPreview
 import com.openfy.android.data.PushPlayEvent
 import com.openfy.android.data.PushPlaybackState
 import com.openfy.android.data.PushPlaylist
@@ -117,6 +118,7 @@ import java.time.YearMonth
 import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 data class RecapData(
@@ -229,6 +231,9 @@ data class AuthUiState(
     val recapLoading: Boolean = false,
     val recapError: String? = null,
     val shareCode: String? = null,
+    val sharedPreview: SharedPlaylistPreview? = null,
+    val sharedPreviewLoading: Boolean = false,
+    val sharedPreviewError: String? = null,
     val artistId: String? = null,
     val artistPage: ArtistPage? = null,
     val artistLoading: Boolean = false,
@@ -377,6 +382,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private var searchJob: Job? = null
+    private var sharedPreviewGeneration = 0
     private var searchContinuation: String? = null
     private var artistJob: Job? = null
     private var collectionJob: Job? = null
@@ -2314,17 +2320,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
         val mode = _state.value.searchMode
         searchJob = viewModelScope.launch {
-            _state.update {
-                it.copy(
-                    searching = true,
-                    searchResults = emptyList(),
-                    searchArtists = emptyList(),
-                    searchCards = emptyList(),
-                    searchHasMore = false,
-                )
-            }
-            delay(300)
-            runCatching { youtube.search(clean, mode) }
+            // Debounce: so busca depois de uma pausa na digitacao. Os resultados
+            // anteriores ficam na tela (sem piscar) ate os novos chegarem.
+            _state.update { it.copy(searching = true, searchHasMore = false) }
+            delay(450)
+            val found = runCatching { youtube.search(clean, mode) }
+            if (_state.value.searchQuery != clean) return@launch
+            found
                 .onSuccess { result ->
                     searchContinuation = result.continuation
                     _state.update {
@@ -2743,7 +2745,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }
             radioSeed = seed
             radioTracksContinuation = page.continuation
-            val merged = RadioList.merge(emptyList(), page.tracks.filter { it.id != seed.id })
+            // A propria semente abre a radio; o merge evita duplicatas.
+            val merged = RadioList.merge(listOf(seed), page.tracks)
             _state.update { it.copy(radioTracks = merged, radioPreparing = false) }
         }
     }
@@ -2774,7 +2777,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val token = radioTracksContinuation ?: return
-        val seed = radioSeed ?: s.radioTracks.firstOrNull() ?: return
+        if (s.radioTracks.isEmpty()) return
         _state.update { it.copy(radioPreparing = true) }
         val epoch = radioEpoch
         radioJob?.cancel()
@@ -2788,10 +2791,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
             radioTracksContinuation = page.continuation
-            val merged = RadioList.merge(
-                _state.value.radioTracks,
-                page.tracks.filter { it.id != seed.id },
-            )
+            val merged = RadioList.merge(_state.value.radioTracks, page.tracks)
             _state.update { it.copy(radioTracks = merged, radioPreparing = false) }
         }
     }
@@ -2876,7 +2876,6 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val selected = candidates
             .filter {
                 it.id !in ids &&
-                    it.id != seed.id &&
                     radioKey(it) !in keys &&
                     radioArtist(it) !in recentArtists
             }
@@ -2890,7 +2889,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(queue = newQueue) }
         if (_state.value.radioActive) {
             _state.update {
-                it.copy(radioTracks = RadioList.merge(it.radioTracks, selected))
+                it.copy(
+                    radioTracks = RadioList.merge(listOf(seed) + it.radioTracks, selected),
+                )
             }
         }
         com.openfy.core.Log.write("player: radio +${selected.size} faixas")
@@ -3967,7 +3968,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }.onSuccess {
                 _state.value.session?.let { loadHome(it) }
                 _state.update {
-                    it.copy(busy = false, message = "Playlist adicionada à sua biblioteca.")
+                    it.copy(
+                        busy = false,
+                        sharedPreview = null,
+                        sharedPreviewError = null,
+                        message = "Playlist adicionada à sua biblioteca.",
+                    )
                 }
             }.onFailure { error ->
                 val message = error.message ?: "Código inválido."
@@ -3984,6 +3990,128 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }
+        }
+    }
+
+    /** Extrai o código de um link ou devolve o texto limpo. */
+    private fun shareCode(raw: String): String {
+        val value = raw.trim()
+        return if (value.contains("code=")) {
+            value.substringAfter("code=").substringBefore("&").trim()
+        } else {
+            value.substringAfterLast("/").trim()
+        }
+    }
+
+    /**
+     * Busca a prévia sem entrar como membro. A RPC é anônima: ouvir funciona
+     * sem login. Salvar cópia usa a fila local de sincronização e exige conta.
+     */
+    fun previewSharedPlaylist(raw: String) {
+        val clean = shareCode(raw)
+        if (clean.isBlank()) return
+        val generation = ++sharedPreviewGeneration
+        _state.update { it.copy(sharedPreviewLoading = true, sharedPreviewError = null) }
+        viewModelScope.launch {
+            val preview = runCatching { api.sharedPlaylistPreview(clean) }.getOrNull()
+            if (generation != sharedPreviewGeneration) return@launch
+            if (preview == null) {
+                _state.update {
+                    it.copy(
+                        sharedPreview = null,
+                        sharedPreviewLoading = false,
+                        sharedPreviewError = "Código inválido ou playlist indisponível.",
+                    )
+                }
+                return@launch
+            }
+            _state.update {
+                it.copy(
+                    sharedPreview = preview,
+                    sharedPreviewLoading = false,
+                    sharedPreviewError = if (preview.tracks.isEmpty()) {
+                        "Essa playlist ainda está vazia."
+                    } else {
+                        null
+                    },
+                )
+            }
+        }
+    }
+
+    fun clearSharedPreview() {
+        sharedPreviewGeneration++
+        _state.update {
+            it.copy(sharedPreview = null, sharedPreviewLoading = false, sharedPreviewError = null)
+        }
+    }
+
+    /** Apenas ouvir: joga as faixas na fila, sem criar playlist. */
+    fun listenSharedPlaylist() {
+        val preview = _state.value.sharedPreview ?: return
+        val tracks = preview.tracks.map { it.toTrack() }
+        if (tracks.isEmpty()) return
+        if (_state.value.session == null) {
+            _state.update { it.copy(error = "Entre na conta para tocar.") }
+            return
+        }
+        play(tracks.first(), tracks, "shared")
+        _state.update {
+            it.copy(
+                sharedPreview = null,
+                sharedPreviewError = null,
+                message = "Tocando \"${preview.name}\" (${tracks.size} faixas).",
+            )
+        }
+    }
+
+    /** Salvar cópia: cria uma playlist local/sincronizada independente. */
+    fun copySharedPlaylist() {
+        val preview = _state.value.sharedPreview ?: return
+        if (preview.tracks.isEmpty()) return
+        if (_state.value.session == null) {
+            _state.update { it.copy(error = "Entre na conta para salvar uma cópia.") }
+            return
+        }
+        val now = System.currentTimeMillis()
+        val id = java.util.UUID.randomUUID().toString()
+        val name = preview.name.trim().take(80).ifBlank { "Playlist compartilhada" }
+        val playlist = PlaylistDto(
+            id = id,
+            name = name,
+            updatedAt = Instant.ofEpochMilli(now).toString(),
+            coverUrl = preview.coverUrl,
+            deleted = false,
+        )
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                syncStore.queuePlaylist(
+                    id = id,
+                    name = name,
+                    coverUrl = preview.coverUrl,
+                    updatedAt = now,
+                )
+                preview.tracks.forEachIndexed { index, remote ->
+                    syncStore.queueItem(
+                        playlistId = id,
+                        trackId = remote.id,
+                        itemId = deterministicItemId(id, remote.id),
+                        position = index,
+                        updatedAt = now,
+                        track = remote.toTrack(),
+                    )
+                }
+            }
+            _state.update {
+                it.copy(
+                    playlists = it.playlists + playlist,
+                    sharedPreview = null,
+                    sharedPreviewError = null,
+                    pendingSyncCount = syncStore.pendingCount(),
+                    message = "\"$name\" salva com ${preview.tracks.size} faixas.",
+                )
+            }
+            if (isOnline()) requestFlush()
         }
     }
 
@@ -4513,17 +4641,22 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         djPlan = null
         crossfadeJob?.cancel()
         crossfadeJob = viewModelScope.launch {
-            val steps = (fadeSeconds * 10).coerceAtLeast(5.0).toInt()
-            var swapped = !djMode
+            val steps = (fadeSeconds * 10).coerceAtLeast(8.0).toInt()
             for (i in 0..steps) {
                 if (!crossfading) return@launch
                 val fraction = i.toDouble() / steps
-                if (!swapped && fraction >= 0.5) {
-                    swapped = true
-                    equalizer.setBassCut(new, 0)
+                if (djMode) {
+                    // Rampa smoothstep: a saida perde e a entrada recupera os
+                    // graves aos poucos ate a metade do fade, sem saltos.
+                    equalizer.setBassCut(old, DjMixer.exitBassDb(fraction).roundToInt())
+                    equalizer.setBassCut(new, DjMixer.entryBassDb(fraction).roundToInt())
                 }
-                val angle = fraction * Math.PI / 2.0
-                old.volume = (oldGain * cos(angle)).toFloat()
+                // Curva equal-power suavizada. O ganho da saida tambem entra
+                // em rampa (comeca no volume atual e chega ao alvo em ~12%).
+                val eased = DjMixer.smoothstep(fraction)
+                val angle = eased * Math.PI / 2.0
+                val loudness = 1.0 + (oldGain - 1.0) * DjMixer.smoothstep(fraction / 0.12)
+                old.volume = (loudness * cos(angle)).toFloat()
                 new.volume = sin(angle).toFloat()
                 delay(100)
             }
@@ -4812,9 +4945,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     updateInfo = info,
                     updateError = if (info == null) reason else null,
                     message = when {
-                        info != null -> "Atualização ${info.version} disponível."
-                        reason != null -> if (silent) it.message else "Falha ao verificar: $reason"
+                        // Verificação automática não interrompe com snackbar.
                         silent -> it.message
+                        info != null -> "Atualização ${info.version} disponível."
+                        reason != null -> "Falha ao verificar: $reason"
                         else -> "Você já está na versão mais recente (${it.appVersion})."
                     },
                 )

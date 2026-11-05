@@ -151,6 +151,19 @@ class AppController(
     val importBusy = MutableStateFlow(false)
     val importStatus = MutableStateFlow<String?>(null)
 
+    /** Prévia de playlist compartilhada por código (ouvir, copiar ou colaborar). */
+    data class SharedPreview(
+        val code: String,
+        val name: String,
+        val owner: String,
+        val tracks: List<Track>,
+        val coverUrl: String = "",
+    )
+
+    val sharedPreview = MutableStateFlow<SharedPreview?>(null)
+    val sharedPreviewBusy = MutableStateFlow(false)
+    val sharedPreviewError = MutableStateFlow<String?>(null)
+
     val lyrics = MutableStateFlow<List<LyricLine>>(emptyList())
     val lyricsLoading = MutableStateFlow(false)
     val lyricsTrackId = MutableStateFlow<String?>(null)
@@ -199,8 +212,11 @@ class AppController(
     val searchFocusRequest = MutableStateFlow(0)
 
     private var searchGeneration = 0
+    private var searchJob: Job? = null
     private var searchContinuation: String? = null
     private var suggestionGeneration = 0
+    private var suggestionJob: Job? = null
+    private var sharedPreviewGeneration = 0
     private var pendingAddTrack: Track? = null
     private var sleepJob: Job? = null
     private val backupJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
@@ -484,11 +500,11 @@ class AppController(
         committedSearch.value = clean
         val mode = searchMode.value
         val generation = ++searchGeneration
+        searchJob?.cancel()
         searchContinuation = null
-        results.value = emptyList()
-        searchArtists.value = emptyList()
-        searchCards.value = emptyList()
-        scope.launch {
+        // Mantem os resultados anteriores enquanto a nova busca chega: limpar
+        // a cada tecla fazia a lista piscar e engasgava a digitacao.
+        searchJob = scope.launch {
             searching.value = true
             searchError.value = null
             val found = runCatching { withContext(Dispatchers.IO) { yt.search(clean, mode) } }
@@ -564,6 +580,10 @@ class AppController(
 
     fun clearSearch() {
         searchGeneration++
+        searchJob?.cancel()
+        searchJob = null
+        suggestionJob?.cancel()
+        suggestionJob = null
         results.value = emptyList()
         searchArtists.value = emptyList()
         searchCards.value = emptyList()
@@ -586,11 +606,15 @@ class AppController(
     fun fetchSuggestions(query: String) {
         val clean = query.trim()
         if (clean.isEmpty()) {
+            suggestionGeneration++
+            suggestionJob?.cancel()
+            suggestionJob = null
             suggestions.value = emptyList()
             return
         }
         val generation = ++suggestionGeneration
-        scope.launch {
+        suggestionJob?.cancel()
+        suggestionJob = scope.launch {
             val found = runCatching { withContext(Dispatchers.IO) { yt.searchSuggestions(clean) } }
             if (generation != suggestionGeneration) return@launch
             suggestions.value = found.getOrDefault(emptyList())
@@ -815,7 +839,7 @@ class AppController(
                     return@onSuccess
                 }
                 player.setQueueContext("Rádio: $label", "radio", videoId)
-                val seed = page.tracks.first()
+                val seed = page.tracks.firstOrNull { it.id == videoId } ?: page.tracks.first()
                 val selected = recommender.rankRadio(
                     page.tracks,
                     seed,
@@ -823,7 +847,11 @@ class AppController(
                     limit = 20,
                     policy = Recommender.DiversityPolicy(recentArtistWindow = 3, maxPerArtist = 2),
                 )
-                player.startRadio(selected.ifEmpty { page.tracks }, page.continuation)
+                // A semente entra sempre; o rankevita repeticoes recentes.
+                player.startRadio(
+                    RadioList.merge(listOf(seed), selected.ifEmpty { page.tracks }),
+                    page.continuation,
+                )
                 message.value = "Rádio: $label"
                 offline.value = false
             }.onFailure {
@@ -1384,21 +1412,99 @@ class AppController(
     }
 
     fun closeImport() {
+        sharedPreviewGeneration++
         importDialogOpen.value = false
+        sharedPreview.value = null
+        sharedPreviewError.value = null
+        sharedPreviewBusy.value = false
+    }
+
+    /** Aceita o código puro ou o link do site (…/join.html?code=…). */
+    private fun shareCode(raw: String): String {
+        val value = raw.trim()
+        return if (value.contains("code=")) {
+            value.substringAfter("code=").substringBefore("&").trim()
+        } else {
+            value
+        }
+    }
+
+    /**
+     * Busca a prévia de uma playlist compartilhada sem entrar como membro.
+     * Funciona sem conta: ouvir e salvar cópia são operações locais.
+     */
+    fun previewSharedPlaylist(raw: String) {
+        val clean = shareCode(raw)
+        if (clean.isBlank()) return
+        val generation = ++sharedPreviewGeneration
+        sharedPreviewBusy.value = true
+        sharedPreviewError.value = null
+        scope.launch {
+            val preview = runCatching { account.sharedPlaylistPreview(clean) }.getOrNull()
+            if (generation != sharedPreviewGeneration) return@launch
+            sharedPreviewBusy.value = false
+            if (preview == null) {
+                sharedPreview.value = null
+                sharedPreviewError.value = "Código inválido ou playlist indisponível."
+                return@launch
+            }
+            val tracks = account.tracksForPreview(preview)
+            sharedPreview.value = SharedPreview(
+                code = clean,
+                name = preview.name.ifBlank { "Playlist compartilhada" },
+                owner = preview.owner.displayName.ifBlank { preview.owner.handle },
+                tracks = tracks,
+                coverUrl = preview.coverUrl,
+            )
+            if (tracks.isEmpty()) {
+                sharedPreviewError.value = "Essa playlist ainda está vazia."
+            }
+        }
+    }
+
+    fun clearSharedPreview() {
+        sharedPreviewGeneration++
+        sharedPreview.value = null
+        sharedPreviewError.value = null
+        sharedPreviewBusy.value = false
+    }
+
+    /** Apenas ouvir: joga as faixas na fila sem criar playlist nem membership. */
+    fun listenSharedPlaylist() {
+        val preview = sharedPreview.value ?: return
+        if (preview.tracks.isEmpty()) return
+        player.playNow(preview.tracks, 0)
+        closeImport()
+        message.value = "Tocando \"${preview.name}\" (${preview.tracks.size} faixas)."
+    }
+
+    /** Salvar cópia: cria uma playlist local independente da original. */
+    fun copySharedPlaylist() {
+        val preview = sharedPreview.value ?: return
+        if (preview.tracks.isEmpty()) {
+            message.value = "A playlist está vazia."
+            return
+        }
+        scope.launch {
+            val clean = preview.name.trim().take(80).ifBlank { "Playlist compartilhada" }
+            val localId = withContext(Dispatchers.IO) { db.createPlaylist(clean).id }
+            withContext(Dispatchers.IO) {
+                preview.tracks.forEach { db.addToPlaylist(localId, it) }
+            }
+            refreshLibrary()
+            account.requestSync()
+            closeImport()
+            message.value = "\"$clean\" salva com ${preview.tracks.size} faixas."
+        }
     }
 
     /** Entra numa playlist colaborativa por código/link de convite. */
     fun joinSharedPlaylist(code: String) {
-        val raw = code.trim()
-        val clean = if (raw.contains("code=")) {
-            raw.substringAfter("code=").substringBefore("&").trim()
-        } else {
-            raw
-        }
+        val clean = shareCode(code)
         if (clean.isBlank()) return
         scope.launch {
             if (account.state.value.session == null) {
-                message.value = "Entre na conta para entrar numa playlist compartilhada."
+                message.value = "Entre na conta para colaborar numa playlist."
                 return@launch
             }
             val id = runCatching { account.joinByCode(clean) }.getOrNull()
@@ -1432,7 +1538,7 @@ class AppController(
                     null,
                 )
             }
-            message.value = "Convite copiado: $link"
+            message.value = "Link copiado. Quem receber escolhe: ouvir, salvar cópia ou colaborar. $link"
         }
     }
 

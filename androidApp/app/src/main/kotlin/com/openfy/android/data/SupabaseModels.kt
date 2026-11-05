@@ -113,6 +113,25 @@ data class PublicPlaylist(
     val visibility: String = "",
 )
 
+/** Prévia de playlist compartilhada por código (RPC da migration 0003). */
+@Serializable
+data class SharedPlaylistPreview(
+    val id: String = "",
+    val name: String = "",
+    val description: String = "",
+    @SerialName("cover_url") val coverUrl: String = "",
+    @SerialName("updated_at") val updatedAt: String? = null,
+    val owner: SharedPlaylistOwner = SharedPlaylistOwner(),
+    val tracks: List<RemoteTrack> = emptyList(),
+)
+
+@Serializable
+data class SharedPlaylistOwner(
+    val handle: String = "",
+    @SerialName("display_name") val displayName: String = "",
+    @SerialName("avatar_url") val avatarUrl: String = "",
+)
+
 @Serializable
 data class FollowRow(
     @SerialName("follower_id") val followerId: String = "",
@@ -236,6 +255,9 @@ data class ShareCodeBody(@SerialName("p_playlist_id") val playlistId: String)
 
 @Serializable
 data class JoinBody(@SerialName("p_code") val code: String)
+
+@Serializable
+data class PreviewBody(@SerialName("p_code") val code: String)
 
 @Serializable
 data class PushPlayEvent(

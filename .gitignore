@@ -22,3 +22,4 @@ androidApp/keystore.properties
 .gradle.zip
 .tmp/
 site/downloads/
+supabase/.temp/

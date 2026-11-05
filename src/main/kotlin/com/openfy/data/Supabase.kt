@@ -137,6 +137,25 @@ data class RemoteTrack(
     val thumbnail: String = "",
 )
 
+/** Prévia de uma playlist compartilhada por código (RPC da migration 0003). */
+@Serializable
+data class SharedPlaylistPreview(
+    val id: String = "",
+    val name: String = "",
+    val description: String = "",
+    @SerialName("cover_url") val coverUrl: String = "",
+    @SerialName("updated_at") val updatedAt: String? = null,
+    val owner: SharedPlaylistOwner = SharedPlaylistOwner(),
+    val tracks: List<RemoteTrack> = emptyList(),
+)
+
+@Serializable
+data class SharedPlaylistOwner(
+    val handle: String = "",
+    @SerialName("display_name") val displayName: String = "",
+    @SerialName("avatar_url") val avatarUrl: String = "",
+)
+
 @Serializable
 data class RemotePlaylist(
     val id: String,
@@ -326,6 +345,9 @@ private data class ShareCodeBody(@SerialName("p_playlist_id") val playlistId: St
 
 @Serializable
 private data class JoinBody(@SerialName("p_code") val code: String)
+
+@Serializable
+private data class PreviewBody(@SerialName("p_code") val code: String)
 
 class SupabaseApi {
 
@@ -865,6 +887,25 @@ class SupabaseApi {
                 setBody(JoinBody(code.trim()))
             },
         )
+
+    /**
+     * Lê uma playlist pelo código de convite sem entrar como membro. A RPC da
+     * migration 0003 é aditiva e também aceita chamadas anônimas, então ouvir
+     * ou copiar não exige conta.
+     */
+    suspend fun sharedPlaylistPreview(code: String): SharedPlaylistPreview? {
+        val clean = code.trim()
+        if (clean.isBlank()) return null
+        val response = client.post("$baseUrl/rest/v1/rpc/shared_playlist_preview") {
+            header("apikey", key)
+            contentType(ContentType.Application.Json)
+            setBody(PreviewBody(clean))
+        }
+        if (response.status.value !in 200..299) return null
+        val text = response.bodyAsText().trim()
+        if (text.isEmpty() || text == "null") return null
+        return runCatching { json.decodeFromString<SharedPlaylistPreview?>(text) }.getOrNull()
+    }
 
     suspend fun items(accessToken: String, playlistIds: Collection<String>): List<RemotePlaylistItem> {
         if (playlistIds.isEmpty()) return emptyList()

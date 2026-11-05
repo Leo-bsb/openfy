@@ -3,6 +3,7 @@ package com.openfy.core
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import java.util.Locale
 
 /**
  * Plano de uma transicao do Modo DJ.
@@ -40,6 +41,58 @@ object DjMixer {
 
     /** Tolerancia de tempo do N2 (mpv usa scaletempo2, entao o tom se mantem). */
     const val MAX_SPEED_DELTA = 0.08
+
+    /** Ponto do fade em que o bass swap ja terminou (metade). */
+    const val BASS_SWAP_END = 0.5
+
+    /** Corte maximo de graves da faixa que sai, em dB. */
+    const val EXIT_BASS_DB = 8.0
+
+    /** Corte inicial de graves da faixa que entra, em dB. */
+    const val ENTRY_BASS_DB = 12.0
+
+    /** Frequencia inicial do highpass da faixa que entra, em Hz. */
+    const val ENTRY_HIGHPASS_HZ = 190.0
+
+    /**
+     * Curva suave em 0..1: derivada zero nas pontas, entao o filtro comeca e
+     * termina a rampa sem "degrau" audivel.
+     */
+    fun smoothstep(t: Double): Double {
+        val x = t.coerceIn(0.0, 1.0)
+        return x * x * (3.0 - 2.0 * x)
+    }
+
+    /** Quanto do bass swap ja aconteceu (0..1) na fracao [progress] do fade. */
+    fun swapProgress(progress: Double): Double =
+        smoothstep(progress.coerceIn(0.0, 1.0) / BASS_SWAP_END)
+
+    /** Graves da faixa que sai: 0 dB no inicio, -8 dB quando o swap termina. */
+    fun exitBassDb(progress: Double): Double = -EXIT_BASS_DB * swapProgress(progress)
+
+    /** Graves da faixa que entra: -12 dB no inicio, 0 dB quando o swap termina. */
+    fun entryBassDb(progress: Double): Double =
+        -ENTRY_BASS_DB * (1.0 - swapProgress(progress))
+
+    /** Highpass da faixa que entra (Hz); null quando os graves ja voltaram. */
+    fun entryHighpassHz(progress: Double): Double {
+        val left = 1.0 - swapProgress(progress)
+        return if (left <= 0.01) 0.0 else ENTRY_HIGHPASS_HZ * left
+    }
+
+    /** Filtro do mpv para a faixa que entra, ou null quando nao ha corte. */
+    fun entryFilter(progress: Double): String? {
+        val hz = entryHighpassHz(progress)
+        if (hz <= 0.0) return null
+        return "highpass=f=${hz.roundToInt().coerceAtLeast(20)}:width_type=q:w=0.7"
+    }
+
+    /** Filtro do mpv para a faixa que sai, ou null quando nao ha corte. */
+    fun exitFilter(progress: Double): String? {
+        val db = exitBassDb(progress)
+        if (db > -0.2) return null
+        return "lowshelf=f=190:g=${String.format(Locale.ROOT, "%.1f", db)}"
+    }
 
     fun plan(
         outgoing: BeatGrid?,

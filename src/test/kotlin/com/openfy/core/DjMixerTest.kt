@@ -2,6 +2,7 @@ package com.openfy.core
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.round
@@ -84,5 +85,29 @@ class DjMixerTest {
         assertFalse(plan.beatmatched)
         assertEquals(1.0, plan.speed, 0.0001)
         assertEquals(6.0, plan.fadeSeconds, 0.2)
+    }
+
+    @Test
+    fun `bass swap termina na metade do fade sem saltos`() {
+        assertEquals(0.0, DjMixer.exitBassDb(0.0), 0.001)
+        assertEquals(-8.0, DjMixer.exitBassDb(0.5), 0.001)
+        assertEquals(-8.0, DjMixer.exitBassDb(1.0), 0.001)
+        assertEquals(-12.0, DjMixer.entryBassDb(0.0), 0.001)
+        assertEquals(0.0, DjMixer.entryBassDb(0.5), 0.001)
+
+        var previous = DjMixer.exitBassDb(0.0)
+        for (step in 1..50) {
+            val value = DjMixer.exitBassDb(step / 100.0)
+            assertTrue("rampa subiu em $step", value <= previous + 1e-9)
+            previous = value
+        }
+    }
+
+    @Test
+    fun `filtros do mpv acompanham a rampa e somem no meio`() {
+        assertEquals("highpass=f=190:width_type=q:w=0.7", DjMixer.entryFilter(0.0))
+        assertNull(DjMixer.entryFilter(0.5))
+        assertNull(DjMixer.exitFilter(0.0))
+        assertEquals("lowshelf=f=190:g=-8.0", DjMixer.exitFilter(0.5))
     }
 }

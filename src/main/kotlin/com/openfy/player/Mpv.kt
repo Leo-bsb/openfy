@@ -76,8 +76,15 @@ class Mpv(
             return
         }
         closed = false
+        val stderrLog = logFile?.let {
+            it.resolveSibling(it.fileName.toString().removeSuffix(".log") + "-stderr.log")
+        }
         val cmd = buildList {
             add(exe.toString())
+            // Ignora config/scripts da maquina do usuario: um mpv.conf quebrado
+            // nao pode derrubar o playback do app.
+            add("--no-config")
+            add("--load-scripts=no")
             add("--no-video")
             add("--idle=yes")
             add("--no-terminal")
@@ -90,13 +97,36 @@ class Mpv(
             add("--volume=80")
             add("--keep-open=no")
             add("--force-window=no")
+            add("--network-timeout=20")
             if (logFile != null) {
-                runCatching { Files.deleteIfExists(logFile) }
+                // Preserva a execucao anterior em mpv.log.1 antes de o mpv
+                // truncar o arquivo: sem isso o diagnostico do PC do usuario
+                // desaparecia a cada start.
+                runCatching {
+                    if (Files.exists(logFile) && Files.size(logFile) > 0) {
+                        Files.move(
+                            logFile,
+                            logFile.resolveSibling(logFile.fileName.toString() + ".1"),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        )
+                    }
+                }
                 add("--log-file=$logFile")
             }
         }
         val pb = ProcessBuilder(cmd).redirectErrorStream(true)
-        pb.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        runCatching {
+            if (stderrLog != null) {
+                if (Files.exists(stderrLog) && Files.size(stderrLog) > 4_000_000) {
+                    Files.deleteIfExists(stderrLog)
+                }
+                pb.redirectOutput(ProcessBuilder.Redirect.appendTo(stderrLog.toFile()))
+            } else {
+                pb.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            }
+        }.onFailure {
+            pb.redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        }
         val started = runCatching { pb.start() }
             .onFailure { com.openfy.core.Log.write("mpv: falha ao iniciar $exe: $it") }
             .getOrNull()
@@ -251,16 +281,8 @@ class Mpv(
     }
 
     fun load(url: String, startAt: Double = 0.0) {
-        val payload = buildJsonArray {
-            add(JsonPrimitive("loadfile"))
-            add(JsonPrimitive(url))
-            add(JsonPrimitive("replace"))
-            if (startAt > 0.05) {
-                add(JsonPrimitive("start=" + String.format(Locale.ROOT, "%.3f", startAt)))
-            }
-        }
         com.openfy.core.Log.write("mpv: carregando ${url.substringAfterLast('/')} (ready=${ready.value})")
-        send("""{"command":$payload}""")
+        send(loadPayload(url, startAt))
     }
 
     fun pause(value: Boolean) = send("""{"command":["set_property","pause",$value]}""")
@@ -389,6 +411,25 @@ class Mpv(
         }.isSuccess
 
     companion object {
+        /**
+         * Monta o comando `loadfile` no formato aceito pelo mpv:
+         * `loadfile <url> [flags [index [options]]]`. O indice -1 e obrigatorio
+         * quando ha opcoes; sem ele, o mpv tenta ler "start=..." como inteiro e
+         * recusa o comando ("The loadfile option must be an integer").
+         */
+        fun loadPayload(url: String, startAt: Double = 0.0): String {
+            val args = buildJsonArray {
+                add(JsonPrimitive("loadfile"))
+                add(JsonPrimitive(url))
+                add(JsonPrimitive("replace"))
+                add(JsonPrimitive(-1))
+                if (startAt > 0.05) {
+                    add(JsonPrimitive("start=" + String.format(Locale.ROOT, "%.3f", startAt)))
+                }
+            }
+            return """{"command":$args}"""
+        }
+
         /** mpv.exe ao lado do app empacotado primeiro; depois PATH. */
         fun locate(): Path? {
             val candidates = buildList {

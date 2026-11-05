@@ -4,8 +4,7 @@ Estas páginas são estáticas. Elas servem para:
 
 - landing/download;
 - convite de playlist (`join.html?code=...`);
-- recuperação de senha (`recover.html`, ver `docs/RECUPERACAO-SENHA.md`; o botão
-  no app está oculto por enquanto);
+- recuperação de senha (`recover.html`, ver `docs/RECUPERACAO-SENHA.md`);
 - callback OAuth com PKCE (`oauth/spotify.html`, `oauth/google.html`);
 - privacidade/termos;
 - manifestos de atualização lidos pelos apps:
@@ -32,9 +31,8 @@ Opção B — pasta `/docs` na branch principal:
 - Spotify: `https://leo-bsb.github.io/openfy/oauth/spotify.html`
 - Google: `https://leo-bsb.github.io/openfy/oauth/google.html`
 - Convite: `https://leo-bsb.github.io/openfy/join.html?code=CODIGO`
-- Recuperação de senha: `https://leo-bsb.github.io/openfy/recover.html` (página
-  publicada; o botão no app está oculto por enquanto. Quando voltar, precisa
-  estar nas *Redirect URLs* do Supabase, junto com
+- Recuperação de senha: `https://leo-bsb.github.io/openfy/recover.html`
+  (precisa estar nas *Redirect URLs* do Supabase, junto com
   `https://leo-bsb.github.io/openfy/**`)
 
 O esquema `openfy://` não precisa de domínio e é o que abre o app instalado.

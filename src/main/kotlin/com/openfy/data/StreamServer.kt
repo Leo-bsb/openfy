@@ -25,7 +25,10 @@ sealed interface Media {
  *  2. seek funciona mesmo quando o upstream exige nova assinatura (o resolve() e chamado de novo);
  *  3. o mesmo caminho serve arquivo baixado e faixa em streaming.
  */
-class StreamServer(private val resolve: (String) -> Media?) {
+class StreamServer(
+    private val onInvalidate: (String) -> Unit = {},
+    private val resolve: (String) -> Media?,
+) {
 
     private val http: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(12))
@@ -37,7 +40,10 @@ class StreamServer(private val resolve: (String) -> Media?) {
     val port: Int get() = server.address.port
 
     init {
-        server.executor = Executors.newFixedThreadPool(6) { r ->
+        // Dois players (crossfade) + seeks + prefetch podem abrir varias
+        // conexoes ao mesmo tempo; 6 threads era pouco e podia enfileirar um
+        // request ate o timeout, travando o inicio da faixa.
+        server.executor = Executors.newFixedThreadPool(12) { r ->
             Thread(r, "openfy-stream").apply { isDaemon = true }
         }
         server.createContext("/t/") { exchange -> handle(exchange) }
@@ -73,7 +79,7 @@ class StreamServer(private val resolve: (String) -> Media?) {
                 is Media.Local -> serveFile(exchange, media.path)
                 is Media.Remote -> {
                     com.openfy.core.Log.write("stream: midia pronta para $id em ${elapsed}ms")
-                    proxy(exchange, media)
+                    proxy(exchange, id, media)
                 }
             }
         } catch (e: Exception) {
@@ -84,7 +90,7 @@ class StreamServer(private val resolve: (String) -> Media?) {
         }
     }
 
-    private fun proxy(exchange: HttpExchange, media: Media.Remote) {
+    private fun proxy(exchange: HttpExchange, id: String, media: Media.Remote) {
         val range = exchange.requestHeaders.getFirst("Range")
         val builder = HttpRequest.newBuilder(URI.create(media.url))
             .timeout(Duration.ofSeconds(30))
@@ -98,13 +104,28 @@ class StreamServer(private val resolve: (String) -> Media?) {
         }
         if (range != null) builder.header("Range", range)
 
-        val upstream = http.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream())
+        val upstream = try {
+            http.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream())
+        } catch (e: Exception) {
+            com.openfy.core.Log.write("stream: upstream falhou para $id: ${e::class.simpleName}: ${e.message}")
+            // A URL pode ter expirado/entrado em rate-limit: descarta o cache
+            // para que a proxima tentativa extraia uma URL nova.
+            runCatching { onInvalidate(id) }
+            fail(exchange, 502)
+            return
+        }
         val status = upstream.statusCode()
         val body = upstream.body()
 
         if (status !in 200..299) {
-            com.openfy.core.Log.write("stream: upstream respondeu $status")
-            body.close()
+            val snippet = runCatching {
+                body.use { input -> input.readNBytes(256).toString(Charsets.UTF_8) }
+            }.getOrDefault("")
+            com.openfy.core.Log.write(
+                "stream: upstream respondeu $status para $id" +
+                    if (snippet.isBlank()) "" else " ($snippet)"
+            )
+            runCatching { onInvalidate(id) }
             fail(exchange, 502)
             return
         }

@@ -1,10 +1,11 @@
 # Recuperação de senha
 
-> **02/11/2026:** o botão **Esqueci minha senha** foi temporariamente removido
-> das telas de login do desktop e do Android, junto com o diálogo que ele abria.
-> O endpoint (`requestPasswordReset`) e a página `recover.html` continuam no
-> código para quando o fluxo voltar; o diálogo pode ser restaurado do histórico
-> do git. A configuração do Supabase descrita abaixo continua necessária.
+> **05/11/2026:** o fluxo voltou no desktop 0.7.2 e no Android 0.11.3. O botão
+> **Esqueci minha senha** abre um diálogo que envia o link para
+> `https://leo-bsb.github.io/openfy/recover.html`, onde o usuário define a nova
+> senha. O caminho por código continua no cliente, mas só funciona com SMTP
+> próprio: no plano gratuito com o provedor padrão o Supabase não permite editar
+> o template para incluir `{{ .Token }}`.
 
 O Openfy troca a senha por dois caminhos, ambos com a chave anônima/publishable
 — não é preciso `service_role` nem CLI:
@@ -39,17 +40,20 @@ app envia e manda o link para a **Site URL**. A página inicial não trata
 
 *Authentication → Email Templates → Reset Password*:
 
-- incluir `{{ .ConfirmationURL }}` (o link) **e** `{{ .Token }}` (o código de 6
-  dígitos que o app pede). O template padrão manda só o link, e aí o caminho
-  "Já tenho o código" fica inutilizável.
-- O código expira; se o usuário demorar, use "Esqueci minha senha" de novo.
+- No plano gratuito com o provedor de e-mail padrão, o Supabase **bloqueia a
+  edição de templates** ("Email template modification is not available for free
+  tier projects using the default email provider"). Nesse caso o e-mail traz
+  apenas `{{ .ConfirmationURL }}`, e o fluxo do app é o link — não há campo de
+  código no diálogo.
+- Para habilitar o caminho por código, configure um SMTP próprio e inclua
+  `{{ .ConfirmationURL }}` **e** `{{ .Token }}` no template "Reset Password".
+  O código expira; se o usuário demorar, use "Esqueci minha senha" de novo.
 
 ## Ordem de teste
 
 1. Ajustes → Conta → Esqueci minha senha → enviar para o próprio e-mail.
 2. Abrir o link no mesmo navegador: a página pede a nova senha e confirma.
-3. Repetir e usar o código no app (campo "Já tenho o código").
-4. Entrar com a senha nova no desktop e no Android.
+3. Entrar com a senha nova no desktop e no Android.
 
 O endpoint é público e responde `200 {}` mesmo para e-mail inexistente (não
 vaza quem tem conta). Para conferir a chave sem enviar e-mail, use

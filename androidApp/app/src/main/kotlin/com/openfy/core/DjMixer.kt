@@ -41,6 +41,35 @@ object DjMixer {
     /** Tolerancia de tempo do N2 (mpv usa scaletempo2, entao o tom se mantem). */
     const val MAX_SPEED_DELTA = 0.08
 
+    /** Ponto do fade em que o bass swap ja terminou (metade). */
+    const val BASS_SWAP_END = 0.5
+
+    /** Corte maximo de graves da faixa que sai, em dB. */
+    const val EXIT_BASS_DB = 8.0
+
+    /** Corte inicial de graves da faixa que entra, em dB. */
+    const val ENTRY_BASS_DB = 12.0
+
+    /**
+     * Curva suave em 0..1: derivada zero nas pontas, entao o filtro comeca e
+     * termina a rampa sem "degrau" audivel.
+     */
+    fun smoothstep(t: Double): Double {
+        val x = t.coerceIn(0.0, 1.0)
+        return x * x * (3.0 - 2.0 * x)
+    }
+
+    /** Quanto do bass swap ja aconteceu (0..1) na fracao [progress] do fade. */
+    fun swapProgress(progress: Double): Double =
+        smoothstep(progress.coerceIn(0.0, 1.0) / BASS_SWAP_END)
+
+    /** Graves da faixa que sai: 0 dB no inicio, -8 dB quando o swap termina. */
+    fun exitBassDb(progress: Double): Double = -EXIT_BASS_DB * swapProgress(progress)
+
+    /** Graves da faixa que entra: -12 dB no inicio, 0 dB quando o swap termina. */
+    fun entryBassDb(progress: Double): Double =
+        -ENTRY_BASS_DB * (1.0 - swapProgress(progress))
+
     fun plan(
         outgoing: BeatGrid?,
         incoming: BeatGrid?,
