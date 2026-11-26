@@ -5,6 +5,7 @@ import com.openfy.data.Downloader
 import com.openfy.data.LyricLine
 import com.openfy.data.LyricsClient
 import com.openfy.data.RemoteProfile
+import com.openfy.data.SpotifyAuth
 import com.openfy.data.SpotifyClient
 import com.openfy.data.UpdateChecker
 import com.openfy.data.UpdateInstaller
@@ -164,6 +165,12 @@ class AppController(
     val importDialogOpen = MutableStateFlow(false)
     val importBusy = MutableStateFlow(false)
     val importStatus = MutableStateFlow<String?>(null)
+
+    /** OAuth Spotify (opcional): sem conta a importação fica no teto de 500. */
+    val spotifyAuth = SpotifyAuth(db)
+    val spotifyConnected = MutableStateFlow(spotifyAuth.connected)
+    val spotifyUser = MutableStateFlow(spotifyAuth.user.orEmpty())
+    val spotifyBusy = MutableStateFlow(false)
 
     /** Prévia de playlist compartilhada por código (ouvir, copiar ou colaborar). */
     data class SharedPreview(
@@ -1711,7 +1718,8 @@ class AppController(
         scope.launch {
             importBusy.value = true
             importStatus.value = "Lendo playlist do Spotify..."
-            val spotify = runCatching { SpotifyClient.playlist(url) }.getOrNull()
+            val accessToken = spotifyAuth.accessToken()
+            val spotify = runCatching { SpotifyClient.playlist(url, accessToken) }.getOrNull()
             if (spotify == null || spotify.tracks.isEmpty()) {
                 importBusy.value = false
                 importStatus.value = "Não foi possível ler a playlist pública do Spotify."
@@ -1740,8 +1748,40 @@ class AppController(
             refreshLibrary()
             account.requestSync()
             importBusy.value = false
-            importStatus.value = "\"$name\": $matched de ${spotify.tracks.size} faixas encontradas."
+            val cap = if (spotify.totalTracks > spotify.tracks.size) {
+                " A playlist tem ${spotify.totalTracks} faixas; o limite é ${spotify.tracks.size}."
+            } else {
+                ""
+            }
+            importStatus.value = "\"$name\": $matched de ${spotify.tracks.size} faixas encontradas.$cap"
         }
+    }
+
+    /** Conecta a conta Spotify pelo navegador (Authorization Code + PKCE). */
+    fun connectSpotify() {
+        if (spotifyBusy.value) return
+        scope.launch {
+            spotifyBusy.value = true
+            message.value = "Abrindo o Spotify no navegador para autorizar..."
+            spotifyAuth.connect()
+                .onSuccess { name ->
+                    spotifyConnected.value = true
+                    spotifyUser.value = name
+                    message.value = "Spotify conectado${if (name.isNotBlank()) " como $name" else ""}." +
+                        " As playlists da sua conta não têm mais o limite de faixas."
+                }
+                .onFailure {
+                    message.value = "Não foi possível conectar o Spotify: ${it.message}"
+                }
+            spotifyBusy.value = false
+        }
+    }
+
+    fun disconnectSpotify() {
+        spotifyAuth.disconnect()
+        spotifyConnected.value = false
+        spotifyUser.value = ""
+        message.value = "Spotify desconectado. A importação volta ao limite de 500 faixas."
     }
 
     fun exportBackupFile(file: File) {
@@ -2173,6 +2213,8 @@ class AppController(
         audioQuality.value = db.get("audio.quality") ?: "HIGH"
         yt.setQuality(audioQuality.value)
         closeToTray.value = runCatching { db.get("window.closeToTray")?.toBooleanStrict() }.getOrNull() ?: true
+        spotifyConnected.value = spotifyAuth.connected
+        spotifyUser.value = spotifyAuth.user.orEmpty()
         refreshDownloads()
     }
 

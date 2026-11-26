@@ -81,7 +81,7 @@ parava de ler e a UI travava depois de alguns minutos de uso.
 - [x] Login próprio + sincronização entre dispositivos (Supabase)
 - [x] Perfil próprio no desktop e Android (foto, capa, cor, bio, faixas fixadas e estatísticas configuráveis)
 - [x] Discord Rich Presence no desktop (opcional, via IPC local)
-- [ ] OAuth Spotify/Google para importar playlists da conta (próximo)
+- [x] OAuth Spotify (PKCE) no desktop e Android para importar playlists da conta sem limite; Google pendente
 
 ## Busca, artista e rádio
 
@@ -207,7 +207,12 @@ laços com cabeça de cobra, usada na sidebar, na bandeja e como ícone da janel
 - **YouTube Music por link**: no botão de importar (topo), cole a URL de uma
   playlist ou álbum público. O app carrega as continuações e cria a playlist local.
 - **Spotify sem login**: cole o link de uma playlist pública do Spotify e o app casa as faixas.
+  O embed público entrega até 100 faixas; playlists maiores são lidas pela API do
+  player até o teto de 500 faixas (o mesmo do importador do YouTube Music).
   Cada faixa é casada por título, artista e duração no catálogo do YouTube Music.
+- **Spotify conectado**: em Ajustes → Dados, "Conectar" abre o Spotify no navegador
+  (Authorization Code + PKCE, sem Client Secret). Com a conta conectada, as playlists
+  da sua conta ou colaborativas não têm o teto de 500 faixas. O token fica só no aparelho.
 - **Backup**: exporte/importe um JSON com playlists e curtidas (metadados, sem áudio).
 - **Compartilhar playlist**: no cabeçalho da playlist, "Compartilhar" gera um
   arquivo `.openfyplaylist` para enviar a outra pessoa. No importador, "Playlist
@@ -218,8 +223,11 @@ laços com cabeça de cobra, usada na sidebar, na bandeja e como ícone da janel
   sincronizado e destaca a linha atual. Sufixos como "(Official Video)" são limpos.
 - **Timer**: 15/30/45/60 min na tela do player; pausa ao terminar.
 
-A conta própria e o sync via Supabase já estão ativos. OAuth Spotify/Google
-para importar a conta ainda não; use o link da playlist pública.
+A conta própria e o sync via Supabase já estão ativos. O OAuth do Spotify
+(PKCE) também: conecte em Ajustes para importar as playlists da sua conta sem
+o teto de faixas. Playlists públicas de outras pessoas ainda usam o caminho
+anônimo (até 500). O OAuth do Google para importar a conta ainda não; use o
+link da playlist pública.
 
 ## Ajustes e transi??o
 
@@ -289,13 +297,13 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.7.3.exe
-dist\Openfy-0.7.3.msi
-dist\Openfy-Android-0.11.4.apk
+dist\Openfy-0.7.4.exe
+dist\Openfy-0.7.4.msi
+dist\Openfy-Android-0.11.5.apk
 ```
 
 Páginas (GitHub Pages): https://leo-bsb.github.io/openfy/
-APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.4.apk
+APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.5.apk
 Manifesto de atualização do Android: https://leo-bsb.github.io/openfy/update-android.json
 Manifesto de atualização do desktop: https://leo-bsb.github.io/openfy/update-desktop.json
 Recuperação de senha: https://leo-bsb.github.io/openfy/recover.html (botão em Ajustes → Conta)
@@ -305,8 +313,8 @@ https://leo-bsb.github.io/openfy/oauth/google.html ·
 Privacidade/termos: seções `#privacidade` e `#termos` da página inicial
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.7.3 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.7.3
-Android 0.11.4 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.4.apk
+Desktop 0.7.4 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.7.4
+Android 0.11.5 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.5.apk
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -326,8 +334,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.7.3.exe`
-- `build\compose\binaries\main\msi\Openfy-0.7.3.msi`
+- `build\compose\binaries\main\exe\Openfy-0.7.4.exe`
+- `build\compose\binaries\main\msi\Openfy-0.7.4.msi`
 
 Rodar em desenvolvimento:
 

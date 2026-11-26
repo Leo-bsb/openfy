@@ -4390,6 +4390,44 @@ private fun SettingsScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Column(Modifier.padding(16.dp)) {
+                Text("Spotify", color = OpenfyTextHigh, fontWeight = FontWeight.SemiBold)
+                Text(
+                    when {
+                        state.spotifyBusy -> "Aguardando a autorização no navegador…"
+                        state.spotifyConnected ->
+                            "Conectado${if (state.spotifyUser.isNotBlank()) " como ${state.spotifyUser}" else ""}" +
+                                " · playlists da sua conta sem limite"
+                        else -> "Conecte para importar suas playlists sem o limite de 500 faixas."
+                    },
+                    color = OpenfyTextLow,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+                if (state.spotifyConnected) {
+                    TextButton(onClick = { viewModel.disconnectSpotify() }) {
+                        Text("Desconectar", color = OpenfyAccent)
+                    }
+                } else {
+                    TextButton(
+                        onClick = { viewModel.connectSpotify() },
+                        enabled = !state.spotifyBusy,
+                    ) {
+                        Text(
+                            if (state.spotifyBusy) "Aguardando…" else "Conectar Spotify",
+                            color = OpenfyAccent,
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Card(
+            colors = CardDefaults.cardColors(containerColor = OpenfyPanel),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         "Downloads",
@@ -6190,7 +6228,7 @@ private fun ImportPlaylistDialog(onDismiss: () -> Unit, onImport: (String) -> Un
         text = {
             Column {
                 Text(
-                    "Cole o link de uma playlist ou álbum público do YouTube Music, ou de uma playlist pública do Spotify. As faixas entram na sua conta e aparecem no PC.",
+                    "Cole o link de uma playlist ou álbum público do YouTube Music, ou de uma playlist do Spotify. Com o Spotify conectado em Ajustes, as playlists da sua conta não têm limite; as públicas de outras pessoas vão até 500.",
                     color = OpenfyTextLow,
                     fontSize = 12.sp,
                 )

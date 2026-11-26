@@ -41,12 +41,20 @@ android {
         applicationId = "com.openfy.android"
         minSdk = 26
         targetSdk = 37
-        versionCode = 27
-        versionName = "0.11.4"
+        versionCode = 28
+        versionName = "0.11.5"
 
         buildConfigField("String", "SUPABASE_URL", "\"${localValue("openfy.supabase.url")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${localValue("openfy.supabase.anonKey")}\"")
         buildConfigField("String", "SITE_URL", "\"${localValue("openfy.site.url")}\"")
+        buildConfigField("String", "SPOTIFY_CLIENT_ID", "\"${localValue("openfy.spotify.clientId")}\"")
+        buildConfigField(
+            "String",
+            "SPOTIFY_REDIRECT_URI",
+            "\"${localValue("openfy.spotify.androidRedirectUri").ifBlank {
+                localValue("openfy.site.url").trimEnd('/') + "/oauth/spotify.html"
+            }}\"",
+        )
     }
 
     signingConfigs {

@@ -212,6 +212,7 @@ import com.openfy.core.mostPlayedDay
 import com.openfy.data.LyricLine
 import com.openfy.data.RemoteProfile
 import com.openfy.data.RemotePublicPlaylist
+import com.openfy.data.SpotifyConfig
 import com.openfy.data.UpdateInstaller
 import com.openfy.data.UpdateStatus
 import com.openfy.player.Player
@@ -703,7 +704,9 @@ private fun ImportDialog(c: AppController) {
                 )
                 Text(
                     "Cole o link de uma playlist ou álbum público do YouTube Music, ou de uma " +
-                        "playlist pública do Spotify. As faixas entram na sua conta e aparecem no celular.",
+                        "playlist do Spotify. Com a conta Spotify conectada em Ajustes, as " +
+                        "playlists da sua conta não têm limite; as públicas de outras pessoas " +
+                        "vão até 500 faixas.",
                     color = Tokens.textLow,
                     fontSize = 11.sp,
                 )
@@ -5109,6 +5112,9 @@ private fun SettingsScreen(c: AppController) {
     val discordAppId by c.discordAppId.collectAsState()
     val discordPrivate by c.discordPrivate.collectAsState()
     val discordStatus by c.discord.status.collectAsState()
+    val spotifyConnected by c.spotifyConnected.collectAsState()
+    val spotifyUser by c.spotifyUser.collectAsState()
+    val spotifyBusy by c.spotifyBusy.collectAsState()
     var appIdDraft by remember { mutableStateOf(discordAppId) }
     var eqOpen by remember { mutableStateOf(false) }
     var resetOpen by remember { mutableStateOf(false) }
@@ -5589,6 +5595,26 @@ private fun SettingsScreen(c: AppController) {
         }
 
         SettingsSection("Dados") {
+            SettingsRow(
+                "Spotify",
+                when {
+                    spotifyBusy -> "Aguardando a autorização no navegador..."
+                    spotifyConnected -> "Conectado${if (spotifyUser.isNotBlank()) " como $spotifyUser" else ""}" +
+                        " · playlists da sua conta sem limite"
+                    !SpotifyConfig.configured -> "Client ID não configurado no local.properties"
+                    else -> "Conecte para importar suas playlists sem o limite de 500 faixas"
+                },
+            ) {
+                if (spotifyConnected) {
+                    TextButton(onClick = { c.disconnectSpotify() }) {
+                        Text("Desconectar", color = Tokens.textLow)
+                    }
+                } else {
+                    TextButton(onClick = { c.connectSpotify() }, enabled = !spotifyBusy) {
+                        Text(if (spotifyBusy) "Aguardando..." else "Conectar", color = Tokens.accent)
+                    }
+                }
+            }
             SettingsRow("Backup e importação", "Playlists, curtidas e CSV do Spotify") {
                 TextButton(onClick = { c.openImport() }) {
                     Text("Abrir", color = Tokens.accent)

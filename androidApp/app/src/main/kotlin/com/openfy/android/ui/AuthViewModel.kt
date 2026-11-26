@@ -3,6 +3,7 @@ package com.openfy.android.ui
 import android.app.Application
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -54,6 +55,8 @@ import com.openfy.android.data.PlaybackStateDto
 import com.openfy.android.data.RemotePlaylistItem
 import com.openfy.android.data.RemoteTrack
 import com.openfy.android.data.SessionStore
+import com.openfy.android.data.SpotifyAuth
+import com.openfy.android.data.SpotifyAuthLink
 import com.openfy.android.data.SpotifyClient
 import com.openfy.android.data.StoredSession
 import com.openfy.android.data.SupabaseApi
@@ -253,6 +256,9 @@ data class AuthUiState(
     val localLoading: Boolean = false,
     val friendStatuses: List<com.openfy.core.FriendStatus> = emptyList(),
     val shareNowPlaying: Boolean = true,
+    val spotifyConnected: Boolean = false,
+    val spotifyUser: String = "",
+    val spotifyBusy: Boolean = false,
 ) {
     val hasPrevious: Boolean get() = queueIndex > 0
     val hasNext: Boolean
@@ -273,6 +279,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val historyStore = HistoryStore(File(application.filesDir, "offline"))
     private val downloadStore = DownloadEngine.storeFor(application)
     private val beatGrids = BeatGridStore(application)
+    private val spotifyAuth = SpotifyAuth(store)
 
     private val _state = MutableStateFlow(
         AuthUiState(
@@ -298,6 +305,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             autoDownload = store.autoDownload(),
             settingsSyncedAt = store.settingsUpdatedAt(),
             pendingSyncCount = syncStore.pendingCount(),
+            spotifyConnected = store.spotifyRefreshToken().isNotBlank(),
+            spotifyUser = store.spotifyUser(),
         ),
     )
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
@@ -465,6 +474,14 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         activePlayer = playerA
         DownloadEngine.init(getApplication())
         DownloadEngine.setLimitBytes(_state.value.downloadLimitMb.toLong() * BYTES_PER_MB)
+        viewModelScope.launch {
+            SpotifyAuthLink.uri.collect { value ->
+                if (value != null) {
+                    SpotifyAuthLink.consume()
+                    handleSpotifyCallback(value)
+                }
+            }
+        }
         viewModelScope.launch(Dispatchers.IO) {
             // Histórico local fora da main: com milhares de escutas, decodificar
             // o JSON e recalcular as mais ouvidas travava a abertura do app.
@@ -4101,7 +4118,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             var partial: PlaylistDto? = null
             runCatching {
                 withSession { session ->
-                    val spotify = SpotifyClient.playlist(url)
+                    val accessToken = spotifyAuth.accessToken()
+                    val spotify = SpotifyClient.playlist(url, accessToken)
                         ?: throw SupabaseException("Não foi possível ler a playlist pública do Spotify.")
                     if (spotify.tracks.isEmpty()) {
                         throw SupabaseException("A playlist do Spotify está vazia.")
@@ -4111,7 +4129,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                         ?: throw SupabaseException("O servidor não devolveu a playlist criada.")
                     partial = playlist
                     val matched = mutableListOf<Track>()
-                    spotify.tracks.take(200).forEachIndexed { index, item ->
+                    spotify.tracks.forEachIndexed { index, item ->
                         val candidates = runCatching {
                             withContext(Dispatchers.IO) {
                                 youtube.searchSongs("${item.artist} ${item.title}", 6)
@@ -4132,15 +4150,20 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                         throw SupabaseException("Nenhuma faixa foi encontrada no YouTube Music.")
                     }
                     val added = api.addPlaylistItems(session.accessToken, playlist.id, matched)
-                    playlist to (spotify.tracks.size to added)
+                    playlist to Triple(spotify.tracks.size, spotify.totalTracks, added)
                 }
             }.onSuccess { (playlist, counts) ->
                 _state.value.session?.let { loadHome(it) }
-                val (total, added) = counts
+                val (total, spotifyTotal, added) = counts
+                val cap = if (spotifyTotal > total) {
+                    " A playlist tem $spotifyTotal faixas; o limite é $total."
+                } else {
+                    ""
+                }
                 _state.update {
                     it.copy(
                         busy = false,
-                        message = "\"${playlist.name}\" importada: $added de $total faixas encontradas.",
+                        message = "\"${playlist.name}\" importada: $added de $total faixas encontradas.$cap",
                     )
                 }
             }.onFailure { error ->
@@ -4161,6 +4184,81 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    /** Abre o navegador para conectar a conta Spotify (PKCE). */
+    fun connectSpotify() {
+        if (_state.value.spotifyBusy) return
+        val url = runCatching { spotifyAuth.begin() }.getOrElse { error ->
+            _state.update {
+                it.copy(error = error.message ?: "Spotify não configurado.")
+            }
+            return
+        }
+        _state.update {
+            it.copy(
+                spotifyBusy = true,
+                error = null,
+                message = "Conclua a autorização do Spotify no navegador…",
+            )
+        }
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { getApplication<Application>().startActivity(intent) }
+            .onFailure {
+                _state.update { state ->
+                    state.copy(
+                        spotifyBusy = false,
+                        error = "Não foi possível abrir o navegador para autorizar o Spotify.",
+                    )
+                }
+            }
+        viewModelScope.launch {
+            delay(180_000)
+            if (_state.value.spotifyBusy) {
+                _state.update {
+                    it.copy(spotifyBusy = false, message = "A autorização do Spotify expirou.")
+                }
+            }
+        }
+    }
+
+    fun disconnectSpotify() {
+        spotifyAuth.disconnect()
+        _state.update {
+            it.copy(
+                spotifyConnected = false,
+                spotifyUser = "",
+                spotifyBusy = false,
+                message = "Spotify desconectado. A importação volta ao limite de 500 faixas.",
+            )
+        }
+    }
+
+    private suspend fun handleSpotifyCallback(value: String) {
+        _state.update {
+            it.copy(spotifyBusy = true, message = "Conectando o Spotify…", error = null)
+        }
+        runCatching { spotifyAuth.complete(Uri.parse(value)) }
+            .onSuccess { name ->
+                _state.update {
+                    it.copy(
+                        spotifyConnected = true,
+                        spotifyUser = name,
+                        spotifyBusy = false,
+                        message = "Spotify conectado${if (name.isNotBlank()) " como $name" else ""}." +
+                            " As playlists da sua conta não têm mais o limite de faixas.",
+                    )
+                }
+            }
+            .onFailure { error ->
+                _state.update {
+                    it.copy(
+                        spotifyBusy = false,
+                        error = "Não foi possível conectar o Spotify: ${error.message}",
+                    )
+                }
+            }
     }
 
     fun joinPlaylist(code: String) {

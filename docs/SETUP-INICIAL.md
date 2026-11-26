@@ -190,7 +190,18 @@ Limitações:
    ```properties
    openfy.spotify.clientId=SEU_CLIENT_ID
    openfy.spotify.redirectUri=http://127.0.0.1:8899/callback
+   # Android: usa o callback do site por padrão (BuildConfig.SPOTIFY_REDIRECT_URI).
+   # openfy.spotify.androidRedirectUri=https://leo-bsb.github.io/openfy/oauth/spotify.html
    ```
+
+O desktop usa o loopback e o Android usa o callback do site, que redireciona
+para `openfy://oauth/spotify`. O app troca o `code` por tokens direto no
+dispositivo (PKCE); nenhum Client Secret é distribuído.
+
+Em **Development Mode** (padrão), o Spotify só entrega os itens de playlists
+que a conta conectada possui ou colabora; playlists públicas de outras pessoas
+continuam pelo caminho anônimo (até 500 faixas). Apps em **Extended Quota Mode**
+não têm essa restrição.
 
 Limite: app em Development Mode aceita até 25 usuários. Para distribuir publicamente, o Spotify exige solicitação de extensão de quota.
 

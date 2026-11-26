@@ -280,6 +280,51 @@ class SessionStore(context: Context) {
         prefs.edit().putString("play_repeat", mode.name).apply()
     }
 
+    // ------------------------------------------------------------------ Spotify
+    fun spotifyRefreshToken(): String = prefs.getString("spotify_refresh", "").orEmpty()
+
+    fun spotifyAccessToken(): String = prefs.getString("spotify_access", "").orEmpty()
+
+    fun spotifyExpiresAt(): Long = prefs.getLong("spotify_expires_at", 0L)
+
+    fun spotifyUser(): String = prefs.getString("spotify_user", "").orEmpty()
+
+    fun saveSpotifyTokens(refresh: String, access: String, expiresAt: Long, user: String) {
+        prefs.edit()
+            .putString("spotify_refresh", refresh)
+            .putString("spotify_access", access)
+            .putLong("spotify_expires_at", expiresAt)
+            .putString("spotify_user", user)
+            .apply()
+    }
+
+    fun clearSpotifyTokens() {
+        prefs.edit()
+            .remove("spotify_refresh")
+            .remove("spotify_access")
+            .remove("spotify_expires_at")
+            .remove("spotify_user")
+            .apply()
+    }
+
+    fun spotifyVerifier(): String = prefs.getString("spotify_verifier", "").orEmpty()
+
+    fun spotifyState(): String = prefs.getString("spotify_state", "").orEmpty()
+
+    fun saveSpotifyPkce(verifier: String, state: String) {
+        prefs.edit()
+            .putString("spotify_verifier", verifier)
+            .putString("spotify_state", state)
+            .apply()
+    }
+
+    fun clearSpotifyPkce() {
+        prefs.edit()
+            .remove("spotify_verifier")
+            .remove("spotify_state")
+            .apply()
+    }
+
     fun shuffleSnapshotQueue(): List<Track> = runCatching {
         json.decodeFromString<List<Track>>(prefs.getString("shuffle_queue", null) ?: "[]")
     }.getOrDefault(emptyList())

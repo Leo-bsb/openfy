@@ -1,4 +1,6 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import java.io.File
+import java.util.Properties
 
 plugins {
     kotlin("jvm") version "2.4.20"
@@ -8,7 +10,42 @@ plugins {
 }
 
 group = "com.openfy"
-version = "0.7.3"
+version = "0.7.4"
+
+// Configuração local (fora do Git): vira um recurso no jar para o OAuth do Spotify.
+val localConfig = Properties().apply {
+    val file = project.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun localConfigValue(key: String, fallback: String = ""): String =
+    localConfig.getProperty(key)
+        ?: System.getenv(key.replace('.', '_').uppercase())
+        ?: fallback
+
+val spotifyClientId = localConfigValue("openfy.spotify.clientId")
+val spotifyRedirectUri = localConfigValue(
+    "openfy.spotify.redirectUri",
+    "http://127.0.0.1:8899/callback",
+)
+val generatedConfigDir = layout.buildDirectory.dir("generated/openfy-config")
+
+val generateOpenfyConfig = tasks.register("generateOpenfyConfig") {
+    inputs.property("spotifyClientId", spotifyClientId)
+    inputs.property("spotifyRedirectUri", spotifyRedirectUri)
+    outputs.dir(generatedConfigDir)
+    doLast {
+        val dir = generatedConfigDir.get().asFile
+        dir.mkdirs()
+        File(dir, "openfy-build.properties").writeText(
+            "spotify.clientId=${spotifyClientId.replace("\\", "\\\\")}\n" +
+                "spotify.redirectUri=${spotifyRedirectUri.replace("\\", "\\\\")}\n",
+        )
+    }
+}
+
+sourceSets["main"].resources.srcDir(generatedConfigDir)
+tasks.named("processResources") { dependsOn(generateOpenfyConfig) }
 
 kotlin {
     jvmToolchain(21)
@@ -125,7 +162,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Openfy"
-            packageVersion = "0.7.3"
+            packageVersion = "0.7.4"
             description = "Tocador pessoal de musica"
             vendor = "openfy"
             modules("java.sql", "java.naming", "jdk.unsupported", "java.net.http", "java.management", "jdk.httpserver")
