@@ -1,7 +1,7 @@
 {
-  "version": "0.11.3",
-  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.3.apk",
-  "size": 18579956,
-  "sha256": "cad3811e3164d0db40e2945bdfda3f9a59ab2172743c4ffb6771556cc2943b58",
-  "notes": "Rádio inclui a própria música; compartilhar com ouvir, salvar cópia ou colaborar; Modo DJ com rampas suaves; busca sem travar; atualização direta em Ajustes sem popup; recuperação de senha de volta."
+  "version": "0.11.4",
+  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.4.apk",
+  "size": 18596340,
+  "sha256": "feaef8223ea9f5c79820157aa5ded251b6c329dcbff33c0143eb8537d61ca1d2",
+  "notes": "Recap calculado no aparelho e tambem offline, sync tolerante a evento/faixa com falha, downloads automaticos com backoff, historico e sessao fora da main thread e menos trafego no Supabase."
 }

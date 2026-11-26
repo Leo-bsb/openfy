@@ -1,7 +1,7 @@
 {
-  "version": "0.7.2",
-  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.7.2/Openfy-0.7.2.exe",
-  "size": 175803392,
-  "sha256": "b0f7322b6b74cdd212dd9de41d8c35426dba4b29c2ba243b8ef9b940b454e4f6",
-  "notes": "Rádio inclui a própria música; compartilhar com ouvir, salvar cópia ou colaborar; Modo DJ com rampas suaves; playback mais robusto; busca sem travar; atualização direta em Ajustes sem popup; recuperação de senha de volta."
+  "version": "0.7.3",
+  "url": "https://github.com/Leo-bsb/openfy/releases/download/v0.7.3/Openfy-0.7.3.exe",
+  "size": 175844352,
+  "sha256": "06c1ddaefd85c237d144e282c3742061d44e2845021c6a5b314d9706f1876dfb",
+  "notes": "Recap volta a atualizar (local e conta), sync incremental e mais leve no Supabase, downloads automaticos com backoff e sem fila travada, player sem pausas por URL vencida e UI sem travadas de VACUUM/main thread."
 }
