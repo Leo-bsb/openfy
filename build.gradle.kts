@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.openfy"
-version = "0.7.2"
+version = "0.7.3"
 
 kotlin {
     jvmToolchain(21)
@@ -111,12 +111,21 @@ tasks.register<JavaExec>("bpmProbe") {
 compose.desktop {
     application {
         mainClass = "com.openfy.MainKt"
-        jvmArgs += listOf("-Dfile.encoding=UTF-8")
+        // O heap padrao do JVM (1/4 da RAM) reserva GBs e, somado ao heap
+        // nativo do Skia, causava falha de malloc/GC longo (travadas de ~7 s e
+        // hs_err). 1 GB e folgado para o app; o cache de capas tambem e menor.
+        jvmArgs += listOf(
+            "-Dfile.encoding=UTF-8",
+            "-Xmx1024m",
+            "-XX:MaxMetaspaceSize=256m",
+            "-XX:+UseG1GC",
+            "-XX:MaxGCPauseMillis=200",
+        )
 
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "Openfy"
-            packageVersion = "0.7.2"
+            packageVersion = "0.7.3"
             description = "Tocador pessoal de musica"
             vendor = "openfy"
             modules("java.sql", "java.naming", "jdk.unsupported", "java.net.http", "java.management", "jdk.httpserver")

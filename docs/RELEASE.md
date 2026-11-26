@@ -1,6 +1,6 @@
 # RELEASE — checklist do desktop
 
-Versão atual: **0.7.2** (mesmo número em `BuildInfo.VERSION`, `version` e
+Versão atual: **0.7.3** (mesmo número em `BuildInfo.VERSION`, `version` e
 `packageVersion` no `build.gradle.kts`). O verificador de atualizações do app
 (`UpdateChecker`) consulta primeiro o manifesto
 `https://leo-bsb.github.io/openfy/update-desktop.json`; se ele falhar, cai nas

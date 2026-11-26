@@ -142,7 +142,9 @@ baixar/remover e de adicionar à playlist (o menu da fila inclui as duas ações
 
 Com **Download automático** ligado (interruptor na tela Downloads), o app baixa
 em segundo plano, sem avisar, as faixas mais ouvidas do histórico e algumas
-similares — a partir da rádio da mais tocada — com limite de quantidade.
+similares — a partir da rádio da mais tocada — com limite de quantidade. Uma
+faixa que falha (extração quebrada, link inválido) entra em espera progressiva e
+não trava nem reinicia a fila; um lote em andamento nunca é reempilhado.
 
 Para encerrar de verdade, use o **botão de energia** no topo ou "Sair" na
 bandeja. Fechar pelo X minimiza para a bandeja (com um aviso); o áudio continua.
@@ -185,7 +187,7 @@ laços com cabeça de cobra, usada na sidebar, na bandeja e como ícone da janel
   dela. Ao tocar um álbum, playlist ou mix, o app respeita a lista até o fim e
   só então entra na rádio da última faixa.
 - **Rádio e sucessão**: clicar numa faixa da busca toca apenas aquela faixa e emenda a rádio dela; os resultados da busca não viram fila. O botão "Tocar resultados (contexto)" é o contexto explícito.
-- **Recap**: aba dedicada com seletor de mês, minutos, execuções, conclusão, skip, top faixas/artistas, atividade diária e descobertas. Com conta, o resumo e os tops incluem PC + celular.
+- **Recap**: aba dedicada com seletor de mês, minutos, execuções, conclusão, skip, top faixas/artistas, atividade diária e descobertas. Com conta, o resumo e os tops incluem PC + celular. No Android o histórico local é calculado primeiro (funciona offline) e o servidor complementa quando há escutas de outros aparelhos.
 - **Mais ouvidas**: ranking ponderado por curtidas, recência, conclusão e skip, com no-repeat de faixa e diversidade de artista. Toca em contexto ou aleatório.
 - **Seu mix**: usa as faixas mais ouvidas, curtidas e recentes como sementes e intercala as rádios sem deixar um artista dominar.
 - **Rádio automática**: ao terminar playlist/álbum, continua a rádio da última faixa; pode ser desligada nos Ajustes.
@@ -287,13 +289,13 @@ Android compartilham playlists, itens, curtidas e eventos de escuta via Supabase
 Instaladores (usuário atual, sem admin):
 
 ```
-dist\Openfy-0.7.2.exe
-dist\Openfy-0.7.2.msi
-dist\Openfy-Android-0.11.3.apk
+dist\Openfy-0.7.3.exe
+dist\Openfy-0.7.3.msi
+dist\Openfy-Android-0.11.4.apk
 ```
 
 Páginas (GitHub Pages): https://leo-bsb.github.io/openfy/
-APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.3.apk
+APK Android: https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.4.apk
 Manifesto de atualização do Android: https://leo-bsb.github.io/openfy/update-android.json
 Manifesto de atualização do desktop: https://leo-bsb.github.io/openfy/update-desktop.json
 Recuperação de senha: https://leo-bsb.github.io/openfy/recover.html (botão em Ajustes → Conta)
@@ -303,8 +305,8 @@ https://leo-bsb.github.io/openfy/oauth/google.html ·
 Privacidade/termos: seções `#privacidade` e `#termos` da página inicial
 
 Desenvolvimento: https://github.com/Leo-bsb/openfy/releases  
-Desktop 0.7.2 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.7.2
-Android 0.11.3 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.3.apk
+Desktop 0.7.3 (última release publicada): https://github.com/Leo-bsb/openfy/releases/tag/v0.7.3
+Android 0.11.4 (APK no Pages): https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.4.apk
 
 Versão portátil: a pasta `build\compose\binaries\main\app\Openfy\` inteira,
 executando `Openfy.exe`. Os instaladores em `dist\` são cópias dos artefatos
@@ -324,8 +326,8 @@ $env:JAVA_HOME="D:\scripts\openfy\.tools\jdk21"
 Saídas:
 
 - `build\compose\binaries\main\app\Openfy\Openfy.exe`
-- `build\compose\binaries\main\exe\Openfy-0.7.2.exe`
-- `build\compose\binaries\main\msi\Openfy-0.7.2.msi`
+- `build\compose\binaries\main\exe\Openfy-0.7.3.exe`
+- `build\compose\binaries\main\msi\Openfy-0.7.3.msi`
 
 Rodar em desenvolvimento:
 
@@ -372,10 +374,12 @@ calibrar com `bpmProbe`.
 - Log do mpv: `%LOCALAPPDATA%\OpenfyData\mpv.log` (recriado a cada start).
 - Capas em cache: `%LOCALAPPDATA%\OpenfyData\artwork\` (uma imagem por URL, com hash).
 - Downloads: `%LOCALAPPDATA%\OpenfyData\downloads\` (uma faixa por arquivo).
-- Banco enxuto: o app roda `VACUUM`/`PRAGMA optimize` ao encerrar (no máximo uma
-  vez por semana), mantém eventos de escuta por 400 dias e oferece "Otimizar" em
-  Ajustes > Dados. No Supabase ficam só conta, playlists, `follows` e snapshots;
-  a limpeza periódica está em `docs/SQL-SOCIAL.md`.
+- Banco enxuto: o app roda `PRAGMA optimize` ao abrir e o `VACUUM` completo
+  (com a limpeza de eventos com mais de 400 dias) só no botão "Otimizar" em
+  Ajustes > Dados. O `VACUUM` segurava o lock do SQLite e travava a interface
+  por vários segundos quando rodava junto com a reprodução. No Supabase ficam
+  só conta, playlists, `follows` e snapshots; a limpeza periódica está em
+  `docs/SQL-SOCIAL.md`.
 
 Os dados ficam **fora da pasta de instalação** (`%LOCALAPPDATA%\Openfy`). Assim,
 atualizar, reparar ou desinstalar o app não apaga curtidas, playlists, histórico,
