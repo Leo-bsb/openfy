@@ -1,7 +1,7 @@
 {
-  "version": "0.11.4",
-  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.4.apk",
-  "size": 18596340,
-  "sha256": "feaef8223ea9f5c79820157aa5ded251b6c329dcbff33c0143eb8537d61ca1d2",
-  "notes": "Recap calculado no aparelho e tambem offline, sync tolerante a evento/faixa com falha, downloads automaticos com backoff, historico e sessao fora da main thread e menos trafego no Supabase."
+  "version": "0.11.5",
+  "url": "https://leo-bsb.github.io/openfy/downloads/Openfy-Android-0.11.5.apk",
+  "size": 18629316,
+  "sha256": "4a210b86a1f29ab554a160854d849f69373f4c0d4cb58c3b84cdc3752f4496c3",
+  "notes": "OAuth Spotify (PKCE) no celular: conecte em Ajustes e importe playlists da sua conta sem o teto de faixas. Playlists publicas de outras pessoas continuam ate 500."
 }
