@@ -69,8 +69,19 @@ class DownloadService : Service() {
             return START_NOT_STICKY
         }
         if (DownloadEngine.progress.value.isEmpty() && DownloadEngine.activeCount() == 0) {
-            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-            stopSelf()
+            // Um enqueue pode estar entre "criou o job" e "primeiro progresso".
+            // Dá alguns segundos antes de derrubar o foreground.
+            idleJob?.cancel()
+            idleJob = scope.launch {
+                delay(2_500)
+                if (DownloadEngine.progress.value.isEmpty() && DownloadEngine.activeCount() == 0) {
+                    ServiceCompat.stopForeground(
+                        this@DownloadService,
+                        ServiceCompat.STOP_FOREGROUND_REMOVE,
+                    )
+                    stopSelf()
+                }
+            }
             return START_NOT_STICKY
         }
         notify(DownloadEngine.progress.value)

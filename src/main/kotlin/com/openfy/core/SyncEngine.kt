@@ -44,7 +44,8 @@ class SyncEngine(
             .flatMap { api.playlists(token, it) }
         val remoteItems = playlistIds.chunked(50)
             .flatMap { api.items(token, it) }
-        val remoteLikes = api.likes(token)
+        val remoteLikes = fetchLikes(token)
+        val likesRev = remoteLikes.maxOfOrNull { it.serverRev } ?: 0L
 
         val remoteEvents = fetchPlayEvents(token)
         val trackIds = (
@@ -52,7 +53,10 @@ class SyncEngine(
                 remoteLikes.map { it.trackId } +
                 remoteEvents.map { it.trackId }
             ).toSet()
-        val remoteTracks = trackIds.chunked(80)
+        // Metadados de faixa quase nunca mudam. Só baixa o que ainda não está
+        // no SQLite; antes o sync rebaixava centenas de tracks a cada ciclo.
+        val missingTrackIds = withContext(Dispatchers.IO) { db.missingTrackIds(trackIds) }
+        val remoteTracks = missingTrackIds.chunked(80)
             .flatMap { api.tracks(token, it) }
 
         withContext(Dispatchers.IO) {
@@ -67,6 +71,7 @@ class SyncEngine(
                         }
                 }
             remoteLikes.forEach { db.mergeRemoteLike(it.toSyncLike()) }
+            if (likesRev > 0L) db.put("sync.likesRev", likesRev.toString())
             remoteEvents.forEach {
                 db.mergeRemotePlayEvent(
                     RemotePlayEventRow(
@@ -92,19 +97,25 @@ class SyncEngine(
         val localItems = withContext(Dispatchers.IO) { db.dirtyPlaylistItems() }
         val localLikes = withContext(Dispatchers.IO) { db.dirtyLikes() }
 
-        api.pushTracks(
-            token,
-            localTracks.map {
-                PushTrack(
-                    id = it.id,
-                    title = it.title,
-                    artist = it.artist,
-                    album = it.album,
-                    duration = it.durationSec,
-                    thumbnail = it.thumbnail,
-                )
-            },
-        )
+        // Uma faixa invalida nao pode derrubar o sync inteiro (era isso que
+        // congelava o recap: o push de eventos nunca chegava).
+        runCatching {
+            api.pushTracks(
+                token,
+                localTracks.map {
+                    PushTrack(
+                        id = it.id,
+                        title = it.title,
+                        artist = it.artist,
+                        album = it.album,
+                        duration = it.durationSec,
+                        thumbnail = it.thumbnail,
+                    )
+                },
+            )
+        }.onFailure {
+            Log.write("sync: push de faixas falhou (${it.message}); seguindo com o resto")
+        }
 
         if (localPlaylists.isNotEmpty()) {
             val rows = localPlaylists.map { PushPlaylist(it.id, it.name, it.deleted, it.coverUrl) }
@@ -159,36 +170,53 @@ class SyncEngine(
         }
 
         if (localLikes.isNotEmpty()) {
-            api.pushLikes(
-                token,
-                localLikes.map { PushLike(session.userId, it.trackId, it.deleted) },
-            )
-            withContext(Dispatchers.IO) {
-                localLikes.forEach { db.clearLikeDirty(it.trackId, it.updatedAt) }
+            runCatching {
+                api.pushLikes(
+                    token,
+                    localLikes.map { PushLike(session.userId, it.trackId, it.deleted) },
+                )
+            }.onSuccess {
+                withContext(Dispatchers.IO) {
+                    localLikes.forEach { db.clearLikeDirty(it.trackId, it.updatedAt) }
+                }
+            }.onFailure {
+                Log.write("sync: push de curtidas falhou (${it.message}); tentara de novo")
             }
         }
 
         val pendingEvents = withContext(Dispatchers.IO) { db.pendingPlayEvents() }
         if (pendingEvents.isNotEmpty()) {
-            api.pushPlayEvents(
-                token,
-                pendingEvents.map { event ->
-                    PushPlayEvent(
-                        id = event.eventId.ifBlank { UUID.randomUUID().toString() },
-                        userId = session.userId,
-                        trackId = event.trackId,
-                        startedAt = Instant.ofEpochMilli(event.startedAt).toString(),
-                        playedMs = event.playedMs,
-                        durationMs = event.durationMs,
-                        completed = event.completed,
-                        skipped = event.skipped,
-                        source = event.origin,
-                        contextId = event.contextId,
-                    )
-                },
-            )
-            withContext(Dispatchers.IO) {
-                db.markPlayEventsSynced(pendingEvents.map { it.seq })
+            val rows = pendingEvents.map { event ->
+                event to PushPlayEvent(
+                    id = event.eventId.ifBlank { UUID.randomUUID().toString() },
+                    userId = session.userId,
+                    trackId = event.trackId,
+                    startedAt = Instant.ofEpochMilli(event.startedAt).toString(),
+                    playedMs = event.playedMs,
+                    durationMs = event.durationMs,
+                    completed = event.completed,
+                    skipped = event.skipped,
+                    source = event.origin,
+                    contextId = event.contextId,
+                )
+            }
+            val accepted = mutableSetOf<Int>()
+            val batch = runCatching { api.pushPlayEvents(token, rows.map { it.second }) }
+            if (batch.isSuccess) {
+                accepted += rows.map { it.first.seq }
+            } else {
+                // Evento envenenado (faixa ausente, duplicata etc.) nao pode
+                // bloquear a fila para sempre: sobe um a um e guarda so os que
+                // passaram; os demais ficam pendentes para a proxima rodada.
+                Log.write("sync: lote de escutas falhou (${batch.exceptionOrNull()?.message}); enviando uma a uma")
+                rows.forEach { (event, row) ->
+                    if (runCatching { api.pushPlayEvents(token, listOf(row)) }.isSuccess) {
+                        accepted += event.seq
+                    }
+                }
+            }
+            if (accepted.isNotEmpty()) {
+                withContext(Dispatchers.IO) { db.markPlayEventsSynced(accepted.toList()) }
             }
         }
 
@@ -202,6 +230,25 @@ class SyncEngine(
             pushedLikes = localLikes.size,
             pushedEvents = pendingEvents.size,
         )
+    }
+
+    /**
+     * Curtidas por `server_rev` incremental. Antes o app baixava a tabela
+     * inteira (até 5.000 linhas) a cada sync, mesmo sem nada novo.
+     */
+    private suspend fun fetchLikes(token: String): List<RemoteLike> {
+        var cursor = db.get("sync.likesRev")?.toLongOrNull() ?: 0L
+        val result = mutableListOf<RemoteLike>()
+        for (pageIndex in 0 until 20) {
+            val page = api.likes(token, sinceRev = cursor, limit = 1000)
+            if (page.isEmpty()) break
+            result += page
+            val max = page.maxOfOrNull { it.serverRev } ?: cursor
+            if (max <= cursor) break
+            cursor = max
+            if (page.size < 1000) break
+        }
+        return result
     }
 
     /**

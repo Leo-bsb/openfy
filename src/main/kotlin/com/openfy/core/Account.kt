@@ -82,6 +82,7 @@ data class AccountRecap(
     val summary: RecapSummary,
     val topTracks: List<RecapTrack>,
     val topArtists: List<RecapArtist>,
+    val months: List<java.time.YearMonth> = emptyList(),
 )
 
 /**
@@ -140,7 +141,10 @@ class AccountManager(
         restore()
         scope.launch {
             while (true) {
-                delay(120_000)
+                // Alteracoes locais disparam requestSync em ~2,5s; este ciclo
+                // existe para mudancas de outros aparelhos. 5 min reduz muito
+                // o trafego no Supabase sem deixar o PC defasado por muito tempo.
+                delay(300_000)
                 if (_state.value.session != null && !_state.value.busy) {
                     syncNow()
                 }
@@ -1178,41 +1182,55 @@ class AccountManager(
     suspend fun fetchRecap(month: java.time.YearMonth): AccountRecap? {
         val session = ensureSession() ?: return null
         return runCatching {
+            val months = runCatching { api.monthlyMonths(session.accessToken) }
+                .getOrDefault(emptyList())
             val listening = api.monthlyListening(session.accessToken, month).firstOrNull()
+            // Uma unica chamada de artistas serve para o total e para o top.
+            val artistRows = api.monthlyTopArtists(session.accessToken, month, 50)
             val summary = RecapSummary(
                 plays = listening?.plays?.toInt() ?: 0,
                 playedMs = listening?.playedMs ?: 0,
                 uniqueTracks = listening?.uniqueTracks?.toInt() ?: 0,
-                uniqueArtists = api.monthlyTopArtists(session.accessToken, month, 50).size,
+                uniqueArtists = artistRows.size,
                 completedPlays = listening?.completedPlays?.toInt() ?: 0,
                 skippedPlays = listening?.skippedPlays?.toInt() ?: 0,
             )
             val remoteTracks = api.monthlyTopTracks(session.accessToken, month, 20)
-            val byId = api.tracks(session.accessToken, remoteTracks.map { it.trackId }).associateBy { it.id }
-            val topTracks = remoteTracks.mapNotNull { item ->
-                byId[item.trackId]?.let { track ->
-                    RecapTrack(
-                        Track(
+            val ids = remoteTracks.map { it.trackId }
+            val localTracks = db.tracksByIds(ids).associateBy { it.id }
+            val missing = ids.filterNot { it in localTracks }
+            val byId = HashMap(localTracks)
+            if (missing.isNotEmpty()) {
+                missing.chunked(80)
+                    .flatMap { api.tracks(session.accessToken, it) }
+                    .forEach { track ->
+                        byId[track.id] = Track(
                             id = track.id,
                             title = track.title,
                             artist = track.artist,
                             album = track.album,
                             durationSec = track.duration,
                             thumbnail = track.thumbnail,
-                        ),
+                        )
+                    }
+            }
+            val topTracks = remoteTracks.mapNotNull { item ->
+                byId[item.trackId]?.let { track ->
+                    RecapTrack(
+                        track = track,
                         plays = item.plays.toInt(),
                         playedMs = item.playedMs,
                     )
                 }
             }
-            val topArtists = api.monthlyTopArtists(session.accessToken, month, 8).map {
+            val topArtists = artistRows.take(8).map {
                 RecapArtist(
                     name = it.artist,
                     plays = it.plays.toInt(),
                     playedMs = it.playedMs,
                 )
             }
-            AccountRecap(summary, topTracks, topArtists)
+            AccountRecap(summary, topTracks, topArtists, months)
         }.getOrNull()
     }
 

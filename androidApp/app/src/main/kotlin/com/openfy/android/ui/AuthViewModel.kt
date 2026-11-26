@@ -35,6 +35,7 @@ import com.openfy.android.data.HomeSnapshot
 import com.openfy.android.data.LyricLine
 import com.openfy.android.data.LyricsClient
 import com.openfy.android.data.LocalMusic
+import com.openfy.android.data.LocalRecap
 import com.openfy.android.data.PendingEvent
 import com.openfy.android.data.PendingItem
 import com.openfy.android.data.PendingPlaylist
@@ -285,9 +286,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             accent2Hex = store.accent2Hex().orEmpty(),
             playerLayout = store.playerLayout(),
             coverGradient = store.coverGradient(),
-            recentTracks = historyStore.recentTracks(24).ifEmpty { store.recentTracks() },
-            history = historyStore.historyTracks(200),
-            topPlayed = historyStore.topPlayed(emptySet(), 100),
+            recentTracks = store.recentTracks(),
+            // Histórico e recomendações carregam fora da main no init; só o
+            // último Recentes (SharedPreferences leve) aparece de imediato.
+            history = emptyList(),
+            topPlayed = emptyList(),
             eqEnabled = store.eqEnabled(),
             eqGains = store.eqGains(),
             downloadLimitMb = store.downloadLimitMb(),
@@ -426,9 +429,14 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var lyricsJob: Job? = null
     private var sleepJob: Job? = null
     private var recapJob: Job? = null
+    private var lastRecapRemoteAt = 0L
+    private var lastRecapRemoteMonth = ""
     private val lyricsCache = mutableMapOf<String, List<LyricLine>>()
     private var lastSessionSave = 0L
     private var lastSavedTrack = ""
+    private var sessionSaveJob: Job? = null
+    private var lastLocalTopAt = 0L
+    private var lastLocalRecapAt = 0L
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -446,11 +454,32 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private var lastSocialLikesList: List<Track>? = null
     private var lastSocialPlaying: Boolean? = null
     private var playlistDownloadJob: Job? = null
+    private var flushJob: Job? = null
+    private val flushMutex = Mutex()
+    private val downloadFailures = java.util.concurrent.ConcurrentHashMap<String, AutoDownloadFailure>()
+    private val historyJobs = java.util.concurrent.ConcurrentLinkedQueue<Job>()
+
+    private data class AutoDownloadFailure(var attempts: Int = 0, var nextAt: Long = 0L)
 
     init {
         activePlayer = playerA
         DownloadEngine.init(getApplication())
         DownloadEngine.setLimitBytes(_state.value.downloadLimitMb.toLong() * BYTES_PER_MB)
+        viewModelScope.launch(Dispatchers.IO) {
+            // Histórico local fora da main: com milhares de escutas, decodificar
+            // o JSON e recalcular as mais ouvidas travava a abertura do app.
+            val recent = historyStore.recentTracks(24)
+            val history = historyStore.historyTracks(200)
+            val top = historyStore.topPlayed(emptySet(), 100)
+            _state.update {
+                it.copy(
+                    recentTracks = recent.ifEmpty { it.recentTracks },
+                    history = history,
+                    topPlayed = top,
+                    topTracks = top.ifEmpty { it.topTracks },
+                )
+            }
+        }
         viewModelScope.launch {
             DownloadEngine.progress.collect { progress ->
                 _state.update { it.copy(downloadProgress = progress) }
@@ -460,10 +489,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             DownloadEngine.events.collect { event ->
                 when (val result = event.result) {
                     is DownloadResult.Success -> {
+                        downloadFailures.remove(event.track.id)
                         refreshDownloads()
                         _state.update { it.copy(message = "Baixada: ${event.track.title}") }
                     }
                     is DownloadResult.Failed -> {
+                        markDownloadFailure(event.track.id)
                         _state.update {
                             it.copy(
                                 error = if (result.expired) {
@@ -481,6 +512,15 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             delay(4_000)
             if (isOnline()) checkForUpdates(silent = true)
+        }
+        viewModelScope.launch {
+            // Mesmo sem abrir Ajustes/Home, o download automatico continua
+            // tentando com backoff (nunca em loop apertado).
+            delay(90_000)
+            while (true) {
+                if (_state.value.autoDownload) runAutoDownload()
+                delay(30L * 60L * 1000L)
+            }
         }
         equalizer.applySaved(_state.value.eqEnabled, _state.value.eqGains)
         PlaybackBridge.onToggle = { togglePlay() }
@@ -517,13 +557,19 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                     if (track.id != lastSavedTrack || now - lastSessionSave > 5_000) {
                         lastSavedTrack = track.id
                         lastSessionSave = now
-                        store.setPlaybackSession(
-                            current.queue,
-                            current.queueIndex,
-                            current.positionMs,
-                        )
-                        shuffleSnapshotQueue?.let { snapshot ->
-                            store.setShuffleSnapshot(snapshot, shuffleSnapshotIndex)
+                        // Serializar 400 faixas + SharedPreferences na main
+                        // causava engasgos periódicos. Grava fora da UI.
+                        val queue = current.queue
+                        val queueIndex = current.queueIndex
+                        val position = current.positionMs
+                        val shuffleQueue = shuffleSnapshotQueue
+                        val shuffleIndex = shuffleSnapshotIndex
+                        sessionSaveJob?.cancel()
+                        sessionSaveJob = viewModelScope.launch(Dispatchers.IO) {
+                            store.setPlaybackSession(queue, queueIndex, position)
+                            if (shuffleQueue != null) {
+                                store.setShuffleSnapshot(shuffleQueue, shuffleIndex)
+                            }
                         }
                     }
                 }
@@ -878,7 +924,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     /** Atualiza ao voltar ao app, com throttle para não bater no servidor a cada composição. */
     fun refreshIfStale() {
         val session = _state.value.session ?: return
-        if (System.currentTimeMillis() - lastHomeLoad < 30_000) return
+        // 30s de throttle gerava um pull completo (playlists, itens, curtidas,
+        // metadados e escutas) toda vez que o usuario alternava de app.
+        if (System.currentTimeMillis() - lastHomeLoad < 120_000) return
         viewModelScope.launch { loadHome(session) }
     }
 
@@ -910,12 +958,26 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 remoteLikes.filter { !it.deleted }.map { it.trackId } +
                 pendingLikes.values.filter { it.liked }.map { it.track.id }
             ).distinct()
-        val trackMap = trackIds.chunked(80)
+        // Aproveita metadados que o aparelho já tem (histórico, playlists
+        // abertas e listas atuais). Antes TODO item de playlist/curtida era
+        // rebaixado do Supabase a cada abertura/resume.
+        val cachedTracks = withContext(Dispatchers.IO) {
+            historyStore.all().map { it.track } +
+                playlistCache.all().flatMap { it.tracks }
+        }
+        val trackMap = mutableMapOf<String, Track>()
+        cachedTracks.forEach { trackMap.putIfAbsent(it.id, it) }
+        _state.value.let { snapshot ->
+            (snapshot.likedTracks + snapshot.recentTracks + snapshot.topTracks +
+                snapshot.topPlayed + snapshot.queue)
+                .forEach { trackMap.putIfAbsent(it.id, it) }
+        }
+        pendingItems.values.forEach { item -> item.track?.let { trackMap.putIfAbsent(it.id, it) } }
+        pendingLikes.values.forEach { like -> trackMap.putIfAbsent(like.track.id, like.track) }
+        val missingTracks = trackIds.filterNot { it in trackMap }
+        missingTracks.chunked(80)
             .flatMap { api.tracks(session.accessToken, it) }
-            .associateTo(mutableMapOf()) { it.id to it.toTrack() }
-        historyStore.all().forEach { trackMap.putIfAbsent(it.track.id, it.track) }
-        pendingItems.values.forEach { item -> item.track?.let { trackMap[it.id] = it } }
-        pendingLikes.values.forEach { like -> trackMap[like.track.id] = like.track }
+            .forEach { trackMap[it.id] = it.toTrack() }
 
         val mergedPlaylists = mergePlaylists(playlists, pendingPlaylists)
         val mergedItems = mergeItems(remoteItems, pendingItems)
@@ -1064,6 +1126,10 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Envia o outbox em ordem: faixas, playlists, itens, curtidas e escutas. */
     private suspend fun flushOutbox(session: StoredSession) {
+        flushMutex.withLock { flushOutboxLocked(session) }
+    }
+
+    private suspend fun flushOutboxLocked(session: StoredSession) {
         val token = session.accessToken
         val events = syncStore.pendingEvents()
         val likes = syncStore.pendingLikes()
@@ -1075,7 +1141,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 likes.map { it.track } +
                 items.mapNotNull { it.track }
             ).distinctBy { it.id }
-        if (tracks.isNotEmpty()) api.pushTracks(token, tracks)
+        if (tracks.isNotEmpty()) {
+            runCatching { api.pushTracks(token, tracks) }.onFailure {
+                com.openfy.core.Log.write(
+                    "sync: push de faixas falhou (${it.message}); seguindo com o resto",
+                )
+            }
+        }
 
         if (playlists.isNotEmpty()) {
             val rows = playlists.map { PushPlaylist(it.id, it.name, it.coverUrl, it.deleted) }
@@ -1127,25 +1199,36 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (events.isNotEmpty()) {
+            val accepted = mutableListOf<String>()
             events.forEach { event ->
-                api.pushPlayEvent(
-                    token,
-                    PushPlayEvent(
-                        id = event.id,
-                        userId = session.userId,
-                        deviceId = store.deviceId(),
-                        trackId = event.track.id,
-                        startedAt = Instant.ofEpochMilli(event.startedAtMs).toString(),
-                        playedMs = event.playedMs,
-                        durationMs = event.durationMs,
-                        completed = event.completed,
-                        skipped = event.skipped,
-                        source = event.source,
-                        contextId = event.contextId,
-                    ),
-                )
+                runCatching {
+                    api.pushPlayEvent(
+                        token,
+                        PushPlayEvent(
+                            id = event.id,
+                            userId = session.userId,
+                            deviceId = store.deviceId(),
+                            trackId = event.track.id,
+                            startedAt = Instant.ofEpochMilli(event.startedAtMs).toString(),
+                            playedMs = event.playedMs,
+                            durationMs = event.durationMs,
+                            completed = event.completed,
+                            skipped = event.skipped,
+                            source = event.source,
+                            contextId = event.contextId,
+                        ),
+                    )
+                }.onSuccess {
+                    accepted += event.id
+                }.onFailure {
+                    // Um evento envenenado nao pode travar o outbox inteiro;
+                    // fica pendente e o proximo ciclo tenta de novo.
+                    com.openfy.core.Log.write(
+                        "sync: escuta ${event.id} nao subiu (${it.message}); mantida",
+                    )
+                }
             }
-            syncStore.removeEvents(events.map { it.id })
+            if (accepted.isNotEmpty()) syncStore.removeEvents(accepted)
         }
         _state.update { it.copy(pendingSyncCount = syncStore.pendingCount()) }
     }
@@ -1175,22 +1258,24 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         val deleted = rows.filter { it.deleted }.map { it.id }.filter { it.isNotBlank() }
-        if (deleted.isNotEmpty()) historyStore.remove(deleted)
-        val entries = rows.filter { !it.deleted }.mapNotNull { row ->
-            val track = tracks[row.trackId] ?: return@mapNotNull null
-            HistoryEntry(
-                id = row.id.ifBlank { "evt:${row.trackId}:${row.startedAt}" },
-                track = track,
-                at = parseTimestamp(row.startedAt) ?: System.currentTimeMillis(),
-                playedMs = row.playedMs,
-                durationMs = row.durationMs,
-                completed = row.completed,
-                skipped = row.skipped,
-                source = row.source.ifBlank { "android" },
-            )
+        withContext(Dispatchers.IO) {
+            val entries = rows.filter { !it.deleted }.mapNotNull { row ->
+                val track = tracks[row.trackId] ?: return@mapNotNull null
+                HistoryEntry(
+                    id = row.id.ifBlank { "evt:${row.trackId}:${row.startedAt}" },
+                    track = track,
+                    at = parseTimestamp(row.startedAt) ?: System.currentTimeMillis(),
+                    playedMs = row.playedMs,
+                    durationMs = row.durationMs,
+                    completed = row.completed,
+                    skipped = row.skipped,
+                    source = row.source.ifBlank { "android" },
+                )
+            }
+            if (deleted.isNotEmpty()) historyStore.remove(deleted)
+            historyStore.merge(entries)
+            rows.mapNotNull { it.updatedAt }.maxOrNull()?.let { syncStore.setEventCursor(it) }
         }
-        historyStore.merge(entries)
-        rows.mapNotNull { it.updatedAt }.maxOrNull()?.let { syncStore.setEventCursor(it) }
     }
 
     /** Snapshot usado quando o app abre sem rede. */
@@ -1429,7 +1514,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     /** Dispara o outbox sem bloquear a UI. */
     private fun requestFlush() {
         val session = _state.value.session ?: return
-        viewModelScope.launch {
+        // Junta varias escutas/curtidas num unico envio. Antes cada troca de
+        // faixa disparava um flush completo do outbox ao Supabase.
+        flushJob?.cancel()
+        flushJob = viewModelScope.launch {
+            delay(1_500)
             runCatching { flushOutbox(session) }
             _state.update { it.copy(pendingSyncCount = syncStore.pendingCount()) }
         }
@@ -3574,16 +3663,25 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Baixa em segundo plano as mais ouvidas e curtidas que ainda não estão
      * no aparelho, respeitando o limite de espaço.
+     *
+     * Usa [DownloadEngine.enqueue] em vez de [downloadPlaylist]: o enqueue não
+     * cancela um lote manual em andamento nem prende a Rotina a uma unica
+     * lista. Falhas ganham backoff para não serem re-tentadas sem parar.
      */
     private fun runAutoDownload() {
-        if (!_state.value.autoDownload || !isOnline()) return
-        val limitBytes = _state.value.downloadLimitMb.toLong() * BYTES_PER_MB
-        val wanted = (_state.value.topPlayed + _state.value.likedTracks + _state.value.recentTracks)
+        val snapshot = _state.value
+        if (!snapshot.autoDownload || !isOnline()) return
+        if (playlistDownloadJob?.isActive == true) return
+        val limitBytes = snapshot.downloadLimitMb.toLong() * BYTES_PER_MB
+        val now = System.currentTimeMillis()
+        downloadFailures.entries.removeIf { it.value.nextAt in 1..now && it.value.attempts >= 12 }
+        val wanted = (snapshot.topPlayed + snapshot.likedTracks + snapshot.recentTracks)
             .distinctBy { it.id }
             .filterNot {
-                it.id in _state.value.downloadedIds ||
+                it.id in snapshot.downloadedIds ||
                     downloadStore.entry(it.id) != null ||
-                    DownloadEngine.isQueued(it.id)
+                    DownloadEngine.isQueued(it.id) ||
+                    isDownloadBlocked(it.id)
             }
             .take(20)
         if (wanted.isEmpty()) return
@@ -3591,7 +3689,25 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(message = "Limite de downloads atingido; ajuste em Ajustes.") }
             return
         }
-        downloadPlaylist(wanted)
+        wanted.forEach { DownloadEngine.enqueue(it) }
+    }
+
+    private fun isDownloadBlocked(trackId: String): Boolean =
+        (downloadFailures[trackId]?.nextAt ?: 0L) > System.currentTimeMillis()
+
+    private fun markDownloadFailure(trackId: String) {
+        val failure = downloadFailures.computeIfAbsent(trackId) { AutoDownloadFailure() }
+        failure.attempts = (failure.attempts + 1).coerceAtMost(12)
+        val waitMs = (5L * 60_000L * (1L shl (failure.attempts - 1).coerceIn(0, 8)))
+            .coerceAtMost(24L * 60L * 60L * 1000L)
+        failure.nextAt = System.currentTimeMillis() + waitMs
+        com.openfy.core.Log.write(
+            "download: $trackId falhou ${failure.attempts}x; nova tentativa em ${waitMs / 60_000}min",
+        )
+    }
+
+    private fun clearDownloadFailure(trackId: String) {
+        downloadFailures.remove(trackId)
     }
 
     fun loadLyrics(track: Track?) {
@@ -3674,24 +3790,65 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loadRecap(month: String? = null, force: Boolean = false) {
-        val session = _state.value.session ?: return
         val target = month ?: _state.value.recapMonth
+        val session = _state.value.session
+        val userId = session?.userId
         if (!force && _state.value.recap?.month == target && !_state.value.recapLoading) return
         recapJob?.cancel()
         _state.update { it.copy(recapMonth = target, recapLoading = true, recapError = null) }
         recapJob = viewModelScope.launch {
-            runCatching {
+            // 1) Histórico local: instantâneo e funciona offline.
+            val local = withContext(Dispatchers.IO) {
+                LocalRecap.build(historyStore.all(), target)
+            }
+            if (_state.value.session?.userId != userId) return@launch
+            val localData = RecapData(
+                month = target,
+                listening = local.listening,
+                topTracks = local.topTracks,
+                artists = local.artists,
+            )
+            _state.update {
+                it.copy(
+                    recap = localData,
+                    recapMonths = (local.months + it.recapMonths + target)
+                        .distinct()
+                        .sortedDescending()
+                        .take(24),
+                )
+            }
+            if (session == null) {
+                _state.update { it.copy(recapLoading = false, recapError = null) }
+                return@launch
+            }
+            // 2) Servidor, quando fizer sentido: enriquece com escutas de
+            // outros aparelhos e meses, mas nunca apaga o que já está local.
+            val now = System.currentTimeMillis()
+            val shouldFetch = force || target != lastRecapRemoteMonth || now - lastRecapRemoteAt > 15_000
+            if (!shouldFetch) {
+                _state.update { it.copy(recapLoading = false) }
+                return@launch
+            }
+            lastRecapRemoteAt = now
+            lastRecapRemoteMonth = target
+            val remote = runCatching {
                 withSession { current ->
-                    val months = api.monthlyMonths(current.accessToken)
+                    val months = runCatching { api.monthlyMonths(current.accessToken) }
+                        .getOrDefault(emptyList())
                     val listening = api.monthlyListening(current.accessToken, target)
                     val rows = api.monthlyTopTracks(current.accessToken, target, 10)
-                    val byId = if (rows.isEmpty()) {
+                    val known = (local.topTracks + _state.value.likedTracks +
+                        _state.value.recentTracks + _state.value.topTracks)
+                        .associateBy { it.id }
+                    val missing = rows.map { it.trackId }.filterNot { it in known }
+                    val fetched = if (missing.isEmpty()) {
                         emptyMap()
                     } else {
-                        api.tracks(current.accessToken, rows.map { it.trackId })
-                            .associateBy { it.id }
+                        api.tracks(current.accessToken, missing)
+                            .associate { it.id to it.toTrack() }
                     }
-                    val tracks = rows.mapNotNull { byId[it.trackId]?.toTrack() }
+                    val byId = known + fetched
+                    val tracks = rows.mapNotNull { byId[it.trackId] }
                     val artists = api.monthlyTopArtists(current.accessToken, target, 8)
                     RecapData(
                         month = target,
@@ -3700,24 +3857,72 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                         artists = artists,
                     ) to months
                 }
-            }.onSuccess { (data, months) ->
-                if (_state.value.session?.userId != session.userId) return@onSuccess
-                _state.update {
-                    it.copy(
-                        recap = data,
-                        recapMonths = months.ifEmpty { listOf(target) },
+            }.getOrNull()
+            if (_state.value.session?.userId != userId) return@launch
+            if (remote == null) {
+                _state.update { current ->
+                    current.copy(
                         recapLoading = false,
-                        recapError = null,
+                        recapError = if (local.listening.plays == 0L) {
+                            "Sem conexão com o servidor. Mostrando o histórico deste aparelho."
+                        } else {
+                            null
+                        },
                     )
                 }
-            }.onFailure { error ->
-                if (_state.value.session?.userId != session.userId) return@onFailure
-                _state.update {
-                    it.copy(
-                        recapLoading = false,
-                        recapError = error.message ?: "Falha ao carregar o recap.",
-                    )
-                }
+                return@launch
+            }
+            val (remoteData, remoteMonths) = remote
+            val remotePlays = remoteData.listening?.plays ?: 0L
+            val useRemote = remotePlays > local.listening.plays
+            val chosen = if (useRemote) {
+                remoteData.copy(
+                    topTracks = remoteData.topTracks.ifEmpty { localData.topTracks },
+                    artists = remoteData.artists.ifEmpty { localData.artists },
+                )
+            } else {
+                localData
+            }
+            _state.update {
+                it.copy(
+                    recap = chosen,
+                    recapMonths = (remoteMonths + local.months + target + it.recapMonth)
+                        .distinct()
+                        .sortedDescending()
+                        .take(24),
+                    recapLoading = false,
+                    recapError = null,
+                )
+            }
+        }
+    }
+
+    /** Mantém a aba Recap viva enquanto o usuário ouve, sem depender do sync. */
+    private fun refreshLocalRecap() {
+        if (_state.value.recap == null || _state.value.session == null) return
+        val now = System.currentTimeMillis()
+        if (now - lastLocalRecapAt < 5_000) return
+        lastLocalRecapAt = now
+        val months = _state.value.recapMonths
+        val month = _state.value.recapMonth
+        viewModelScope.launch {
+            val local = withContext(Dispatchers.IO) {
+                LocalRecap.build(historyStore.all(), month)
+            }
+            _state.update { current ->
+                if (current.session == null) return@update current
+                if (current.recapMonth != month) return@update current
+                val currentPlays = current.recap?.listening?.plays ?: 0L
+                if (local.listening.plays < currentPlays) return@update current
+                current.copy(
+                    recap = RecapData(
+                        month = month,
+                        listening = local.listening,
+                        topTracks = local.topTracks.ifEmpty { current.recap?.topTracks.orEmpty() },
+                        artists = local.artists.ifEmpty { current.recap?.artists.orEmpty() },
+                    ),
+                    recapMonths = (local.months + months).distinct().sortedDescending().take(24),
+                )
             }
         }
     }
@@ -4118,8 +4323,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private fun rememberRecent(track: Track) {
         val updated = (listOf(track) + _state.value.recentTracks.filterNot { it.id == track.id })
             .take(24)
-        store.setRecentTracks(updated)
         _state.update { it.copy(recentTracks = updated) }
+        viewModelScope.launch(Dispatchers.IO) { store.setRecentTracks(updated) }
+    }
+
+    private fun persistShuffleSnapshot(queue: List<Track>, index: Int) {
+        viewModelScope.launch(Dispatchers.IO) { store.setShuffleSnapshot(queue, index) }
     }
 
     // ------------------------------------------------------------------ queue editing
@@ -4175,7 +4384,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             shuffleSnapshotQueue = current.queue
             shuffleSnapshotIndex = current.queueIndex
             store.setShuffle(true)
-            store.setShuffleSnapshot(current.queue, current.queueIndex)
+            persistShuffleSnapshot(current.queue, current.queueIndex)
             _state.update {
                 it.copy(
                     queue = shuffled,
@@ -4239,7 +4448,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val removed = queue.removeAt(index)
         if (shuffleSnapshotQueue != null) {
             shuffleSnapshotQueue = shuffleSnapshotQueue?.filterNot { it.id == removed.id }
-            store.setShuffleSnapshot(shuffleSnapshotQueue.orEmpty(), shuffleSnapshotIndex)
+            persistShuffleSnapshot(shuffleSnapshotQueue.orEmpty(), shuffleSnapshotIndex)
         }
         val newIndex = when {
             queue.isEmpty() -> -1
@@ -4319,14 +4528,14 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             index = 0
             shuffleSnapshotQueue = queue
             shuffleSnapshotIndex = requestedIndex
-            store.setShuffleSnapshot(queue, requestedIndex)
+            persistShuffleSnapshot(queue, requestedIndex)
         } else {
             queueToUse = queue
             index = requestedIndex
             if (current.shuffle && shuffleSnapshotQueue == null) {
                 shuffleSnapshotQueue = queue
                 shuffleSnapshotIndex = index
-                store.setShuffleSnapshot(queue, index)
+                persistShuffleSnapshot(queue, index)
             }
         }
         eventStartedAt = System.currentTimeMillis()
@@ -4816,9 +5025,9 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         completed: Boolean,
         skipped: Boolean,
         playedOverride: Long? = null,
-    ) {
-        val track = eventTrack ?: return
-        val session = _state.value.session ?: return
+    ): Job? {
+        val track = eventTrack ?: return null
+        if (_state.value.session == null) return null
         val startedAt = eventStartedAt
         val played = playedOverride ?: if (completed) {
             _state.value.durationMs.coerceAtLeast(0L)
@@ -4827,7 +5036,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
         eventTrack = null
         eventStartedAt = 0
-        if (played < 1_000) return
+        if (played < 1_000) return null
+        val source = eventSource
         val eventId = java.util.UUID.randomUUID().toString()
         val durationMs = (track.durationSec * 1000).coerceAtLeast(0)
         val entry = HistoryEntry(
@@ -4838,45 +5048,58 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             durationMs = durationMs,
             completed = completed,
             skipped = skipped,
-            source = eventSource,
+            source = source,
         )
-        historyStore.add(entry)
-        val history = historyStore.historyTracks(200)
-        val recent = historyStore.recentTracks(24)
-        val top = historyStore.topPlayed(_state.value.likedIds, 100)
-        _state.update {
-            it.copy(
-                history = history,
-                recentTracks = recent,
-                topPlayed = top,
-                topTracks = top.ifEmpty { it.topTracks },
-            )
+        // Serializar o histórico e gravar outbox em disco nao pode rodar na
+        // main thread: a cada troca de faixa a interface engasgava.
+        val job = viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val wantTop = now - lastLocalTopAt > 30_000
+            val (history, top) = withContext(Dispatchers.IO) {
+                historyStore.add(entry)
+                val history = historyStore.historyTracks(200)
+                val top = if (wantTop) historyStore.topPlayed(_state.value.likedIds, 100) else null
+                // A escuta entra no outbox na hora: sem rede, sobe depois sem perder.
+                syncStore.addEvent(
+                    PendingEvent(
+                        id = eventId,
+                        track = track,
+                        startedAtMs = startedAt,
+                        playedMs = played.toInt(),
+                        durationMs = durationMs,
+                        completed = completed,
+                        skipped = skipped,
+                        source = source,
+                        contextId = null,
+                    ),
+                )
+                history to top
+            }
+            if (top != null) lastLocalTopAt = now
+            _state.update {
+                it.copy(
+                    history = history,
+                    topPlayed = top ?: it.topPlayed,
+                    topTracks = if (top != null && top.isNotEmpty()) top else it.topTracks,
+                    pendingSyncCount = syncStore.pendingCount(),
+                )
+            }
+            refreshLocalRecap()
+            requestFlush()
         }
-        store.setRecentTracks(recent)
-        // A escuta entra no outbox na hora: sem rede, sobe depois sem perder.
-        syncStore.addEvent(
-            PendingEvent(
-                id = eventId,
-                track = track,
-                startedAtMs = startedAt,
-                playedMs = played.toInt(),
-                durationMs = durationMs,
-                completed = completed,
-                skipped = skipped,
-                source = eventSource,
-                contextId = null,
-            ),
-        )
-        _state.update { it.copy(pendingSyncCount = syncStore.pendingCount()) }
-        viewModelScope.launch {
-            runCatching { flushOutbox(session) }
-            _state.update { it.copy(pendingSyncCount = syncStore.pendingCount()) }
-        }
+        historyJobs.add(job)
+        job.invokeOnCompletion { historyJobs.remove(job) }
+        return job
     }
     fun signOut() {
         val session = _state.value.session
         viewModelScope.launch {
-            finishEvent(completed = false, skipped = true)
+            val eventJob = finishEvent(completed = false, skipped = true)
+            eventJob?.join()
+            historyJobs.toList().forEach { job ->
+                kotlinx.coroutines.withTimeoutOrNull(3_000) { job.join() }
+            }
+            flushJob?.cancel()
             resetRadio()
             cancelCrossfade()
             playlistDownloadJob?.cancel()
@@ -5009,6 +5232,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(message = "Esta faixa já está na fila de downloads.") }
             return
         }
+        // Tentativa manual cancela o backoff de falhas anteriores.
+        clearDownloadFailure(track.id)
         if (!isOnline()) {
             _state.update { it.copy(error = "Sem conexão para baixar esta faixa.") }
             return
@@ -5041,6 +5266,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Baixa as faixas ainda não baixadas de uma playlist, em lotes paralelos. */
     fun downloadPlaylist(tracks: List<Track>) {
+        // Ação manual: tenta de novo mesmo faixas que falharam antes.
+        tracks.forEach { clearDownloadFailure(it.id) }
         val pending = tracks.filterNot {
             it.id in _state.value.downloadedIds ||
                 downloadStore.entry(it.id) != null ||

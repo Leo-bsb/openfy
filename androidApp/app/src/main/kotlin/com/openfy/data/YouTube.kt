@@ -915,11 +915,11 @@ class YouTubeEngine {
      * preciso — por isso o cache curto aqui e so economia de quota.
      */
     fun media(videoId: String): Media? {
-        val cached = streamCache[videoId]
-        if (cached != null && System.currentTimeMillis() - cached.at < STREAM_TTL_MS) {
+        streamCache[videoId]?.takeIf {
+            System.currentTimeMillis() - it.at < STREAM_TTL_MS
+        }?.let { cached ->
             val url = cached.stream.audioUrl
-            if (url.isBlank()) return null
-            return Media.Remote(url, cached.stream.headers)
+            if (url.isNotBlank()) return Media.Remote(url, cached.stream.headers)
         }
         val started = System.nanoTime()
         com.openfy.core.Log.write("yt: extraindo $videoId")
@@ -927,6 +927,15 @@ class YouTubeEngine {
             kotlinx.coroutines.runBlocking {
                 withTimeout(EXTRACT_TIMEOUT_MS) {
                     extractMutex.withLock {
+                        // Player e download podem pedir a mesma faixa juntos.
+                        // Recheca o cache depois do mutex para nao extrair de novo.
+                        val fresh = streamCache[videoId]
+                        if (fresh != null &&
+                            System.currentTimeMillis() - fresh.at < STREAM_TTL_MS &&
+                            fresh.stream.audioUrl.isNotBlank()
+                        ) {
+                            return@withLock fresh.stream
+                        }
                         extractor.extract(
                             videoId,
                             ContentHints().withStreamCapabilities(
@@ -1131,7 +1140,9 @@ class YouTubeEngine {
             ExploreSeed("mpb brasil", "MPB & Bossa"),
         )
 
-        const val STREAM_TTL_MS = 4 * 60 * 1000L
+        // A URL vale por horas; invalidar cedo demais quebrava downloads e
+        // playback em faixas longas. O link expirado e tratado no 403.
+        const val STREAM_TTL_MS = 60 * 60 * 1000L
         const val EXTRACT_TIMEOUT_MS = 60_000L
     }
 }

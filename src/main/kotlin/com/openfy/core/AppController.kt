@@ -19,10 +19,12 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -114,6 +116,18 @@ class AppController(
     val downloadedIds = MutableStateFlow<Set<String>>(emptySet())
     val downloadingIds = MutableStateFlow<Set<String>>(emptySet())
     val downloadsSize = MutableStateFlow(0L)
+
+    /**
+     * Fila de downloads: lock por faixa + backoff de falhas. Sem isso, uma
+     * extracao que sempre falha era re-tentada a cada ciclo (e a cada toque em
+     * "Baixar"), mantendo a fila eternamente ativa.
+     */
+    private val activeDownloadIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val downloadFailures = java.util.concurrent.ConcurrentHashMap<String, DownloadFailure>()
+    private val pendingDownloadQueue = java.util.Collections.synchronizedList(mutableListOf<Track>())
+    private val autoDownloadMutex = kotlinx.coroutines.sync.Mutex()
+    private var downloadBatchJob: Job? = null
+    private data class DownloadFailure(var attempts: Int = 0, var nextAt: Long = 0L)
     /** Tamanho do banco local; mostrado nos ajustes para o usuario ver o peso. */
     val dbSize = MutableStateFlow(0L)
 
@@ -182,6 +196,11 @@ class AppController(
     val recapFromAccount = MutableStateFlow(false)
     private var recapGeneration = 0
     private var lastRecapAuto = 0L
+    private var lastStatsRefresh = 0L
+    private var lastTopRefresh = 0L
+    private var lastRecapRemoteAt = 0L
+    private var lastRecapRemoteMonth: YearMonth? = null
+    @Volatile private var listeningRefreshJob: Job? = null
 
     data class Stats(
         val totalPlays: Int = 0,
@@ -269,6 +288,11 @@ class AppController(
             )
         }
         player.onSessionChanged = { account.requestPlaybackSync() }
+        player.onPlayFinished = {
+            // O recap local precisa refletir a escuta assim que ela termina,
+            // mesmo quando a fila nao muda (repeat one, fim da fila, falha).
+            scope.launch { refreshListening() }
+        }
         autoDownload.value = runCatching { db.get("download.auto")?.toBooleanStrict() }.getOrNull() ?: true
         audioQuality.value = db.get("audio.quality") ?: "HIGH"
         yt.setQuality(audioQuality.value)
@@ -307,13 +331,10 @@ class AppController(
         scope.launch { refreshRecentSearches() }
         scope.launch { refreshDownloads() }
         scope.launch(Dispatchers.IO) {
-            // Uma compactacao por semana mantem o banco pequeno sem pesar na abertura.
-            val last = db.get("db.compactedAt")?.toLongOrNull() ?: 0L
-            if (System.currentTimeMillis() - last > 7L * 24L * 60L * 60L * 1000L) {
-                db.compact()
-                db.put("db.compactedAt", System.currentTimeMillis().toString())
-                dbSize.value = db.sizeBytes()
-            }
+            // Nada de VACUUM na abertura: ele segura o lock do SQLite e a UI
+            // (que faz INSERT ao trocar de faixa) ficava segundos parada.
+            // Leve e instantaneo; o VACUUM completo fica no botao "Otimizar".
+            db.optimize()
         }
         scope.launch { loadStats() }
         scope.launch { loadTopPlayed() }
@@ -1307,60 +1328,126 @@ class AppController(
     }
 
     fun downloadTrack(track: Track) {
-        if (track.id in downloadedIds.value || track.id in downloadingIds.value) return
+        if (track.id in downloadedIds.value || !claimDownload(track.id)) return
         scope.launch {
-            downloadingIds.value = downloadingIds.value + track.id
-            val result = withContext(Dispatchers.IO) {
-                runCatching { downloader.download(track) }
+            val path = withContext(Dispatchers.IO) {
+                runCatching {
+                    withTimeoutOrNull(DOWNLOAD_TIMEOUT_MS) { downloader.download(track) }
+                }.getOrNull()
             }
-            downloadingIds.value = downloadingIds.value - track.id
-            result.onSuccess { path ->
+            try {
                 if (path != null) {
                     withContext(Dispatchers.IO) {
-                        db.addDownload(track, path.toString(), runCatching { java.nio.file.Files.size(path) }.getOrDefault(0L))
+                        db.addDownload(
+                            track,
+                            path.toString(),
+                            runCatching { java.nio.file.Files.size(path) }.getOrDefault(0L),
+                        )
                     }
+                    clearDownloadFailure(track.id)
                     refreshDownloads()
                     message.value = "Baixada: \"${track.title}\"."
                 } else {
+                    markDownloadFailure(track)
                     message.value = "Não foi possível baixar \"${track.title}\"."
                 }
-            }.onFailure {
-                offline.value = isNetworkError(it)
-                message.value = "Falha ao baixar \"${track.title}\"."
-                com.openfy.core.Log.write("controller: download falhou: ${it::class.simpleName}: ${it.message}")
+            } finally {
+                releaseDownload(track.id)
             }
         }
     }
 
     /** Baixa uma lista inteira (álbum/playlist); usa concorrência limitada. */
     fun downloadTracks(tracks: List<Track>, announce: Boolean = true) {
-        val todo = tracks.filter { it.id !in downloadedIds.value && it.id !in downloadingIds.value }
+        // Ação manual do usuário ignora o backoff de falhas anteriores.
+        if (announce) tracks.forEach { clearDownloadFailure(it.id) }
+        val candidates = tracks.filter {
+            it.id !in downloadedIds.value &&
+                it.id !in activeDownloadIds &&
+                !isDownloadBlocked(it.id)
+        }
+        if (candidates.isEmpty()) return
+        if (downloadBatchJob?.isActive == true) {
+            // Junta no fim da fila em vez de descartar o pedido do usuario.
+            pendingDownloadQueue.addAll(candidates)
+            if (announce) message.value = "Adicionado à fila de downloads."
+            return
+        }
+        val todo = candidates.filter { claimDownload(it.id) }
         if (todo.isEmpty()) return
         val todoIds = todo.mapTo(HashSet()) { it.id }
-        scope.launch {
-            downloadingIds.value = downloadingIds.value + todoIds
+        downloadBatchJob = scope.launch {
             if (announce) message.value = "Baixando ${todo.size} faixas..."
-            val semaphore = Semaphore(3)
-            val jobs = todo.map { track ->
-                launch(Dispatchers.IO) {
-                    semaphore.withPermit {
-                        val path = runCatching { downloader.download(track) }.getOrNull()
-                        if (path != null) {
-                            db.addDownload(
-                                track,
-                                path.toString(),
-                                runCatching { java.nio.file.Files.size(path) }.getOrDefault(0L),
-                            )
+            try {
+                val semaphore = Semaphore(3)
+                val jobs = todo.map { track ->
+                    launch(Dispatchers.IO) {
+                        semaphore.withPermit {
+                            val path = runCatching {
+                                withTimeoutOrNull(DOWNLOAD_TIMEOUT_MS) { downloader.download(track) }
+                            }.getOrNull()
+                            if (path != null) {
+                                db.addDownload(
+                                    track,
+                                    path.toString(),
+                                    runCatching { java.nio.file.Files.size(path) }.getOrDefault(0L),
+                                )
+                                clearDownloadFailure(track.id)
+                            } else {
+                                markDownloadFailure(track)
+                            }
                         }
                     }
                 }
+                jobs.forEach { it.join() }
+            } finally {
+                todoIds.forEach { releaseDownload(it) }
+                downloadBatchJob = null
+                refreshDownloads()
+                val next = synchronized(pendingDownloadQueue) {
+                    val copy = pendingDownloadQueue.distinctBy { it.id }
+                    pendingDownloadQueue.clear()
+                    copy
+                }
+                if (next.isNotEmpty()) {
+                    downloadTracks(next, announce = false)
+                } else if (announce) {
+                    message.value = "Download concluído."
+                }
             }
-            jobs.forEach { it.join() }
-            downloadingIds.value = downloadingIds.value - todoIds
-            refreshDownloads()
-            if (announce) message.value = "Download concluído."
         }
     }
+
+    /** Reserva a faixa para nao baixar duas vezes em jobs concorrentes. */
+    private fun claimDownload(id: String): Boolean {
+        if (!activeDownloadIds.add(id)) return false
+        downloadingIds.update { it + id }
+        return true
+    }
+
+    private fun releaseDownload(id: String) {
+        activeDownloadIds.remove(id)
+        downloadingIds.update { it - id }
+    }
+
+    /** Falha permanente/recorrente: espera antes de tentar de novo. */
+    private fun markDownloadFailure(track: Track) {
+        val state = downloadFailures.computeIfAbsent(track.id) { DownloadFailure() }
+        state.attempts = (state.attempts + 1).coerceAtMost(12)
+        val delayMs = (5L * 60_000L * (1L shl (state.attempts - 1).coerceIn(0, 8)))
+            .coerceAtMost(24L * 60L * 60L * 1000L)
+        state.nextAt = System.currentTimeMillis() + delayMs
+        com.openfy.core.Log.write(
+            "download: ${track.id} falhou ${state.attempts}x; nova tentativa em ${delayMs / 60_000}min"
+        )
+    }
+
+    private fun clearDownloadFailure(id: String) {
+        downloadFailures.remove(id)
+    }
+
+    private fun isDownloadBlocked(id: String): Boolean =
+        (downloadFailures[id]?.nextAt ?: 0L) > System.currentTimeMillis()
 
     fun setAutoDownload(enabled: Boolean) {
         autoDownload.value = enabled
@@ -1380,19 +1467,39 @@ class AppController(
 
     private suspend fun runAutoDownload() {
         if (!autoDownload.value) return
-        if (downloadedIds.value.size >= AUTO_MAX_DOWNLOADS) return
-        val top = withContext(Dispatchers.IO) { db.topPlayed(AUTO_PLAYED) }
-        if (top.isEmpty()) return
-        val missing = top.filter { it.id !in downloadedIds.value && it.id !in downloadingIds.value }
-        if (missing.isNotEmpty()) downloadTracks(missing, announce = false)
-        val seed = top.first()
-        val page = runCatching {
-            withContext(Dispatchers.IO) { yt.radio(seed.id, "RDAMVM${seed.id}") }
-        }.getOrNull() ?: return
-        val similar = page.tracks
-            .filter { it.id !in downloadedIds.value && it.id !in downloadingIds.value && it.id != seed.id }
-            .take(AUTO_SIMILAR)
-        if (similar.isNotEmpty()) downloadTracks(similar, announce = false)
+        if (!autoDownloadMutex.tryLock()) return
+        try {
+            // Nunca reinicia/reempilha um lote em andamento. Era isso que fazia a
+            // fila automatica parecer travada (ou baixar a mesma faixa varias vezes).
+            if (downloadBatchJob?.isActive == true) return
+            if (downloadedIds.value.size >= AUTO_MAX_DOWNLOADS) return
+            val now = System.currentTimeMillis()
+            downloadFailures.entries.removeIf { it.value.nextAt in 1..now && it.value.attempts >= 12 }
+            val top = withContext(Dispatchers.IO) { db.topPlayed(AUTO_PLAYED) }
+            if (top.isEmpty()) return
+            val missing = top.filter {
+                it.id !in downloadedIds.value &&
+                    it.id !in activeDownloadIds &&
+                    !isDownloadBlocked(it.id)
+            }
+            if (missing.isNotEmpty()) downloadTracks(missing, announce = false)
+            if (downloadBatchJob?.isActive == true) return
+            val seed = top.first()
+            val page = runCatching {
+                withContext(Dispatchers.IO) { yt.radio(seed.id, "RDAMVM${seed.id}") }
+            }.getOrNull() ?: return
+            val similar = page.tracks
+                .filter {
+                    it.id !in downloadedIds.value &&
+                        it.id !in activeDownloadIds &&
+                        it.id != seed.id &&
+                        !isDownloadBlocked(it.id)
+                }
+                .take(AUTO_SIMILAR)
+            if (similar.isNotEmpty()) downloadTracks(similar, announce = false)
+        } finally {
+            autoDownloadMutex.unlock()
+        }
     }
 
     fun removeDownload(id: String) {
@@ -1917,7 +2024,22 @@ class AppController(
             recapError.value = result.third
             recapLoading.value = false
             if (localSnapshot != null && _stateAccountHasSession()) {
+                val now = System.currentTimeMillis()
+                val shouldFetch = force || month != lastRecapRemoteMonth ||
+                    now - lastRecapRemoteAt > 30_000
+                if (!shouldFetch) {
+                    recapFromAccount.value = false
+                    return@launch
+                }
+                lastRecapRemoteAt = now
+                lastRecapRemoteMonth = month
                 val remote = account.fetchRecap(month)
+                if (remote != null && generation == recapGeneration) {
+                    recapMonths.value = (recapMonths.value + remote.months + month)
+                        .distinct()
+                        .sortedDescending()
+                        .take(24)
+                }
                 if (generation == recapGeneration && remote != null &&
                     remote.summary.plays >= localSnapshot.summary.plays
                 ) {
@@ -1936,27 +2058,42 @@ class AppController(
 
     /** Atualiza listas e números quando a faixa atual muda, sem recarregar toda a biblioteca. */
     private fun refreshListening() {
-        scope.launch {
+        if (listeningRefreshJob?.isActive == true) return
+        listeningRefreshJob = scope.launch {
             delay(700)
+            val now = System.currentTimeMillis()
+            // Estatísticas e ranking ponderado leem até 20 mil eventos e não
+            // precisam ser recalculados a cada faixa. Recentes/Histórico sim.
+            val refreshStats = now - lastStatsRefresh > 30_000
+            val refreshTop = now - lastTopRefresh > 30_000
             val (recentTracks, historyTracks, statsValue) = withContext(Dispatchers.IO) {
                 Triple(
                     db.recentlyPlayed(20),
                     db.history(200),
-                    Stats(
-                        totalPlays = db.totalPlays(),
-                        totalSeconds = db.totalListenedSeconds(),
-                        topArtists = db.topArtists(5),
-                    ),
+                    if (refreshStats) {
+                        Stats(
+                            totalPlays = db.totalPlays(),
+                            totalSeconds = db.totalListenedSeconds(),
+                            topArtists = db.topArtists(5),
+                        )
+                    } else {
+                        null
+                    },
                 )
             }
             recent.value = recentTracks
             history.value = historyTracks
-            stats.value = statsValue
-            loadTopPlayed()
-            val now = System.currentTimeMillis()
-            if (screen.value == Screen.Recap && now - lastRecapAuto > 10_000) {
+            if (statsValue != null) {
+                stats.value = statsValue
+                lastStatsRefresh = now
+            }
+            if (refreshTop) {
+                lastTopRefresh = now
+                loadTopPlayed()
+            }
+            if (screen.value == Screen.Recap && now - lastRecapAuto > 5_000) {
                 lastRecapAuto = now
-                loadRecap(force = true)
+                loadRecap(force = false)
             }
         }
     }
@@ -2116,8 +2253,9 @@ class AppController(
         audioQuality.value = quality
         yt.setQuality(quality)
         player.setCrossfade(crossfade)
-        player.setEqEnabled(settings.eqEnabled)
-        gains.forEachIndexed { index, gain -> player.setEqGain(index, gain) }
+        // Uma unica reconstrucao da cadeia de filtros; antes eram 11 chamadas
+        // (enabled + uma por banda) por player, engasgando o audio no startup.
+        player.setEqProfile(settings.eqEnabled, gains)
     }
 
     fun setCloseToTray(enabled: Boolean) {
@@ -2431,6 +2569,8 @@ class AppController(
         const val AUTO_SIMILAR = 6
         const val AUTO_MAX_DOWNLOADS = 250
         const val AUTO_INTERVAL_MS = 2 * 60 * 60 * 1000L
+        /** Uma faixa que nao termina nesse tempo nao pode segurar a fila. */
+        const val DOWNLOAD_TIMEOUT_MS = 4 * 60 * 1000L
         const val RELEASES_TTL_MS = 6 * 60 * 60 * 1000L
         const val SETTINGS_UPDATED_KEY = "settings.updatedAt"
     }

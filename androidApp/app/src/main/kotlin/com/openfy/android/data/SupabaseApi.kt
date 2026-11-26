@@ -23,6 +23,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import java.time.Instant
+import java.time.YearMonth
 
 class SupabaseException(message: String, val status: Int = 0) : Exception(message)
 
@@ -518,7 +519,7 @@ class SupabaseApi {
             header("apikey", anonKey)
             header(HttpHeaders.Authorization, "Bearer $accessToken")
             parameter("select", "track_id,plays,played_ms")
-            parameter("month", "eq.$month")
+            parameter("and", monthRangeFilter(month))
             parameter("order", "plays.desc,played_ms.desc")
             parameter("limit", limit.toString())
         }
@@ -530,7 +531,7 @@ class SupabaseApi {
             header("apikey", anonKey)
             header(HttpHeaders.Authorization, "Bearer $accessToken")
             parameter("select", "month,played_ms,plays,unique_tracks,completed_plays,skipped_plays")
-            parameter("month", "eq.$month")
+            parameter("and", monthRangeFilter(month))
             parameter("limit", "1")
         }
         return decoded<List<MonthlyListeningRow>>(response).firstOrNull()
@@ -545,11 +546,23 @@ class SupabaseApi {
             header("apikey", anonKey)
             header(HttpHeaders.Authorization, "Bearer $accessToken")
             parameter("select", "artist,plays,played_ms")
-            parameter("month", "eq.$month")
+            parameter("and", monthRangeFilter(month))
             parameter("order", "plays.desc,played_ms.desc")
             parameter("limit", limit.toString())
         }
         return decoded(response)
+    }
+
+    /**
+     * A view devolve `month` como timestamptz. Comparar com `eq.2026-11-01`
+     * dependia do timezone/representacao do PostgREST e ja retornava vazio;
+     * uma faixa [inicio, proximo mes) e imune a isso.
+     */
+    private fun monthRangeFilter(month: String): String {
+        val yearMonth = runCatching { YearMonth.parse(month.take(7)) }.getOrElse { YearMonth.now() }
+        val start = yearMonth.atDay(1).toString()
+        val end = yearMonth.plusMonths(1).atDay(1).toString()
+        return "(month.gte.$start,month.lt.$end)"
     }
 
     suspend fun monthlyMonths(accessToken: String, limit: Int = 12): List<String> {
@@ -717,7 +730,10 @@ class SupabaseApi {
         val response = client.post("$baseUrl/rest/v1/play_events") {
             header("apikey", anonKey)
             header(HttpHeaders.Authorization, "Bearer $accessToken")
-            header("Prefer", "return=minimal")
+            // Reenvio depois de uma resposta perdida nao pode virar erro de
+            // chave duplicada (isso travava todo o outbox e o recap parava).
+            header("Prefer", "resolution=ignore-duplicates,return=minimal")
+            parameter("on_conflict", "id")
             contentType(ContentType.Application.Json)
             setBody(event)
         }

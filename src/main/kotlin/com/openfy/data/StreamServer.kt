@@ -40,12 +40,11 @@ class StreamServer(
     val port: Int get() = server.address.port
 
     init {
-        // Dois players (crossfade) + seeks + prefetch podem abrir varias
-        // conexoes ao mesmo tempo; 6 threads era pouco e podia enfileirar um
-        // request ate o timeout, travando o inicio da faixa.
-        server.executor = Executors.newFixedThreadPool(12) { r ->
-            Thread(r, "openfy-stream").apply { isDaemon = true }
-        }
+        // Um player mantem uma conexao aberta por faixa e o mpv costuma abrir
+        // varias em seeks/prefetch. Com pool fixo (12), conexoes pausadas ou
+        // travadas esgotavam as threads e um novo GET esperava na fila ate o
+        // mpv pausar. Virtual threads (JDK 21) nao tem esse limite.
+        server.executor = Executors.newVirtualThreadPerTaskExecutor()
         server.createContext("/t/") { exchange -> handle(exchange) }
     }
 
@@ -79,7 +78,7 @@ class StreamServer(
                 is Media.Local -> serveFile(exchange, media.path)
                 is Media.Remote -> {
                     com.openfy.core.Log.write("stream: midia pronta para $id em ${elapsed}ms")
-                    proxy(exchange, id, media)
+                    proxy(exchange, id, media, retry = true)
                 }
             }
         } catch (e: Exception) {
@@ -90,7 +89,7 @@ class StreamServer(
         }
     }
 
-    private fun proxy(exchange: HttpExchange, id: String, media: Media.Remote) {
+    private fun proxy(exchange: HttpExchange, id: String, media: Media.Remote, retry: Boolean) {
         val range = exchange.requestHeaders.getFirst("Range")
         val builder = HttpRequest.newBuilder(URI.create(media.url))
             .timeout(Duration.ofSeconds(30))
@@ -109,8 +108,9 @@ class StreamServer(
         } catch (e: Exception) {
             com.openfy.core.Log.write("stream: upstream falhou para $id: ${e::class.simpleName}: ${e.message}")
             // A URL pode ter expirado/entrado em rate-limit: descarta o cache
-            // para que a proxima tentativa extraia uma URL nova.
+            // antes de pedir uma nova ao extrator.
             runCatching { onInvalidate(id) }
+            if (retry && refreshMedia(exchange, id)) return
             fail(exchange, 502)
             return
         }
@@ -126,6 +126,10 @@ class StreamServer(
                     if (snippet.isBlank()) "" else " ($snippet)"
             )
             runCatching { onInvalidate(id) }
+            // 401/403/410 = assinatura vencida. Reextrai e tenta de novo antes
+            // de devolver erro ao mpv; antes o mpv pausava e o usuario via a
+            // musica parar no meio.
+            if (retry && status in setOf(401, 403, 410) && refreshMedia(exchange, id)) return
             fail(exchange, 502)
             return
         }
@@ -140,7 +144,56 @@ class StreamServer(
         // length 0 = chunked; -1 = sem corpo (erro). O valor real mantem o
         // Content-Length que o mpv usa para calcular o tamanho do stream.
         exchange.sendResponseHeaders(status, if (contentLength > 0) contentLength else 0)
-        exchange.responseBody.use { out -> body.use { it.copyTo(out, 128 * 1024) } }
+        exchange.responseBody.use { out ->
+            guardUpstream(body).use { input ->
+                input.copyTo(out, 128 * 1024)
+            }
+        }
+    }
+
+    /**
+     * Descarta a URL vencida, pede uma nova ao extrator e refaz o proxy.
+     * Devolve false quando o exchange ja foi respondido (ou nao ha midia).
+     */
+    private fun refreshMedia(exchange: HttpExchange, id: String): Boolean {
+        val fresh = runCatching { resolve(id) }.getOrNull() ?: return false
+        if (fresh !is Media.Remote || fresh.url.isBlank()) return false
+        com.openfy.core.Log.write("stream: reextraindo $id apos url vencida")
+        proxy(exchange, id, fresh, retry = false)
+        return true
+    }
+
+    /**
+     * O timeout do HttpClient vale ate os headers; um upstream que para de
+     * enviar no meio do corpo deixava a thread do stream presa. Fecha o corpo
+     * quando ele fica [BODY_IDLE_TIMEOUT_MS] sem dados. A janela e generosa
+     * porque o mpv pode ficar sem ler enquanto o usuario esta pausado.
+     */
+    private fun guardUpstream(input: java.io.InputStream): java.io.InputStream {
+        val lastData = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        Thread.ofVirtual().name("openfy-stream-watchdog").start {
+            while (!finished.get()) {
+                Thread.sleep(10_000)
+                val idle = System.currentTimeMillis() - lastData.get()
+                if (idle >= BODY_IDLE_TIMEOUT_MS) {
+                    com.openfy.core.Log.write("stream: upstream sem dados por ${idle}ms; abortando")
+                    runCatching { input.close() }
+                    return@start
+                }
+            }
+        }
+        return object : java.io.FilterInputStream(input) {
+            override fun read(): Int = super.read().also { if (it >= 0) lastData.set(System.currentTimeMillis()) }
+            override fun read(b: ByteArray, off: Int, len: Int): Int =
+                super.read(b, off, len).also {
+                    if (it > 0) lastData.set(System.currentTimeMillis())
+                }
+            override fun close() {
+                finished.set(true)
+                super.close()
+            }
+        }
     }
 
     private fun serveFile(exchange: HttpExchange, path: Path) {
@@ -200,6 +253,7 @@ class StreamServer(
     }
 
     private companion object {
+        const val BODY_IDLE_TIMEOUT_MS = 5 * 60_000L
         const val UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
                 "Chrome/131.0.0.0 Safari/537.36"

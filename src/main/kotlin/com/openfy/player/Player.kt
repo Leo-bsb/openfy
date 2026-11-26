@@ -16,7 +16,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -58,6 +60,7 @@ class Player(
     val autoplayRadio = MutableStateFlow(true)
     val eqEnabled = MutableStateFlow(false)
     val eqGains = MutableStateFlow(List(EQ_FREQS.size) { 0 })
+    private var eqApplyJob: Job? = null
     val crossfadeSeconds = MutableStateFlow(0)
     val crossfading = MutableStateFlow(false)
 
@@ -77,11 +80,16 @@ class Player(
     /** Avisa que fila/posição mudaram; o AppController empurra o handoff. */
     var onSessionChanged: (() -> Unit)? = null
 
+    /** Avisa que uma escuta foi finalizada (recap/histórico podem atualizar). */
+    var onPlayFinished: (() -> Unit)? = null
+
     @Volatile private var active: Mpv = mpvA
     private fun standby(): Mpv = if (active === mpvA) mpvB else mpvA
 
     /** Restauracao de sessao: carrega pausado na posicao salva. */
     private var pendingPause = false
+    /** Ignora eventos de pause atrasados logo apos carregar/trocar de faixa. */
+    private var ignorePauseUntil = 0L
     private var lastPositionSave = 0L
     private var shuffleSnapshotQueue: List<Track>? = null
     private var shuffleSnapshotIndex = -1
@@ -89,6 +97,7 @@ class Player(
     // evento de escuta ativo (telemetria/recap)
     private var activeEventSeq = -1L
     private var activeEventTrack: Track? = null
+    private val historyJobs = java.util.concurrent.ConcurrentLinkedQueue<Job>()
     private var queueOrigin = "desktop"
     private var queueContextId: String? = null
     private var queueContextTitle = ""
@@ -195,6 +204,11 @@ class Player(
                 cancelLoadWatchdog()
             }
             is Mpv.Event.Paused -> {
+                // Eventos do pipe podem chegar depois da troca de faixa (o mpv
+                // emite pause do standby/crossfade). Ignorar por uma janela
+                // curta evita a UI mostrar "pausado" e cancelar o fade sem o
+                // usuario ter pausado nada.
+                if (event.paused && System.currentTimeMillis() < ignorePauseUntil) return
                 playing.value = !event.paused
                 if (event.paused) cancelCrossfade()
             }
@@ -281,7 +295,14 @@ class Player(
         activeEventSeq = -1
         activeEventTrack = null
         val safePlayed = played.coerceIn(0L, totalMs.toLong()).toInt()
-        runCatching { db.finishPlay(seq, safePlayed, completed, skipped, totalMs) }
+        // A escrita no SQLite nao pode bloquear a thread da UI (que chama
+        // load/next). O UPDATE ja e independente; agenda no IO.
+        val job = scope.launch(Dispatchers.IO) {
+            runCatching { db.finishPlay(seq, safePlayed, completed, skipped, totalMs) }
+            runCatching { onPlayFinished?.invoke() }
+        }
+        historyJobs.add(job)
+        job.invokeOnCompletion { historyJobs.remove(job) }
     }
 
     /** Define o contexto da fila para a UI e para os eventos de escuta. */
@@ -352,7 +373,14 @@ class Player(
             return
         }
         val nowPlaying = playing.value
-        if (nowPlaying) cancelCrossfade()
+        if (nowPlaying) {
+            cancelCrossfade()
+            // Se a faixa ainda esta carregando, o evento Started chegaria
+            // depois e sobrescreveria a pausa do usuario com playing=true.
+            if (busy.value) pendingPause = true
+        } else {
+            pendingPause = false
+        }
         if (!nowPlaying && activeEventSeq < 0) startActiveEvent(track)
         active.pause(nowPlaying)
         playing.value = !nowPlaying
@@ -704,8 +732,12 @@ class Player(
             duration.value = track.durationSec.toDouble()
         }
         playing.value = true
+        ignorePauseUntil = System.currentTimeMillis() + 1_500
         active.start()
         active.volume(volume.value)
+        // Sem isso, escolher uma faixa enquanto o player estava pausado
+        // carregava o audio mas o mpv continuava com pause=true.
+        active.pause(false)
         active.load(stream.urlFor(track.id))
         armLoadWatchdog(track, retry = true)
         startActiveEvent(track)
@@ -970,8 +1002,10 @@ class Player(
         busy.value = true
         playing.value = autoplay
         pendingPause = !autoplay
+        ignorePauseUntil = System.currentTimeMillis() + 1_500
         active.start()
         active.volume(volume.value)
+        active.pause(!autoplay)
         active.load(stream.urlFor(track.id), startAt = seconds)
         if (autoplay) startActiveEvent(track)
         save()
@@ -1117,6 +1151,21 @@ class Player(
         current[index] = gainDb.coerceIn(-12, 12)
         eqGains.value = current
         eqEnabled.value = true
+        // Arrastar o slider dispara muitos valores por segundo; reconstruir a
+        // cadeia de filtros do mpv a cada um travava o audio. Coalesce em 120ms.
+        eqApplyJob?.cancel()
+        eqApplyJob = scope.launch {
+            delay(120)
+            applyEq()
+        }
+        saveEq()
+    }
+
+    /** Aplica enabled + todas as bandas de uma vez (sync de ajustes). */
+    fun setEqProfile(enabled: Boolean, gains: List<Int>) {
+        eqApplyJob?.cancel()
+        eqGains.value = resampleEqGains(gains)
+        eqEnabled.value = enabled
         applyEq()
         saveEq()
     }
@@ -1311,6 +1360,7 @@ class Player(
         playing.value = true
         busy.value = false
         pendingPause = false
+        ignorePauseUntil = System.currentTimeMillis() + 1_000
         if (crossfadeDuration > 1) persistDuration(crossfadeDuration)
         // Bass swap: a partir daqui os graves trocam em rampa suave (ver loop).
         new.pause(false)
@@ -1456,6 +1506,13 @@ class Player(
 
     fun shutdown() {
         finishActive(completed = false, skipped = true)
+        // Espera o evento final chegar ao SQLite antes de o Main cancelar o
+        // escopo/fechar o banco; sem isso a ultima escuta nao entrava no recap.
+        runBlocking {
+            historyJobs.toList().forEach { job ->
+                withTimeoutOrNull(1_500) { job.join() }
+            }
+        }
         crossfadeJob?.cancel()
         saveNow()
         mpvA.shutdown()

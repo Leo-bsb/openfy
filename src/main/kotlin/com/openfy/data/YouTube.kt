@@ -915,11 +915,11 @@ class YouTubeEngine {
      * preciso — por isso o cache curto aqui e so economia de quota.
      */
     fun media(videoId: String): Media? {
-        val cached = streamCache[videoId]
-        if (cached != null && System.currentTimeMillis() - cached.at < STREAM_TTL_MS) {
+        streamCache[videoId]?.takeIf {
+            System.currentTimeMillis() - it.at < STREAM_TTL_MS
+        }?.let { cached ->
             val url = cached.stream.audioUrl
-            if (url.isBlank()) return null
-            return Media.Remote(url, cached.stream.headers)
+            if (url.isNotBlank()) return Media.Remote(url, cached.stream.headers)
         }
         val started = System.nanoTime()
         com.openfy.core.Log.write("yt: extraindo $videoId")
@@ -927,6 +927,17 @@ class YouTubeEngine {
             kotlinx.coroutines.runBlocking {
                 withTimeout(EXTRACT_TIMEOUT_MS) {
                     extractMutex.withLock {
+                        // Outra thread pode ter extraido enquanto esta esperava
+                        // o mutex. Sem esta segunda checagem, dois GETs
+                        // simultaneos (player + download) extraiam a mesma
+                        // faixa duas vezes e o segundo ficava preso aqui.
+                        val fresh = streamCache[videoId]
+                        if (fresh != null &&
+                            System.currentTimeMillis() - fresh.at < STREAM_TTL_MS &&
+                            fresh.stream.audioUrl.isNotBlank()
+                        ) {
+                            return@withLock fresh.stream
+                        }
                         extractor.extract(
                             videoId,
                             ContentHints().withStreamCapabilities(
@@ -1131,7 +1142,11 @@ class YouTubeEngine {
             ExploreSeed("mpb brasil", "MPB & Bossa"),
         )
 
-        const val STREAM_TTL_MS = 4 * 60 * 1000L
+        // A URL do googlevideo vale por horas. Expira-la antes disso forcava
+        // uma nova extracao a cada ~4 min: no meio de uma faixa longa o mpv
+        // ficava sem dados, pausava e o app parecia "pausar sozinho". O
+        // StreamServer descarta a URL na hora quando o Google responde 403.
+        const val STREAM_TTL_MS = 60 * 60 * 1000L
         const val EXTRACT_TIMEOUT_MS = 60_000L
     }
 }

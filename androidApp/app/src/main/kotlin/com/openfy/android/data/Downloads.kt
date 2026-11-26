@@ -256,6 +256,9 @@ class AudioDownloader(
                 readTimeout = 15_000
                 instanceFollowRedirects = true
                 headers.forEach { (key, value) -> setRequestProperty(key, value) }
+                // Sem identity alguns CDNs devolvem gzip/br e o Content-Length
+                // deixa de bater com o corpo, travando a barra de progresso.
+                setRequestProperty("Accept-Encoding", "identity")
                 if (getRequestProperty("User-Agent").isNullOrBlank()) {
                     setRequestProperty("User-Agent", DEFAULT_USER_AGENT)
                 }

@@ -91,13 +91,16 @@ class Mpv(
             add("--input-ipc-server=$pipePath")
             add("--audio-client-name=Openfy$suffix")
             add("--cache=yes")
-            add("--demuxer-max-bytes=96MiB")
-            add("--demuxer-readahead-secs=20")
+            add("--demuxer-max-bytes=128MiB")
+            add("--demuxer-readahead-secs=30")
+            // O stream local costuma entregar rapido; uma folga maior evita
+            // pausas de rebuffer quando a rede/Google oscila no meio da faixa.
+            add("--cache-pause=yes")
+            add("--network-timeout=30")
             add("--gapless-audio=weak")
             add("--volume=80")
             add("--keep-open=no")
             add("--force-window=no")
-            add("--network-timeout=20")
             if (logFile != null) {
                 // Preserva a execucao anterior em mpv.log.1 antes de o mpv
                 // truncar o arquivo: sem isso o diagnostico do PC do usuario

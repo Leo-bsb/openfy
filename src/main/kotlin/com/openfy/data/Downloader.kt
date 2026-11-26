@@ -38,11 +38,18 @@ class Downloader(
 
     /** Baixa e devolve o caminho final; null em qualquer falha. */
     fun download(track: Track): Path? {
+        // Ja existe no disco (estado da UI pode estar um pouco atrasado).
+        for (ext in listOf(".m4a", ".webm")) {
+            val existing = dir.resolve("${track.id}$ext")
+            if (Files.isRegularFile(existing) && Files.size(existing) > 0) return existing
+        }
         val media = yt.media(track.id) as? Media.Remote ?: return null
         if (media.url.isBlank()) return null
+        val tmp = dir.resolve("${track.id}.part")
+        runCatching { Files.deleteIfExists(tmp) }
         val response = runCatching {
             val builder = HttpRequest.newBuilder(URI.create(media.url))
-                .timeout(Duration.ofSeconds(120))
+                .timeout(Duration.ofSeconds(300))
                 .header("User-Agent", UA)
                 .header("Accept-Encoding", "identity")
                 // O URL extraido e servido por range; sem isso o upstream
@@ -57,25 +64,30 @@ class Downloader(
                     runCatching { builder.header(key, value) }
                 }
             }
-            http.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray())
-        }.getOrNull() ?: return null
+            // Grava direto no .part: um arquivo de 100 MB nao precisa passar
+            // inteiro pela heap (era mais pressao de GC durante downloads).
+            http.send(builder.build(), HttpResponse.BodyHandlers.ofFile(tmp))
+        }.getOrNull() ?: run {
+            runCatching { Files.deleteIfExists(tmp) }
+            return null
+        }
 
         if (response.statusCode() !in 200..299) {
             com.openfy.core.Log.write("download: ${track.id} status ${response.statusCode()}")
+            runCatching { Files.deleteIfExists(tmp) }
             return null
         }
-        val bytes = response.body()
-        if (bytes.isEmpty()) {
+        val size = runCatching { Files.size(tmp) }.getOrDefault(0L)
+        if (size <= 0L) {
             com.openfy.core.Log.write("download: ${track.id} corpo vazio")
+            runCatching { Files.deleteIfExists(tmp) }
             return null
         }
 
         val contentType = response.headers().firstValue("Content-Type").orElse("")
         val ext = if (contentType.contains("mpeg") || contentType.contains("mp4")) ".m4a" else ".webm"
         val final = dir.resolve("${track.id}$ext")
-        val tmp = dir.resolve("${track.id}.part")
         return runCatching {
-            Files.write(tmp, bytes)
             Files.move(tmp, final, StandardCopyOption.REPLACE_EXISTING)
             final
         }.onFailure {

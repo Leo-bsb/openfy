@@ -58,6 +58,11 @@ fun main() {
                 println(result.summary())
                 check(result.pushedEvents >= 2, "eventos com formatos diferentes subiram para o recap")
 
+                // Segundo sync com os mesmos cursores: nada local deve subir de novo.
+                val second = SyncEngine(db, api).sync(session)
+                check(second.pushedEvents == 0, "segundo sync nao reenvia eventos")
+                check(second.pushedLikes == 0, "segundo sync nao reenvia curtidas")
+
                 val remotePlaylist = api.playlists(auth.accessToken, listOf(local.id)).firstOrNull()
                 check(remotePlaylist?.name == "Smoke PC", "playlist do PC subiu para o servidor")
                 check(

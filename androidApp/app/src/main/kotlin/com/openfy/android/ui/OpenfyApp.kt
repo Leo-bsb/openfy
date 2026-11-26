@@ -2774,7 +2774,7 @@ private fun RecapScreen(
     modifier: Modifier = Modifier,
     onAddToPlaylist: (Track) -> Unit,
 ) {
-    LaunchedEffect(Unit) { viewModel.loadRecap() }
+    LaunchedEffect(Unit) { viewModel.loadRecap(force = true) }
     LazyColumn(
         modifier.fillMaxSize().padding(horizontal = 18.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -2824,7 +2824,7 @@ private fun RecapScreen(
                 }
             }
         }
-        if (state.recapLoading) {
+        if (state.recapLoading && state.recap == null) {
             item {
                 Box(Modifier.fillMaxWidth().height(160.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(

@@ -32,7 +32,11 @@ class HistoryStore(dir: File) {
     private val temp = File(this.dir, "history.json.tmp")
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val lock = Any()
-    private var entries: List<HistoryEntry> = load()
+    // Carregamento preguicoso: o arquivo pode ter milhares de escutas e a
+    // construcao do ViewModel acontece na main thread.
+    private var entries: List<HistoryEntry>? = null
+
+    private fun current(): List<HistoryEntry> = entries ?: load().also { entries = it }
 
     private fun load(): List<HistoryEntry> {
         val text = runCatching { file.readText() }.getOrNull() ?: return emptyList()
@@ -42,7 +46,7 @@ class HistoryStore(dir: File) {
 
     private fun persist() {
         runCatching {
-            temp.writeText(json.encodeToString(entries))
+            temp.writeText(json.encodeToString(current()))
             runCatching {
                 java.nio.file.Files.move(
                     temp.toPath(),
@@ -60,7 +64,7 @@ class HistoryStore(dir: File) {
         }
     }
 
-    fun all(): List<HistoryEntry> = synchronized(lock) { entries }
+    fun all(): List<HistoryEntry> = synchronized(lock) { current() }
 
     fun add(entry: HistoryEntry) = merge(listOf(entry))
 
@@ -69,7 +73,7 @@ class HistoryStore(dir: File) {
         if (incoming.isEmpty()) return all()
         synchronized(lock) {
             val byId = LinkedHashMap<String, HistoryEntry>()
-            entries.forEach { byId[it.id] = it }
+            current().forEach { byId[it.id] = it }
             incoming.forEach { entry ->
                 val previous = byId[entry.id]
                 if (previous == null || entry.at >= previous.at) byId[entry.id] = entry
@@ -78,7 +82,7 @@ class HistoryStore(dir: File) {
                 .sortedWith(compareByDescending<HistoryEntry> { it.at }.thenBy { it.id })
                 .take(MAX_ENTRIES)
             persist()
-            return entries
+            return entries.orEmpty()
         }
     }
 
@@ -86,7 +90,7 @@ class HistoryStore(dir: File) {
         if (ids.isEmpty()) return
         synchronized(lock) {
             val remove = ids.toSet()
-            entries = entries.filterNot { it.id in remove }
+            entries = current().filterNot { it.id in remove }
             persist()
         }
     }
@@ -97,9 +101,9 @@ class HistoryStore(dir: File) {
     /** Faixas únicas, das mais recentes para as mais antigas. */
     fun historyTracks(limit: Int = 200): List<Track> = synchronized(lock) {
         val best = mutableMapOf<String, HistoryEntry>()
-        entries.forEach { entry ->
-            val current = best[entry.track.id]
-            if (current == null || entry.at > current.at) best[entry.track.id] = entry
+        current().forEach { entry ->
+            val previous = best[entry.track.id]
+            if (previous == null || entry.at > previous.at) best[entry.track.id] = entry
         }
         best.values
             .sortedByDescending { it.at }

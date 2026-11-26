@@ -18,8 +18,8 @@ import java.security.MessageDigest
  */
 object ArtworkCache {
 
-    private const val MAX_MEMORY = 220
-    private const val MAX_PALETTES = 80
+    private const val MAX_MEMORY = 96
+    private const val MAX_PALETTES = 48
 
     data class CoverPalette(
         val primary: Color,

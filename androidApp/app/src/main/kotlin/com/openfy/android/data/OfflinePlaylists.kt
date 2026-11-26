@@ -22,7 +22,9 @@ class PlaylistCache(dir: File) {
     private val temp = File(this.dir, "playlists.json.tmp")
     private val json = Json { ignoreUnknownKeys = true }
     private val lock = Any()
-    private var cache: Map<String, CachedPlaylist> = load()
+    private var cache: Map<String, CachedPlaylist>? = null
+
+    private fun current(): Map<String, CachedPlaylist> = cache ?: load().also { cache = it }
 
     private fun load(): Map<String, CachedPlaylist> {
         val text = runCatching { file.readText() }.getOrNull() ?: return emptyMap()
@@ -30,20 +32,22 @@ class PlaylistCache(dir: File) {
             .getOrDefault(emptyMap())
     }
 
-    fun get(playlistId: String): CachedPlaylist? = synchronized(lock) { cache[playlistId] }
+    fun get(playlistId: String): CachedPlaylist? = synchronized(lock) { current()[playlistId] }
+
+    fun all(): List<CachedPlaylist> = synchronized(lock) { current().values.toList() }
 
     @Synchronized
     fun put(playlist: CachedPlaylist) {
         synchronized(lock) {
-            cache = cache + (playlist.id to playlist)
+            cache = current() + (playlist.id to playlist)
             persist()
         }
     }
 
     fun remove(playlistId: String) {
         synchronized(lock) {
-            if (playlistId !in cache) return
-            cache = cache - playlistId
+            if (playlistId !in current()) return
+            cache = current() - playlistId
             persist()
         }
     }
@@ -58,7 +62,7 @@ class PlaylistCache(dir: File) {
 
     private fun persist() {
         runCatching {
-            temp.writeText(json.encodeToString(cache))
+            temp.writeText(json.encodeToString(current()))
             runCatching {
                 java.nio.file.Files.move(
                     temp.toPath(),

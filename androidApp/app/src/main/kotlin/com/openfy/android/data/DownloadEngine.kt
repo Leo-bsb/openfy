@@ -79,7 +79,7 @@ object DownloadEngine {
     val events: SharedFlow<Event> = _events.asSharedFlow()
 
     private val store: DownloadStore by lazy {
-        DownloadStore(File(requireContext().filesDir, "downloads")).also { it.repair() }
+        DownloadStore(File(requireContext().filesDir, "downloads"))
     }
 
     /** URL extraída só para o download: nunca compartilha o link da reprodução. */
@@ -109,25 +109,31 @@ object DownloadEngine {
 
     fun enqueue(track: Track) {
         if (isQueued(track.id)) return
-        DownloadService.ensureStarted(requireContext())
+        // Já baixada: não agenda de novo (o evento de sucesso só confundiria).
+        if (store.fileFor(track.id) != null) return
         val job = scope.launch(start = CoroutineStart.LAZY) { download(track) }
         jobs[track.id] = job
         job.invokeOnCompletion {
             if (jobs[track.id] === job) jobs.remove(track.id)
         }
         job.start()
+        // Só sobe o serviço depois de o job existir: antes o onStartCommand
+        // via activeCount=0 e parava o foreground na mesma hora.
+        DownloadService.ensureStarted(requireContext())
     }
 
     /** Baixa uma faixa e espera o resultado, respeitando o limite de paralelismo. */
     suspend fun download(track: Track): DownloadResult {
+        _progress.update { it + (track.id to 0f) }
         DownloadService.ensureStarted(requireContext())
         val lock = trackLocks.computeIfAbsent(track.id) { Mutex() }
-        _progress.update { it + (track.id to 0f) }
         val result = try {
             lock.withLock {
                 slots.withPermit { downloadGuarded(track, coroutineContext[Job]) }
             }
         } finally {
+            // Sem remover, o mapa crescia a cada faixa baixada na sessao.
+            trackLocks.remove(track.id, lock)
             _progress.update { it - track.id }
         }
         _events.tryEmit(Event(track, result))
@@ -223,7 +229,11 @@ object DownloadEngine {
         val pending = jobs.values.toList()
         pending.forEach { it.cancel() }
         downloader.cancel(null)
-        pending.forEach { runCatching { it.join() } }
+        // NAO esperar para sempre: se uma conexao travada ignorar o disconnect,
+        // o botao "limpar downloads" ainda precisa terminar.
+        pending.forEach { job ->
+            kotlinx.coroutines.withTimeoutOrNull(5_000) { job.join() }
+        }
         jobs.clear()
         _progress.value = emptyMap()
     }

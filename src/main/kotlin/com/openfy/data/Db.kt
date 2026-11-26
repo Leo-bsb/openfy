@@ -268,7 +268,16 @@ class Db(private val file: Path) : AutoCloseable {
                 )
                 st.execute("pragma user_version=10")
             }
+            // Evento aberto de uma sessao que caiu/fechou sem finalizar nunca
+            // entrava no recap. Fecha como pulado para nao sumir do historico.
+            runCatching { closeOrphanPlayEvents(st) }
         }
+    }
+
+    private fun closeOrphanPlayEvents(st: java.sql.Statement) {
+        st.executeUpdate(
+            "update play_event set finished=1, skipped=1 where finished=0"
+        )
     }
 
     private fun hasColumn(table: String, column: String): Boolean =
@@ -282,6 +291,22 @@ class Db(private val file: Path) : AutoCloseable {
         }
 
     // ------------------------------------------------------------------ track cache
+    /** IDs de [ids] que ainda nao tem metadado local (para nao rebaixar tudo do sync). */
+    @Synchronized
+    fun missingTrackIds(ids: Collection<String>): List<String> {
+        if (ids.isEmpty()) return emptyList()
+        val known = HashSet<String>()
+        val unique = ids.toList().distinct()
+        unique.chunked(500).forEach { chunk ->
+            val marks = chunk.joinToString(",") { "?" }
+            conn.prepareStatement("select id from track where id in ($marks)").use { ps ->
+                chunk.forEachIndexed { index, id -> ps.setString(index + 1, id) }
+                ps.executeQuery().use { rs -> while (rs.next()) known += rs.getString(1) }
+            }
+        }
+        return unique.filterNot { it in known }
+    }
+
     @Synchronized
     fun remember(track: Track) {
         conn.prepareStatement(
@@ -960,7 +985,7 @@ class Db(private val file: Path) : AutoCloseable {
     fun recapSummary(startMs: Long, endMs: Long): RecapSummary =
         conn.prepareStatement(
             "select count(*) as plays, " +
-                "coalesce(sum(coalesce(nullif(e.played_ms,0), coalesce(t.duration,0) * 1000)),0) as played_ms, " +
+                "coalesce(sum(coalesce(nullif(e.played_ms,0), case when e.skipped=1 then 0 else coalesce(t.duration,0) * 1000 end)),0) as played_ms, " +
                 "count(distinct e.id) as unique_tracks, " +
                 "count(distinct nullif(t.artist,'')) as unique_artists, " +
                 "coalesce(sum(case when e.completed=1 then 1 else 0 end),0) as completed_plays, " +
@@ -989,7 +1014,7 @@ class Db(private val file: Path) : AutoCloseable {
     fun recapTopTracks(startMs: Long, endMs: Long, limit: Int = 10): List<RecapTrack> =
         conn.prepareStatement(
             "select t.id, t.title, t.artist, t.album, t.duration, t.thumbnail, count(*) as plays, " +
-                "coalesce(sum(coalesce(nullif(e.played_ms,0), coalesce(t.duration,0) * 1000)),0) as played_ms " +
+                "coalesce(sum(coalesce(nullif(e.played_ms,0), case when e.skipped=1 then 0 else coalesce(t.duration,0) * 1000 end)),0) as played_ms " +
                 "from play_event e join track t on t.id=e.id " +
                 "where e.finished=1 and e.at >= ? and e.at < ? " +
                 "group by t.id order by plays desc, played_ms desc, t.title asc limit ?"
@@ -1021,7 +1046,7 @@ class Db(private val file: Path) : AutoCloseable {
     fun recapTopArtists(startMs: Long, endMs: Long, limit: Int = 8): List<RecapArtist> =
         conn.prepareStatement(
             "select coalesce(nullif(t.artist,''),'Artista desconhecido') as artist, count(*) as plays, " +
-                "coalesce(sum(coalesce(nullif(e.played_ms,0), coalesce(t.duration,0) * 1000)),0) as played_ms, " +
+                "coalesce(sum(coalesce(nullif(e.played_ms,0), case when e.skipped=1 then 0 else coalesce(t.duration,0) * 1000 end)),0) as played_ms, " +
                 "min(t.thumbnail) as thumbnail " +
                 "from play_event e join track t on t.id=e.id " +
                 "where e.finished=1 and e.at >= ? and e.at < ? " +
@@ -1048,7 +1073,7 @@ class Db(private val file: Path) : AutoCloseable {
     fun recapDays(startMs: Long, endMs: Long): List<RecapDay> =
         conn.prepareStatement(
             "select date(e.at / 1000, 'unixepoch', 'localtime') as day, count(*) as plays, " +
-                "coalesce(sum(coalesce(nullif(e.played_ms,0), coalesce(t.duration,0) * 1000)),0) as played_ms " +
+                "coalesce(sum(coalesce(nullif(e.played_ms,0), case when e.skipped=1 then 0 else coalesce(t.duration,0) * 1000 end)),0) as played_ms " +
                 "from play_event e left join track t on t.id=e.id " +
                 "where e.finished=1 and e.at >= ? and e.at < ? group by day order by day asc"
         ).use { ps ->
@@ -1409,6 +1434,20 @@ class Db(private val file: Path) : AutoCloseable {
      * pelo botao "Otimizar banco" nos ajustes; e barato o bastante para rodar
      * em segundo plano.
      */
+    /** Manutencao leve: retencao do historico sem o VACUUM que segura o lock. */
+    @Synchronized
+    fun optimize(retainDays: Int = 400) {
+        runCatching {
+            val cutoff = System.currentTimeMillis() - retainDays.toLong() * 24L * 60L * 60L * 1000L
+            conn.prepareStatement("delete from play_event where at < ?").use { ps ->
+                ps.setLong(1, cutoff)
+                ps.executeUpdate()
+            }
+            conn.createStatement().use { st -> st.execute("pragma optimize") }
+        }
+    }
+
+    /** Compacta o SQLite e descarta historico fora da retencao. */
     @Synchronized
     fun compact(retainDays: Int = 400) {
         runCatching {

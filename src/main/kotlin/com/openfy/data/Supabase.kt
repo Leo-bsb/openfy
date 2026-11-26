@@ -181,6 +181,7 @@ data class RemoteLike(
     @SerialName("track_id") val trackId: String,
     @SerialName("updated_at") val updatedAt: String? = null,
     val deleted: Boolean = false,
+    @SerialName("server_rev") val serverRev: Long = 0,
 )
 
 @Serializable
@@ -304,6 +305,9 @@ data class RemoteMonthlyArtist(
     val plays: Long = 0,
     @SerialName("played_ms") val playedMs: Long = 0,
 )
+
+@Serializable
+private data class RemoteMonthKey(val month: String = "")
 
 @Serializable
 private data class ApiError(
@@ -919,12 +923,18 @@ class SupabaseApi {
         )
     }
 
-    suspend fun likes(accessToken: String): List<RemoteLike> =
+    suspend fun likes(
+        accessToken: String,
+        sinceRev: Long = 0,
+        limit: Int = 1000,
+    ): List<RemoteLike> =
         decode(
             client.get("$baseUrl/rest/v1/likes") {
                 auth(accessToken)
-                parameter("select", "track_id,updated_at,deleted")
-                parameter("limit", "5000")
+                parameter("select", "track_id,updated_at,deleted,server_rev")
+                if (sinceRev > 0) parameter("server_rev", "gt.$sinceRev")
+                parameter("order", "server_rev.asc")
+                parameter("limit", limit.toString())
             },
         )
 
@@ -1091,12 +1101,28 @@ class SupabaseApi {
         header(HttpHeaders.Authorization, "Bearer $accessToken")
     }
 
+    /** Meses com escutas na conta (para o seletor do recap no PC). */
+    suspend fun monthlyMonths(accessToken: String, limit: Int = 12): List<java.time.YearMonth> =
+        decode<List<RemoteMonthKey>>(
+            client.get("$baseUrl/rest/v1/monthly_listening") {
+                auth(accessToken)
+                parameter("select", "month")
+                parameter("order", "month.desc")
+                parameter("limit", limit.toString())
+            },
+        ).mapNotNull { row ->
+            runCatching { java.time.YearMonth.parse(row.month.take(7)) }.getOrNull()
+        }
+
     suspend fun monthlyListening(accessToken: String, month: java.time.YearMonth): List<RemoteMonthlyListening> =
         decode(
             client.get("$baseUrl/rest/v1/monthly_listening") {
                 auth(accessToken)
                 parameter("select", "month,played_ms,plays,unique_tracks,completed_plays,skipped_plays")
-                parameter("month", "eq.${month.atDay(1)}")
+                // Faixa de datas em vez de igualdade: o tipo timestamptz da view
+                // varia de representacao entre PostgREST/Postgres e um `eq` com
+                // data ja fez o mes atual voltar vazio (recap "parado").
+                parameter("and", "(month.gte.${month.atDay(1)},month.lt.${month.plusMonths(1).atDay(1)})")
                 parameter("limit", "1")
             },
         )
@@ -1110,7 +1136,7 @@ class SupabaseApi {
             client.get("$baseUrl/rest/v1/monthly_top_tracks") {
                 auth(accessToken)
                 parameter("select", "track_id,plays,played_ms")
-                parameter("month", "eq.${month.atDay(1)}")
+                parameter("and", "(month.gte.${month.atDay(1)},month.lt.${month.plusMonths(1).atDay(1)})")
                 parameter("order", "plays.desc")
                 parameter("limit", limit.toString())
             },
@@ -1125,7 +1151,7 @@ class SupabaseApi {
             client.get("$baseUrl/rest/v1/monthly_top_artists") {
                 auth(accessToken)
                 parameter("select", "artist,plays,played_ms")
-                parameter("month", "eq.${month.atDay(1)}")
+                parameter("and", "(month.gte.${month.atDay(1)},month.lt.${month.plusMonths(1).atDay(1)})")
                 parameter("order", "plays.desc")
                 parameter("limit", limit.toString())
             },
